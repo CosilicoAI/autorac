@@ -1,13 +1,13 @@
-# Notary admission: design v3
+# Notary admission: design v4
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 3 folds design-review rounds 1 and 2
-(seventeen blocking findings total; the review record lives on #1507).
-Nothing admission-capable merges until the preconditions in §9 are
-satisfied and this document is approved by the charter's gate: an
-independent cross-family review of this concrete design plus Max's named
-sign-off, with every §11 decision closed.
+(dual-verdict, 2026-08-17). Version 4 folds design-review rounds 1–3
+(twenty-five blocking findings; the record lives on #1507). Nothing
+admission-capable merges until the §9 preconditions are satisfied and this
+document is approved by the charter's gate: an independent cross-family
+review of this concrete design plus Max's named sign-off, with every §11
+decision closed.
 
 ## 1. Claim and threat model
 
@@ -18,43 +18,53 @@ The notary signs one narrow claim:
 > `C` (a receipt, a transition record, or genesis): under the verifier
 > profile and protected-path policy committed at the base, every
 > protected-content tree-entry change from `T0` to `T1` is covered by the
-> eligible lineage set; every gate the profile requires produced an
-> outcome the profile accepts; unprotected tree-entry changes are
-> enumerated in `R`; and the protected signing policy authorized this
-> acceptance.
+> unique valid assignment over the eligible lineage set; every gate the
+> profile requires is declared with an outcome the profile accepts;
+> unprotected tree-entry changes are enumerated in `R`; and the protected
+> signing policy authorized this acceptance.
+
+Two classes of statement inside that claim have different evidentiary
+strength, and the receipt does not blur them. **Recomputed invariants** —
+tree manifests, the diff, protected-path classification, lineage
+eligibility and authentication, the coverage assignment, the unprotected
+enumeration, chain linkage — are computed by trusted pinned code from
+content-addressed inputs, independently of anything the candidate
+executed, and cannot be forged by candidate code. **Gate outcomes** are
+declarations produced by running the candidate's own gates; a compromised
+candidate weakening its gates is the residual risk the charter accepts,
+unchanged in kind from today, and the receipt words them as declarations
+("declared with an outcome the profile accepts"), never as re-established
+facts.
 
 Admission is a statement about the *delta*: the changes since the chain
 predecessor are covered. It never upgrades the provenance of older bytes.
-Pre-epoch content remains exactly what the genesis inventories say it is —
+Pre-epoch content remains exactly what the genesis inventories say —
 v5-attested or unattested baseline — no matter how many receipts later sit
 above it; an empty-delta receipt admits nothing and changes no provenance
-status. The claim covers exactly what the predicate checks
-(protected-content tree-entry changes), and unprotected changes are
-enumerated in the report rather than silently excluded.
+status.
 
-The notary does not claim content was model-generated, and never will —
-that claim bred provenance laundering (the Path R pattern) and is retired
-with the v5 era. Lineage records say where bytes came from; the notary
-says the deterministic gates passed, coverage held, and admission chains
-from the last admitted state.
+The notary does not claim content was model-generated, and never will.
+Lineage records say where bytes came from; the notary says the recomputed
+invariants held, the gates were declared acceptable, and admission chains
+from the last finalized state.
 
 The scenario this design closes: an agent with repository write access
 hand-edits a published rule and obtains a legitimate signature through the
 sanctioned path, with no record of the edit's origin. Two walls stop the
 *undeclared* hand edit — declared corrections are intentionally
-admissible, loudly. The capability wall: no generation surface holds the
-merge-authorizing notary capability; the notary key is reachable only by
-the typed signing job, on isolated compute, in a dedicated notary-only
-environment. (Generation surfaces do hold the non-authorizing producer
-key — that signs lineage, not admission.) The coverage wall: a changed
-protected path with no covering eligible lineage refuses at verification,
-and the signer independently re-enforces that verdict before signing.
+admissible, loudly. The capability wall: the notary key never enters any
+runner; an external typed signer validates an independently authenticated
+job identity, and generation surfaces hold only the non-authorizing
+producer key. The coverage wall: coverage is a recomputed invariant — the
+trusted side re-derives it from git data and lineage records, so neither a
+hand edit nor a forged report can pass it.
 
 Residual risks accepted, per the charter: a verifier soundness bug
-deterministically accepts wrong law; candidate-controlled tests can be
-weakened; reviewer compromise authorizes validator-passing bad content.
-Mitigations are the strict profile, the trusted preflight, golden
-regeneration QA, and oracles — not additional signatures.
+deterministically accepts wrong law; candidate-controlled gates can be
+weakened (declared outcomes only); reviewer compromise authorizes
+validator-passing bad content. Mitigations are the strict profile, the
+trusted preflight, golden regeneration QA, and oracles — not additional
+signatures.
 
 ## 2. Artifacts, schemas, and signature envelope
 
@@ -63,24 +73,32 @@ regeneration QA, and oracles — not additional signatures.
 **Serialization.** Bodies are canonical JSON (receipt-canonical
 serialization: UTF-16 code-unit key order, ECMAScript number formatting),
 UTF-8 bytes, content-addressed by SHA-256 of the body bytes. Every body
-carries `schema` (its full identifier, e.g. `axiom/notary-receipt/v1` —
-the same full string serves as the signing scope; there are no shortened
-scope names) and `lane` (canonical `owner/repo`). Schemas are
-closed-world: an unknown field, a missing field, or a wrong type is a
-parse refusal.
+carries `schema` and `lane`. Schemas are closed-world: an unknown field,
+missing field, or wrong type is a parse refusal.
 
-**Identifiers and digests.** Two disjoint conventions, never mixed:
+**Value encodings, normatively.** One table, no exceptions:
 
-- `*_git_oid`: a Git object id in the repository's object format (SHA-1
-  in the pilot repositories). Used to *locate* objects and to interact
-  with Git, the Actions control plane, and CAS. Never the
-  collision-resistance-bearing binding.
-- `*_sha256`: SHA-256 over defined content bytes. Blob digests are over
-  raw blob content. A **tree manifest digest** is SHA-256 over the
-  canonical JSON array of `[path, mode, content_sha256]` triples, sorted
-  by path, covering every blob reachable from the tree — the
-  collision-resistant description of a tree state, independent of Git's
-  object format.
+| Kind | JSON encoding |
+|---|---|
+| SHA-256 digest (`*_sha256`, filenames, broker payload) | 64-char lowercase hex string, no prefix; GitHub artifact digests have their `sha256:` prefix stripped before entry |
+| Git object id (`*_git_oid`, incl. `workflow_git_oid`) | 40-char lowercase hex string (SHA-1 object format in the pilot) |
+| Ed25519 signature | `signature_base64`: standard base64 with padding (RFC 4648 §4) |
+| `signer_spki_sha256` | SHA-256 of the DER-encoded SubjectPublicKeyInfo, hex as above |
+| `run_id`, `run_attempt` | JSON strings (decimal), never numbers |
+| `chain_predecessor_kind` | exactly one of `"genesis"`, `"receipt"`, `"transition"` |
+| Paths | UTF-8 strings; sorting is bytewise over the UTF-8 encoding |
+
+**Tree manifests.** A tree manifest binds **every entry** reachable from a
+tree, not only blobs: the canonical JSON array of
+`[path, mode, entry_sha256]` sorted bytewise by path, where `entry_sha256`
+is SHA-256 over blob content for blob modes and over the UTF-8 target
+string for symlinks. Pilot totality rules, applied to **whole trees** at
+verification, genesis, and finalization — not merely to diffs: a gitlink
+(mode 160000) anywhere in the tree is a refusal; a non-UTF-8 path anywhere
+in the tree is a refusal; modes outside {100644, 100755, 120000} are a
+refusal, and 120000 only outside the protected domain. Within these rules
+the manifest is a complete binding of the tree: two trees with equal
+manifests are entry-identical.
 
 **Signature envelope.** Signing uses the existing broker frame verbatim:
 
@@ -88,450 +106,474 @@ parse refusal.
 "axiom-encode/external-signer-sign/v2" || 0x00 || scope || 0x00 || payload
 ```
 
-where `scope` is the artifact's full schema identifier and `payload` is
-the 64-byte lowercase-hex ASCII encoding of the body's SHA-256.
-Signatures are detached files beside the body: `<digest>.json` and
-`<digest>.json.<role>.sig`, where `<role>` is `producer`, `actor`,
-`review`, `genesis`, `transition`, or `notary`. Each `.sig` file is
-canonical JSON: `{schema: "axiom/detached-signature/v1", body_sha256,
-scope, signer_spki_sha256, signature_base64}`. A signature under one
-scope must fail verification under every other scope, legacy
-`apply_ed25519`/`eval_ed25519` operations included (§10 tests the full
-pairwise matrix).
+with `payload` the 64-char lowercase-hex ASCII digest of the body. Scopes
+are bound by a normative role table — the scope is the *signing role's*
+identifier, which for countersignatures deliberately differs from the
+body's schema:
 
-**Typed signing.** For the notary and transition scopes, the trusted
-signing component accepts only the typed fields of §2.5/§6.4,
-reconstructs the canonical body itself, computes its digest, and signs.
-No caller can submit arbitrary bytes to those scopes. Lineage scopes
-(producer, actor, review) are signed at their origins (supervised
-runtime; actor and reviewer tooling) under the same envelope.
+| Role | Scope | Body signed |
+|---|---|---|
+| producer | `axiom/lineage-generation/v1` | generation event |
+| actor | `axiom/lineage-correction/v1` | correction event |
+| review | `axiom/lineage-correction-review/v1` | correction event (same body digest) |
+| genesis | `axiom/notary-genesis/v1` | genesis |
+| transition | `axiom/notary-transition/v1` | transition record |
+| notary | `axiom/notary-receipt/v1` | notary receipt |
+
+Signatures are detached files beside the body (`<digest>.json`,
+`<digest>.json.<role>.sig`), each canonical JSON:
+`{schema: "axiom/detached-signature/v1", body_sha256, scope,
+signer_spki_sha256, signature_base64}`. Every cross-scope verification
+must fail, legacy `apply_ed25519`/`eval_ed25519` included (§10 tests the
+full pairwise matrix).
+
+**Typed signing.** The genesis, transition, and notary scopes are signed
+only by the external typed signer (§5): it accepts typed fields,
+reconstructs the canonical body itself, computes the digest, and signs. No
+caller can submit arbitrary bytes to those scopes, genesis included.
+Lineage scopes are signed at their origins (supervised runtime; actor and
+reviewer tooling).
 
 ### 2.2 Generation event — `axiom/lineage-generation/v1`
 
-Signed by the supervised-runtime producer key (non-authorizing). Fields:
-`schema`, `lane`, `epoch_sha256` (§6), `runtime_identity`, `model`,
-`cli_version`, `cli_sha256`, `prompt_sha256s`, `emitted_at`
-(informational, unverified), and `transitions`: an array sorted by path,
-each:
+Signed by the producer key (non-authorizing). Fields: `schema`, `lane`,
+`epoch_sha256`, `runtime_identity`, `model`, `cli_version`, `cli_sha256`,
+`prompt_sha256s`, `emitted_at` (informational, unverified), and
+`transitions`, sorted bytewise by path:
 
 ```
 {path, before_blob_sha256 | null, before_mode | null,
  after_blob_sha256 | null, after_mode | null,
- patch_sha256, patch_algorithm}
+ patch_note_sha256 | null}
 ```
 
-Modes are restricted to `"100644"` and `"100755"`; the mode is `null`
-exactly when the corresponding blob digest is `null` (absent side). A
-mode-only change is a real transition (same blob digests, differing
-modes). `patch_algorithm` names a versioned canonical recipe
-(`git-patch-v1`: `git diff --no-renames --full-index --binary -U3` with
-`core.autocrlf=false`, no textconv, no external diff, attributes
-ignored); the patch digest is audit metadata — blob digests and modes are
+Modes are `"100644"` or `"100755"`, `null` exactly when the corresponding
+blob digest is `null`. A mode-only change is a real transition (equal blob
+digests, differing modes). `patch_note_sha256` is **opaque audit
+metadata**: a producer-chosen digest of whatever diff rendering the
+runtime archived. It is never verified, carries no algorithm contract, and
+no refusal depends on it — endpoint blob digests and modes are the sole
 ground truth.
 
 ### 2.3 Correction event — `axiom/lineage-correction/v1`
 
-Signed by the actor's key (role `actor`) and countersigned by a protected
-reviewer key distinct from the actor's (role `review`, scope
-`axiom/lineage-correction-review/v1` over the same body digest). Fields:
-`schema`, `lane`, `epoch_sha256`, `actor`, `reason`,
-`predecessor_record_sha256 | null`, and `transitions` as in §2.2. The
-countersignature validates lineage — it never authorizes merge.
-Corrections are first-class and loud: the sanctioned response to a wrong
-encoding remains fix-the-encoder-and-re-encode, and a correction event is
-the recorded exception, never the quiet path.
+Signed by the actor (role `actor`) and countersigned by a protected
+reviewer key distinct from the actor's (role `review`, per the §2.1 role
+table). Fields: `schema`, `lane`, `epoch_sha256`, `actor`, `reason`,
+`predecessor_record_sha256 | null`, `transitions` as §2.2. The
+countersignature validates lineage; it never authorizes merge. Corrections
+are first-class and loud: the sanctioned response to a wrong encoding
+remains fix-the-encoder-and-re-encode, and a correction event is the
+recorded exception, never the quiet path.
 
 ### 2.4 Verification report (Job 1, unsigned) — `axiom/notary-report/v1`
 
-Content-addressed, produced by the secretless verify job. Fields:
+Content-addressed output of the verification workflow. Fields: `schema`,
+`lane`, `epoch_sha256`; `subject_commit_git_oid`,
+`subject_tree_manifest_sha256`; `base_commit_git_oid`,
+`base_tree_manifest_sha256`; `chain_predecessor_sha256`,
+`chain_predecessor_kind`; `profile_sha256`, `path_policy_sha256`;
+`corpus_release` `{name, content_sha256}`; `waiver_set_sha256`;
+`eligible_records` and `unused_eligible_records` (sorted digest arrays);
+`coverage_assignment` (per changed protected path, the ordered record
+digests consumed — the unique assignment of §3.3); `gates`: array sorted
+by `gate_id`, **one entry per gate id** (duplicates are a parse refusal),
+each `{gate_id, outcome, tier}`; `diff_coverage`: `"pass"` or a typed
+refusal object (never `waived`, never `not-run`); `unprotected_changes`
+(sorted paths); `dependency_pins_sha256`; `verifier_commit_git_oid`.
 
-- `schema`, `lane`, `epoch_sha256`
-- `subject_commit_git_oid`, `subject_tree_manifest_sha256`
-- `base_commit_git_oid`, `base_tree_manifest_sha256`
-- `chain_predecessor_sha256` (receipt, transition record, or genesis body
-  digest) and `chain_predecessor_kind`
-- `profile_sha256`, `path_policy_sha256` (digests of the definition files
-  committed at the base)
-- `corpus_release`: `{name, content_sha256}` (the toolchain tuple)
-- `waiver_set_sha256`
-- `eligible_records`: sorted array of record digests (§3.2), and
-  `unused_eligible_records`: sorted subset not consumed by the assignment
-- `gates`: sorted array of `{gate_id, outcome, tier}`, `tier` in
-  `public | restricted | ci-attested`
-- `diff_coverage`: `"pass"` or a typed refusal object (never `waived`,
-  never `not-run`)
-- `unprotected_changes`: sorted array of changed paths outside the
-  protected domain
-- `dependency_pins_sha256`, `verifier_commit_git_oid`
+The report is a *proposal*. Refusal reports are diagnostic artifacts, and
+even a pass report authorizes nothing: every claim-bearing field is
+recomputed by the trusted side (§5) before signing, so a candidate-forged
+report — pass verdict, trimmed unprotected list, invented assignment —
+fails reconciliation rather than getting signed.
 
-A report may record a refusal — refusal reports are diagnostic artifacts.
-Nothing downstream may sign one: the signer enforces acceptance itself
-(§5), never inferring it from a job's success.
+### 2.5 Notary receipt (signed) — `axiom/notary-receipt/v1`
 
-### 2.5 Notary receipt (Job 2, signed) — `axiom/notary-receipt/v1`
-
-The only merge-authorizing artifact, signed under the notary scope by
-`notary_ed25519`. Fields:
-
-- `schema`, `lane`, `epoch_sha256`
-- `report_sha256`
-- `subject_commit_git_oid`, `subject_tree_manifest_sha256`,
-  `base_tree_manifest_sha256`, `chain_predecessor_sha256`,
-  `chain_predecessor_kind` — each independently re-derived by the signing
-  component and required to match the report (a mismatch is a refusal,
-  §5)
-- `job1`: `{workflow_path, workflow_sha, ref, run_id, run_attempt,
-  conclusion, artifact_sha256}` as read from the Actions control plane by
-  the signing component itself
-- `authorization`: `{environment, approval_context}` (§11 wording
-  decision)
-
-There is no `genesis` flag: genesis and transitions are distinct schemas
-(§6), and a receipt claiming their role fails its closed schema.
+The only artifact that, once finalized (§7), authorizes admission. Fields:
+`schema`, `lane`, `epoch_sha256`; `report_sha256`; the §2.4 chain and
+tree fields, each independently recomputed by the trusted side; `gates`
+as declared (deduplicated, profile-complete, outcomes acceptable);
+`job1`: `{workflow_path, workflow_git_oid, ref, run_id, run_attempt,
+conclusion, artifact_sha256}` as read from the Actions control plane;
+`authorization`: `{environment, approval_context}` (§11 wording
+decision). Genesis and transitions are distinct schemas; a receipt cannot
+claim their role.
 
 ### 2.6 Storage
 
 Lineage records live in the lane repository under `.axiom/lineage/`,
-append-only, one body file per record named by its content digest, with
+append-only, one body file per record named by its content digest,
 detached signatures beside it. The lineage directory is outside the
-protected-content coverage domain (its additions need no covering record)
-but inside the preflight's structural checks: schema-valid,
-authenticated, correctly content-addressed, append-only. Deleting or
-mutating an existing lineage record is a refusal. Reports, receipts,
-genesis, and transition records publish per §7 and are never part of the
-subject tree.
+protected-content coverage domain but inside the preflight's structural
+checks: schema-valid, authenticated, correctly content-addressed,
+append-only; deleting or mutating an existing record is a refusal.
+Reports, receipts, genesis, and transition records publish per §7 and are
+never part of the subject tree.
 
 ## 3. The diff-coverage predicate
 
-### 3.1 Protected paths, defined normatively
+### 3.1 Protected paths
 
-The protected-path policy is a committed file at the base
+The policy is a committed file at the base
 (`.axiom/notary/path-policy.json`):
-
-```
-{schema: "axiom/notary-path-policy/v1",
- rules: [{action: "include" | "exclude", prefix: "<path prefix>"}]}
-```
-
-Semantics, exactly: a prefix matches path `p` iff `p == prefix` or `p`
-begins with `prefix + "/"` — component-wise, so `rules` never matches
-`rules-evil/x`. Rules are evaluated in order; the **last** matching rule
-decides; a path matching no rule is **unprotected**. Prefixes and paths
-are UTF-8 strings. Classification uses the policy committed at the base —
-a candidate cannot reclassify paths in its own favor, and a policy change
-is a trust-surface change ordinary candidates cannot carry (§4; it moves
-by transition record, §6.4).
-
-Totality rule for undecodable names: any changed path anywhere in the
-base→subject diff that is not valid UTF-8 is a refusal in the pilot —
-protected or not — because neither the policy nor the report's JSON
-arrays can represent it faithfully.
+`{schema: "axiom/notary-path-policy/v1", rules: [{action:
+"include" | "exclude", prefix}]}`. A prefix matches path `p` iff
+`p == prefix` or `p` starts with `prefix + "/"` (component-wise; `rules`
+never matches `rules-evil/x`). Last matching rule wins; a path matching no
+rule is unprotected. Classification uses the policy committed at the
+base. Tree-wide totality (UTF-8, no gitlinks, admissible modes) is
+enforced by §2.1's manifest rules, so classification is total over every
+manifest the system accepts.
 
 ### 3.2 Eligible lineage set
 
-Eligible records are exactly the records whose body files are present
-under `.axiom/lineage/` in the subject tree and absent at the base —
-introduced by this candidate — and which carry this `lane` and this
-`epoch_sha256`. The sorted digest list is bound into the report. This
-defeats replay: a record merged by an earlier candidate is present at the
-base and ineligible ever after; a cross-lane or cross-epoch record
-refuses on its bindings; a stale record whose before-digests no longer
-match the base refuses in replay (§3.3).
+Records present under `.axiom/lineage/` in the subject tree and absent at
+the base — introduced by this candidate — carrying this `lane` and
+`epoch_sha256`, with valid signatures per the role table. The sorted
+digest list is bound into report and receipt. Replay is dead: a record
+merged by an earlier candidate is present at the base and ineligible ever
+after; cross-lane and cross-epoch records refuse on their bindings; stale
+records refuse in replay (§3.3).
 
-Records are consumed atomically: all of a record's transitions used by
-the covering assignment, or none. A partially matching record is a
-refusal. Unused eligible records are legal (a retried generation) and are
-listed in the report — never invisible.
+### 3.3 The predicate, deterministic and total
 
-### 3.3 The predicate
+Compute the tree-entry diff between the base and subject manifests
+(equivalently `git diff-tree --no-renames`): per-path additions,
+deletions, and modifications, including mode-only modifications. Renames
+do not exist at this level. Over the protected subset:
 
-Compute the tree-entry diff from base tree to subject tree with rename
-detection disabled (`git diff-tree --no-renames` semantics): a set of
-per-path entry changes — additions, deletions, modifications, including
-mode-only modifications. Renames do not exist at this level; a moved file
-is a deletion and an addition, each needing coverage. Then, over the
-protected subset:
-
-1. **Closed-world assignment.** Every changed protected path maps to
-   exactly one non-forking, non-cyclic chain of transitions drawn from
-   eligible records — no missing, no overlapping, no extra transitions
-   against unchanged paths.
+1. **Unique valid assignment.** A valid assignment maps every changed
+   protected path to exactly one non-forking, non-cyclic chain of
+   transitions drawn from eligible records — records consumed atomically
+   (all transitions used, or none), no transition against an unchanged
+   path, endpoints per rule 2. If no valid assignment exists, refuse
+   (uncovered or inconsistent). **If more than one valid assignment
+   exists, refuse as ambiguous** — a candidate avoids this by not
+   shipping redundant covering records. Records unusable in any valid
+   assignment (dead-end retries) are legal, listed as unused, and create
+   no ambiguity.
 2. **Blob-and-mode ground truth.** Each chain's first
    `(before_blob_sha256, before_mode)` equals the path's state at the
-   base (`(null, null)` for an addition); each link's after-state equals
-   the next link's before-state; the last after-state equals the path's
-   state in the subject tree (`(null, null)` for a deletion). A mode-only
-   change requires a covering transition like any other change.
-3. **Admissible entries only.** Protected paths must be regular blobs
-   (mode 100644 or 100755) wherever they exist. A gitlink, symlink, or
-   other mode at a protected path — either side — is a refusal.
-   File-to-directory and directory-to-file replacements decompose into
-   entry deletions and additions and are covered as such.
+   base (`(null, null)` for additions); each link's after-state equals
+   the next link's before-state; the final after-state equals the path's
+   state in the subject (`(null, null)` for deletions). Mode-only changes
+   need a covering transition like any other change.
+3. **Admissible entries.** Protected paths are regular blobs (100644 or
+   100755) wherever they exist — symlinks are inadmissible in the
+   protected domain, and gitlinks are refused tree-wide by §2.1.
+   File/directory replacements decompose into entry deletions and
+   additions and are covered as such.
 4. **Binary verdict.** `diff_coverage` is `"pass"` or a typed refusal.
-   From the enforcement epoch there is no `waived` and no `not-run`; an
-   emergency change without a countersigned correction event is a
-   refusal. This is deliberately stricter than consumer-side declaration
-   completeness, which accepts declared `waived`/`not-run` outcomes as
-   well-formed.
+   From the enforcement epoch there is no `waived` and no `not-run`. This
+   is deliberately stricter than consumer-side declaration completeness.
 
-Advisory shadow runs (compute and publish the verdict without gating) are
-permitted only before a lane's enforcement epoch.
+The entire predicate — manifests, diff, classification, eligibility,
+authentication, assignment uniqueness, unprotected enumeration — is a
+pure function of git data and lineage records. It runs twice: in Job 1
+(producing the report) and independently on the trusted side (§5), which
+is why a forged report cannot survive.
+
+Advisory shadow runs are permitted only before a lane's enforcement
+epoch.
 
 ## 4. Verifier profile P and trusted preflight
 
-The profile is a committed definition at the base, digest-bound into the
-report. It defines the gate set, each gate's acceptable outcomes, and the
-oracle policy. It is not the current apply path, and the differences are
-the point:
+The profile is a committed definition at the base, digest-bound into
+report and receipt. It defines the required gate set, each gate's
+acceptable outcomes, and the oracle policy. Against the current apply
+path: non-mutating (no repairs; repairable-but-unrepaired refuses);
+oracles on (licensed/unavailable oracles per the §11 decision — fail
+closed or visibly reduced-tier, never silent); reviewers means
+deterministic checks plus protected-environment human approval (the
+validator pipeline's LLM reviewers are QA outside the admission path);
+no caller switches (skip flags and caller-disableable guards have no
+notary equivalents).
 
-- **Non-mutating.** No deterministic repairs. The subject is verified as
-  presented or refused; a repairable-but-unrepaired subject refuses.
-- **Oracles on.** The apply overlay's oracle disablement does not exist
-  here. Licensed or unavailable oracles follow the §11 decision — fail
-  closed, or a visibly reduced-tier receipt; never silent.
-- **Reviewers means deterministic checks plus protected-environment human
-  approval.** The validator pipeline's LLM reviewers are QA outside the
-  admission path, beside golden regeneration; under the charter's
-  no-model-calls rule they cannot gate the notary.
-- **No caller switches.** Skip flags and caller-disableable guards have
-  no notary equivalents.
+The trusted preflight (pinned code, before any candidate code executes)
+resolves the canonical repository, the chain predecessor and its recorded
+state, the policy and profile at the base, and the complete tree-entry
+diff. Ordinary candidates changing workflows, action pins, verifier pins,
+trust roots, the path policy, the profile, waiver policy,
+repository-structure rules, or lineage-store integrity refuse; those
+surfaces move only by transition record (§6.4).
 
-The trusted preflight (runs in Job 1, from pinned code, before any
-candidate code executes) resolves: the canonical repository; the chain
-predecessor and its recorded state (§6); the path policy and profile at
-the base; the complete tree-entry diff. It refuses ordinary candidates
-that change workflows, action pins, verifier pins, trust roots, the path
-policy, the profile, waiver policy, repository-structure rules, or the
-lineage store's integrity (§2.6). Those surfaces move only by transition
-record (§6.4).
+## 5. Execution, trust boundary, and the external signer
 
-## 5. Jobs, compute isolation, and capability separation
+**Job 1 — verify (secretless, candidate-executing).** Runs on a fresh
+ephemeral runner (GitHub-hosted or dedicated ephemeral pool) with no
+signing capability, no model credentials, no repository-write credential.
+Runs the preflight and predicate from pinned code, executes the
+candidate's gates, and emits the report artifact. Because candidate code
+executes in this job, **nothing Job 1 emits is trusted**: its report is a
+proposal to be reconciled.
 
-**Job 1 — verify (secretless, isolated).** Runs candidate code under the
-strict profile on a **fresh ephemeral runner** (GitHub-hosted, or a
-dedicated ephemeral pool with per-job teardown) with no signing
-capability, no model credentials, and no repository-write credential.
-Emits the §2.4 report as a content-addressed artifact.
+**Trusted recomputation and signing.** The signer is **external**: the
+notary key never enters any runner. The trusted signing component (the
+supervisor/broker service, extended with typed notary operations)
+validates an independently authenticated caller identity via OIDC claims
+(workflow path, job, run id, attempt, repository, ref) rather than
+trusting runner-resident state, and then, itself or through a dedicated
+trusted job running only pinned code on a fresh runner:
 
-**Job 2 — sign (typed, notary-only, isolated).** Runs on a fresh
-ephemeral runner in a **dedicated `notary-signing` environment** — not
-`production-signing`, which today provisions generation workflows with
-the apply key, a model credential, and a write-capable token, and is
-structurally disqualified from holding the notary key. The environment
-enforces required human reviewers, protected refs, no self-approval, and
-Job-2-only secret access; the signer additionally binds the requesting
-workflow and job identity, so a leaked approval cannot be replayed from
-elsewhere. Job 2 runs no candidate code and holds no model or
-repository-write credential. Its trusted component:
-
-1. Reads the Job-1 run from the Actions control plane: workflow path and
-   sha, ref, run id and attempt, conclusion, artifact digest. Wrong
+1. Reads the Job-1 run from the Actions control plane (workflow path and
+   git oid, ref, run id/attempt, conclusion, artifact digest); wrong
    workflow, wrong ref, non-success conclusion, or artifact mismatch
    refuses.
-2. Independently re-fetches and re-hashes the subject and base trees
-   (recomputing both tree manifests), the report body, and the profile
-   and path-policy files at the base; independently re-derives the chain
-   predecessor and its admissibility (§6). Any mismatch with the
-   report's fields discards the run and forces complete reverification.
-3. **Enforces the acceptance predicate itself**: `diff_coverage` is
-   exactly `"pass"`; every gate the profile requires is present with an
-   outcome the profile accepts; the report's eligible and unused record
-   lists are well-formed against the trees. A refusal report — however
-   successfully its workflow concluded — is never signable. Actions
-   success is context, not acceptance.
-4. Reconstructs the §2.5 receipt body from typed fields and signs its
-   digest under the notary scope. It exposes no arbitrary-byte signing
-   operation.
+2. **Recomputes every claim-bearing invariant from content-addressed
+   inputs**: both tree manifests (with §2.1 totality rules), the diff,
+   protected classification under the base-committed policy, lineage
+   eligibility and signature validity, the unique coverage assignment,
+   the unprotected enumeration, and chain-predecessor admissibility
+   (§6/§7). Any divergence from the report refuses — this, not the
+   report, is what the receipt's recomputed fields mean.
+3. Validates the declared gates: one entry per profile-required gate id,
+   no extras outside the profile, outcomes within the profile's
+   acceptable set, tiers valid. Gate outcomes remain declarations (§1).
+4. Requires `diff_coverage` exactly `"pass"` as recomputed. A refusal
+   report — or a pass report that fails recomputation — is never
+   signable, regardless of its workflow's success.
+5. Reconstructs the §2.5 receipt body from typed fields and signs. It
+   exposes no arbitrary-byte operation for the genesis, transition, or
+   notary scopes.
 
-**Publisher — a third job.** Verification and signing forbid
-repository-write capability, so neither publishes. A separate publisher
-job holds only a token whose write capability is confined to the receipt
-publication ref — enforced by a repository ruleset, since App tokens
-scope to repositories, not refs — and pushes per §7. It holds no signing
-capability.
+**Human authorization** gates the signing step through the dedicated
+`notary-signing` environment (required reviewers, protected refs, no
+self-approval) — an environment that holds no generation credentials and
+no write tokens, unlike today's `production-signing`, which provisions
+generation workflows with the apply key, a model credential, and a
+write-capable token and is structurally disqualified. Environment
+approval releases the *request* to the external signer; it never releases
+key material to a runner.
 
-Trust roots for all jobs — public keys, profile and policy digests,
-workflow and action pins, waiver authorities — are committed at or
-digest-pinned to the protected base. Runtime organization variables are
-not trust anchors anywhere in the notary path; eliminating the existing
-`vars.*` provisioning from the signing path is a §9 precondition.
+**Publisher — separate job.** Holds only a token whose write capability
+is confined to the notary ref by repository ruleset (App tokens scope to
+repositories, not refs); publishes per §7; holds no signing capability.
+
+Trust roots for every step are committed at or digest-pinned to the
+protected base. Runtime organization variables are not trust anchors
+anywhere in the notary path.
 
 ## 6. Admission chain, epoch, genesis, and transitions
 
 ### 6.1 The chain
 
-Every receipt names its chain predecessor: a prior receipt, a transition
-record, or genesis. The receipt's `base_tree_manifest_sha256` must equal
-the predecessor's subject (for receipts and transitions) or recorded
-baseline (for genesis). Verifying from any other base refuses: an
-uncovered edit cannot launder itself by becoming the base of the next
-verification, because the state that skipped it is not the recorded
-chain tip. Commit ids locate; tree manifests bind — so squash and
-merge-queue rewrites are harmless when they preserve the verified tree,
-and void the run when they do not (§7).
+Every receipt and transition names its chain predecessor (`genesis`,
+`receipt`, or `transition`) and the predecessor's recorded state; the new
+artifact's base tree manifest must equal that state. The chain consists
+of **finalized** artifacts only (§7): an unfinalized or superseded signed
+artifact is void and never chain-eligible. An uncovered edit cannot
+launder itself by becoming a later verification's base: the state that
+skipped it was never finalized as tip.
 
 ### 6.2 Genesis — `axiom/notary-genesis/v1`
 
-A distinct artifact signed under its own scope by the administrative
-authority (§6.4's signer). Its body binds: `schema`, `lane`,
+Produced only through the typed signer under administrative authorization
+(§6.4's authority). Its body binds: `schema`, `lane`,
 `genesis_commit_git_oid`, `genesis_tree_manifest_sha256`, and two frozen
-inventories over the protected domain at genesis:
+inventories forming an **exhaustive, disjoint, exactly-once partition of
+the protected paths** at genesis (the typed signer verifies the
+partition property against the manifest before signing):
 
-- `v5_attested`: sorted `[path, content_sha256, record_sha256]` triples —
-  paths whose blobs are vouched by an authenticated v5 record at genesis;
-- `baseline_unattested`: sorted `[path, content_sha256]` pairs — paths
-  with no authenticating record, recorded visibly, including any
-  pre-epoch hand edits. Recorded is not blessed: these bytes carry
-  "unattested baseline" provenance permanently.
+- `v5_attested`: sorted `[path, entry_sha256, record_sha256]` — paths
+  whose blobs are vouched at genesis by a legacy record that passes the
+  **current v5 authentication contract**: schema exactly
+  `axiom-encode/applied-rulespec/v5`, producer signature valid over the
+  canonical unsigned bytes, encoder identity and waiver checks per the
+  pinned v5 verifier, and path/blob agreement with the genesis tree.
+  `record_sha256` is SHA-256 over the record's raw file bytes. Two
+  qualifying records for one path is a genesis refusal (clean up first).
+- `baseline_unattested`: sorted `[path, entry_sha256]` — everything
+  else, visibly, including any pre-epoch hand edits. Recorded is not
+  blessed: permanent "unattested baseline" provenance.
 
-The **epoch identifier is the genesis body's content digest**. The body
-contains no epoch field — it *is* the epoch — so every other artifact's
-`epoch_sha256` refers to it without a self-hash fixed point. A second
-genesis for a lane refuses; genesis covers nothing and admits nothing.
+The epoch identifier is the genesis body's content digest; the body
+carries no epoch field, so there is no self-hash fixed point. A second
+genesis for a lane refuses. Genesis covers nothing and admits nothing.
 
 ### 6.3 Dual-era rule
 
 Post-epoch, a v5 record vouches only for a path whose blob is
-byte-identical to its `v5_attested` pair in the frozen inventory. Any
-post-epoch change to any protected path requires notary-era lineage; new
-v5 records have no post-epoch standing; a path in `baseline_unattested`
-stays unattested until a covered change replaces it.
+byte-identical to its frozen `v5_attested` pair. Any post-epoch change to
+any protected path requires notary-era lineage; new v5 records have no
+post-epoch standing; `baseline_unattested` paths stay unattested until a
+covered change replaces them.
 
 ### 6.4 Transition records — `axiom/notary-transition/v1`
 
-Privileged trust-surface updates (path policy, profile, workflow or
-action pins, trust roots, waiver policy, key rotation) cannot receive
-ordinary receipts — the preflight refuses them from candidates — and
-without a dedicated mechanism the chain would deadlock at the first key
-rotation. A transition record is that mechanism: signed under its own
-scope by the administrative authority through the `notary-signing`
-environment's human approval, its body binds `schema`, `lane`,
-`epoch_sha256`, `chain_predecessor_sha256` and kind, the old and new
-tree manifest digests, the enumerated trust-surface delta (paths and
-before/after digests), and `reason`. A transition covers only
-trust-surface paths — a protected-content change smuggled into a
-transition refuses — and becomes a valid chain predecessor. Ordinary
-admission resumes from its recorded state.
+Trust-surface updates (path policy, profile, workflow or action pins,
+trust roots, waiver policy, key rotation) cannot ride ordinary receipts —
+the preflight refuses them — so the transition record exists to advance
+the chain across them. Closed schema: `schema`, `lane`, `epoch_sha256`,
+`chain_predecessor_sha256`, `chain_predecessor_kind`,
+`base_tree_manifest_sha256`, `subject_tree_manifest_sha256`,
+`subject_commit_git_oid`, `delta`: sorted array of
+`{path, before_entry_sha256 | null, before_mode | null,
+after_entry_sha256 | null, after_mode | null}` restricted to
+trust-surface paths, and `reason`.
 
-## 7. Publication and the canonical head
+Rules: the recomputed base→subject diff must equal `delta` exactly — a
+protected-content or unrelated change smuggled into a transition refuses;
+signatures and authorization are evaluated **under the predecessor
+state's trust roots** (the old keys and policy authorize the handover, so
+a successor-controlled key cannot self-authorize its own installation);
+transitions are produced only through the typed signer under the
+`notary-signing` environment's human approval; and transitions are void
+until finalized (§7), exactly like receipts. For merge gating, a pending
+transition plays the pending receipt's role for its own subject (§7): it
+is the merge-authorizing artifact for exactly its enumerated delta.
+Ordinary admission resumes from the finalized transition's recorded
+state.
 
-The publisher pushes the receipt (with its report) to the lane's
-canonical attestation ref, compare-and-swap. A signed receipt is **void
-until published**: the chain reads only the canonical ref, so a
-CAS-losing or stale signed receipt never becomes chain-eligible, and
-re-verification from the true tip is the only path forward. At
-publication the publisher verifies the protected ref's tip tree manifest
-equals the receipt's subject tree manifest; a merge that produced a
-different tree (a conflicted queue merge, a stale squash) fails the
-check, voids the receipt, and reruns. The receipt distinguishes
-subject/base tree manifests, subject commit oid, and
-`verifier_commit_git_oid`; the attestation ref supplies location without
-entering the signed body.
+## 7. Two-phase publication and the canonical chain
+
+The canonical chain lives at a dedicated ref
+(`refs/notary/chain`) in the lane repository: content-addressed artifact
+files plus a single `HEAD.json` naming the current finalized tip
+(`{schema: "axiom/notary-head/v1", tip_sha256, tip_kind}`). All updates
+are compare-and-swap; the publisher's ruleset confines writes to this
+ref.
+
+Admission is two-phase, which resolves the ordering circularity between
+"receipt must exist to authorize the merge" and "the merged state must
+equal what was verified":
+
+1. **Pending.** Job 1 verifies the candidate head (subject tree `T1`);
+   the signer signs the receipt (or transition). The publisher writes it
+   to the notary ref as *pending* and sets the required status check on
+   the candidate. A pending artifact authorizes exactly one thing: the
+   merge of a head whose tree manifest is `T1`. It is not the chain tip.
+2. **Finalize.** After the merge, the finalizer (publisher job,
+   triggered on the protected ref) recomputes the merged tip's tree
+   manifest. If it equals `T1`, it advances `HEAD.json` to the artifact
+   by CAS — the artifact is now finalized and chain-eligible. If it
+   differs (conflicted queue merge, stale squash), finalization refuses,
+   the artifact is permanently void (a voided digest is recorded and can
+   never finalize), and verification reruns from the true finalized tip.
+   A pending artifact whose candidate never merges simply never
+   finalizes; the chain never advanced, so nothing strands.
+
+Squash and merge-queue rewrites are therefore harmless exactly when they
+preserve the verified tree, and void the attempt exactly when they do
+not. Commits locate; trees bind.
 
 ## 8. Key ceremony
 
-Before Job 2 exists: generate `notary_ed25519` with documented
-custodians, fingerprint published in committed code (consumer
-verification specs pin the SPKI), storage and rotation procedure
-(rotation is a §6.4 transition), revocation and recovery procedure. The
-producer, actor, reviewer, and administrative keys get the same treatment
-under their own scopes. §10's pairwise cross-scope matrix is part of
-ceremony acceptance.
+Before the typed signer holds any notary-scope key: generate
+`notary_ed25519` with documented custodians, fingerprint published in
+committed code (consumer verification specs pin the SPKI), storage and
+rotation procedure (rotation is a §6.4 transition evaluated under
+predecessor roots), revocation and recovery. The producer, actor,
+reviewer, and administrative keys get the same treatment under their own
+scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
 
 ## 9. Preconditions (nothing admission-capable merges before these)
 
 1. This document approved — threat model, schemas and envelope,
-   predicate, profile, chain/epoch/genesis/transition rules, and the §10
-   suite — by the charter's gate: an independent cross-family review of
-   the concrete design plus **Max's named sign-off**, with every §11
+   predicate, profile, chain/epoch/genesis/transition rules, two-phase
+   publication, and the §10 suite — by the charter's gate: independent
+   cross-family review plus **Max's named sign-off**, with every §11
    decision closed.
 2. The reviewers-semantics resolution in §4 accepted.
-3. The dedicated `notary-signing` environment created and enforcing:
-   required reviewers, protected refs, no self-approval, Job-2-only
-   secret access — with generation workflows migrated off any
-   environment that will hold the notary key (#1194 re-scoped).
-4. **Compute isolation**: Jobs 1 and 2 on fresh ephemeral runners (or a
-   dedicated ephemeral pool), and signer-side workflow/job identity
-   binding, so no candidate-code persistence can reach the notary
-   operation.
-5. The authenticated Job-1 handoff, typed Job-2 reconstruction, and
-   Job-2 acceptance enforcement of §5 implemented in the trusted signing
-   component (no raw-byte notary scope).
-6. The publisher split of §5 implemented, with a repository ruleset
-   confining the publisher token's writes to the receipt ref.
-7. Signed-leg billing and abuse policy operational (#1193).
-8. Notary key ceremony completed per §8, transition mechanism included.
-9. Org-variable trust anchors eliminated from the signing path in favor
-   of committed or digest-pinned roots.
-10. rulespec-nz consumer-side pins landed: the notary SPKI and epoch in
-    the lane's committed verification spec; the notary check required and
-    non-bypassable in branch protection; genesis activated atomically
-    with enforcement.
-11. The generated-file guard hardcoded in the protected shared workflow
-    (its caller-controlled boolean retired) — merge-time defense in depth
-    during dual-era operation.
-12. Retirement of lane signed-apply legs (#1195) is a cutover exit
-    criterion, not a pilot precondition; dual-era operation is expected.
+3. The dedicated `notary-signing` environment created (required
+   reviewers, protected refs, no self-approval), holding no generation
+   credentials and no write tokens; generation workflows migrated off
+   any environment involved in notary authorization (#1194 re-scoped).
+4. **External signer with identity binding**: the notary key held only
+   by the external typed signer; OIDC-claim validation of the requesting
+   workflow/job/run; no raw notary key material on any runner.
+5. **Compute isolation**: fresh ephemeral runners for the verification
+   and trusted jobs.
+6. Trusted recomputation implemented (§5): every claim-bearing invariant
+   re-derived from content-addressed inputs before signing; typed
+   operations for genesis, transition, and receipt scopes; no raw-byte
+   signing for those scopes.
+7. The publisher split implemented, with a repository ruleset confining
+   the publisher token's writes to the notary ref, and the two-phase
+   pending/finalize protocol with CAS and permanent voiding.
+8. Signed-leg billing and abuse policy operational (#1193).
+9. Key ceremony completed per §8.
+10. Org-variable trust anchors eliminated from the signing path.
+11. rulespec-nz consumer-side pins landed: notary SPKI and epoch in the
+    lane's committed verification spec; the pending-artifact check
+    required and non-bypassable in branch protection; genesis activated
+    atomically with enforcement.
+12. The generated-file guard hardcoded in the protected shared workflow
+    (caller boolean retired) — merge-time defense in depth during
+    dual-era operation.
+13. Retirement of lane signed-apply legs (#1195) is a cutover exit
+    criterion, not a pilot precondition.
 
 ## 10. Negative-test floor
 
 Grouped by refusal site; each case is a distinct test before the pilot
 gates anything.
 
-**Schemas and signatures:** unknown field; missing field; wrong type;
-wrong content-address filename; malformed detached-signature file;
-signature by the wrong key for a scope; invalid producer signature;
-invalid actor signature; missing or invalid reviewer countersignature;
-countersignature by the actor; countersignature by an untrusted key;
-invalid genesis signature; invalid transition signature; invalid receipt
-signature; raw-byte signing attempt against the notary or transition
-scope; the full pairwise cross-scope matrix (all six scopes plus legacy
-`apply_ed25519`/`eval_ed25519`) — every cross-scope verification fails.
+**Schemas, encodings, signatures:** unknown/missing field; wrong type;
+number where string required (`run_id`); digest with wrong case, length,
+or retained `sha256:` prefix; wrong content-address filename; malformed
+detached-signature file; wrong scope per the role table (review
+signature under the correction scope and conversely); signature by the
+wrong key for a scope; invalid producer/actor/review/genesis/transition/
+receipt signature; countersignature by the actor; raw-byte signing
+attempt against genesis, transition, or notary scopes; full pairwise
+cross-scope matrix including legacy operations.
+
+**Manifests and totality:** gitlink anywhere in the tree; non-UTF-8 path
+anywhere in the tree (changed or unchanged); inadmissible mode; symlink
+inside the protected domain; manifest sort-order violation; two trees
+differing only by a gitlink refused rather than treated as
+manifest-equal.
 
 **Lineage store:** mutated existing record; deleted existing record;
-record with wrong lane; record with wrong epoch; mode field present on a
-null side; mode value outside the admissible set.
+wrong lane; wrong epoch; mode present on a null side; mode outside the
+admissible set.
 
 **Eligibility and coverage:** record present at the base (replay);
 uncovered protected change; uncovered mode-only change; overlapping
-chains; extra transition against an unchanged path; forked chain; cyclic
-chain; discontinuous chain; wrong starting blob or mode; wrong terminal
-blob or mode; malformed null-sides; partial record consumption; wrong
-patch digest or unknown `patch_algorithm`; gitlink at a protected path;
-symlink at a protected path; disallowed mode at a protected path;
-non-UTF-8 changed path anywhere in the diff; `waived`/`not-run` coverage
-outcome post-epoch; path-policy precedence cases (`rules/private/x`
-under include-then-exclude; `rules-evil/x` against prefix `rules`;
-unmatched path defaulting to unprotected).
+chains; transition against an unchanged path; forked, cyclic, or
+discontinuous chain; wrong starting or terminal blob/mode; malformed
+null-sides; partial record consumption; **ambiguous assignment (two
+redundant covering records; split-vs-direct chains)**; dead-end retry
+record accepted as unused without ambiguity (positive control);
+`waived`/`not-run` post-epoch; path-policy precedence cases
+(include-then-exclude; `rules-evil/x`; unmatched default-unprotected).
 
-**Preflight and profile:** ordinary candidate touching workflows, pins,
-trust roots, path policy, profile, waiver policy, repository-structure
-rules, or lineage-store integrity; repairable-but-unrepaired subject;
-failed gate; gate outcome outside the profile's acceptable set; missing
-required gate; oracle-disabled attempt; skip-flag attempt; profile or
-path policy not committed at the base.
+**Report reconciliation (trusted side):** forged pass report over a
+refusing diff; trimmed, padded, duplicated, or misclassified
+`unprotected_changes`; wrong or non-unique `coverage_assignment`;
+`unused_eligible_records` not a subset or overlapping consumed records;
+duplicate gate ids; missing required gate; extra-profile gate; outcome
+outside the acceptable set; invalid tier; report/receipt copied-field
+mismatch; tree-manifest mismatch on recomputation; profile or
+path-policy digest mismatch at the base.
 
-**Chain, epoch, genesis, transitions:** base not the chain tip; wrong
-chain predecessor digest; second genesis; genesis carrying coverage;
-receipt claiming a predecessor role its schema forbids; empty-delta
-first receipt leaving baseline provenance unchanged (positive control);
-post-epoch change vouched only by v5; v5 record whose blob differs from
-its frozen pair; malformed or path-mismatched grandfather inventory
-entry; transition carrying a protected-content change; transition with
-an unenumerated trust-surface delta; ordinary receipt attempting a
-trust-surface change; chain advance over an unpublished (void) receipt.
+**Preflight and profile:** ordinary candidate touching any §4 trust
+surface; repairable-but-unrepaired subject; oracle-disabled attempt;
+skip-flag attempt; profile or policy not committed at the base.
 
-**Job 2 and publication:** report-body digest mismatch; subject or base
-tree-manifest mismatch on re-hash; profile or path-policy re-hash
-mismatch; copied-field mismatch between report and receipt; Job-1 run
-from the wrong workflow, sha, or ref; non-success Job-1 conclusion;
-artifact digest mismatch; replayed Job-1 artifact under a new run;
-**signing a refusal report**; signing with a missing required gate;
-invalid authorization reference; wrong requesting workflow/job identity
-at the signer; CAS loss voids the receipt; stale signed receipt never
-chain-eligible; published-tip tree differing from receipt tree
-(squash/queue rewrite) voids and reruns; receipt-child commit with any
-extra delta; publisher push outside the receipt ref rejected by ruleset.
+**Chain, epoch, genesis, transitions:** base not the finalized tip;
+wrong chain predecessor digest or kind enum; second genesis; genesis
+with a non-exhaustive, overlapping, or duplicate-path partition; genesis
+entry citing a record failing the v5 contract (wrong schema family,
+invalid signature, path/blob disagreement); nonexistent
+`record_sha256`; duplicate qualifying v5 records for one path; genesis
+carrying coverage; empty-delta first receipt leaving baseline provenance
+unchanged (positive control); post-epoch change vouched only by v5; v5
+record whose blob differs from its frozen pair; transition whose
+recomputed diff differs from its enumerated delta (smuggled content);
+transition evaluated under successor roots (self-authorizing rotation);
+unfinalized transition used as predecessor; ordinary receipt attempting
+a trust-surface change.
+
+**Signer, publication, finalization:** OIDC identity mismatch (wrong
+workflow, job, run, repository, or ref); Job-1 run non-success; artifact
+digest mismatch; replayed artifact under a new run; signing a refusal
+report; stale base at recomputation; pending artifact treated as chain
+tip; finalization with merged-tip manifest differing from the verified
+subject (voids, permanently); voided digest re-finalization attempt; CAS
+loss on `HEAD.json`; publisher push outside the notary ref rejected by
+ruleset; `HEAD.json` naming an unpublished or unsigned artifact.
 
 ## 11. Decisions for sign-off
 
@@ -542,8 +584,7 @@ extra delta; publisher push outside the receipt ref rejected by ruleset.
 - Approval wording: `authorization.approval_context` binds durable
   digest-bound reviewer evidence, or records "the protected signing
   policy authorized this receipt" (honest for plain environment
-  approval, which approves a deployment, not a displayed digest; the
-  stronger form needs an explicit approval artifact).
+  approval; the stronger form needs an explicit approval artifact).
 - Custody model for the producer, actor, reviewer, and administrative
   keys (the notary key is fixed by §5/§8); reviewer custody is the open
   question deferred from the rulespec-nz custody ruling.
@@ -552,6 +593,7 @@ extra delta; publisher push outside the receipt ref rejected by ruleset.
 
 Witnessed lineage chains (dual RFC 3161 — sequenced behind the notary as
 chartered); historical backfill; rename modeling (tree-entry
-decomposition makes it unnecessary); fleet-wide shared-workflow
-conversion; v5 retirement; the other eight lanes; ProgramSpec admission
-unless §11 decides otherwise.
+decomposition makes it unnecessary); gitlink/submodule support (refused
+tree-wide in the pilot); fleet-wide shared-workflow conversion; v5
+retirement; the other eight lanes; ProgramSpec admission unless §11
+decides otherwise.
