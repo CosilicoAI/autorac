@@ -40834,7 +40834,7 @@ def _try_repair_generated_unquoted_source_scalars_for_apply(
     *,
     output_root: Path,
 ) -> list[str]:
-    """Quote generated source: scalars that contain YAML-significant colons."""
+    """Quote generated source-evidence scalars with YAML-significant colons."""
     try:
         _relative_generated_output_path(result, output_root=output_root)
     except RuntimeError:
@@ -40939,46 +40939,75 @@ def _remove_empty_deferred_source_values(*, rules_file: Path) -> list[str]:
 
 
 def _quote_unquoted_source_scalars(*, rules_file: Path) -> list[str]:
+    """Quote only source text at PyYAML's unexpected-mapping mark."""
+
     if not rules_file.exists():
         return []
     try:
         original = rules_file.read_text()
     except OSError:
         return []
-    try:
-        yaml.safe_load(original)
-        return []
-    except (RecursionError, yaml.YAMLError, ValueError):
-        pass
-
-    repaired_lines: list[str] = []
+    candidate_lines = original.splitlines(keepends=True)
     repaired: list[str] = []
-    for line_number, raw_line in enumerate(
-        original.splitlines(keepends=True),
-        start=1,
-    ):
+    repaired_line_indexes: set[int] = set()
+    while True:
+        candidate = "".join(candidate_lines)
+        try:
+            yaml.safe_load(candidate)
+            break
+        except yaml.scanner.ScannerError as exc:
+            mark = getattr(exc, "problem_mark", None)
+            line_index = getattr(mark, "line", None)
+            column_index = getattr(mark, "column", None)
+            if (
+                exc.problem != "mapping values are not allowed here"
+                or type(line_index) is not int
+                or type(column_index) is not int
+                or not 0 <= line_index < len(candidate_lines)
+                or line_index in repaired_line_indexes
+            ):
+                return []
+        except (RecursionError, yaml.YAMLError, ValueError):
+            return []
+
+        raw_line = candidate_lines[line_index]
         newline = "\n" if raw_line.endswith("\n") else ""
         line = raw_line[:-1] if newline else raw_line
         match = re.match(
-            r"^(\s*source:\s+)([^'\"|>{\[].*:\s+.*?)(\s*)$",
+            r"^(?P<prefix>\s*(?P<key>source|excerpt):\s+)(?P<body>.*)$",
             line,
         )
         if match is None:
-            repaired_lines.append(raw_line)
-            continue
-        prefix, value, trailing = match.groups()
+            return []
+        prefix = match.group("prefix")
+        key = match.group("key")
+        body = match.group("body")
+        comment_match = re.search(r"[ \t]+#.*$", body)
+        if comment_match is not None:
+            value = body[: comment_match.start()]
+            suffix = body[comment_match.start() :]
+        else:
+            value = body.rstrip(" \t\r")
+            suffix = body[len(value) :]
+        if (
+            not value
+            or value[0] in {"'", '"', "|", ">", "{", "[", "!", "&", "*"}
+            or not match.start("body")
+            <= column_index
+            < match.start("body") + len(value)
+            or line[column_index] != ":"
+            or column_index + 1 >= len(line)
+            or line[column_index + 1] not in " \t"
+        ):
+            return []
         quoted = value.replace("'", "''")
-        repaired_lines.append(f"{prefix}'{quoted}'{trailing}{newline}")
-        repaired.append(f"source:{line_number}")
+        candidate_lines[line_index] = f"{prefix}'{quoted}'{suffix}{newline}"
+        repaired_line_indexes.add(line_index)
+        repaired.append(f"{key}:{line_index + 1}")
 
     if not repaired:
         return []
-    repaired_text = "".join(repaired_lines)
-    try:
-        yaml.safe_load(repaired_text)
-    except (yaml.YAMLError, ValueError):
-        return []
-    rules_file.write_text(repaired_text)
+    rules_file.write_text(candidate)
     return repaired
 
 
