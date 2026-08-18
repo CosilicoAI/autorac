@@ -1,9 +1,9 @@
-# Notary admission: design v13
+# Notary admission: design v14
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 13 folds design-review rounds 1–12
-(eighty-six blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 14 folds design-review rounds 1–13
+(eighty-nine blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -429,7 +429,11 @@ do not exist at this level. Over the protected subset:
    the next link's before-state; the final after-state equals the path's
    state in the subject (`(null, null)` for deletions). Mode-only changes
    need a covering transition like any other change.
-3. **Admissible entries.** Protected paths are regular blobs (100644 or
+3. **Admissible entries and the mode wall.** A protected path whose
+   mode differs between base and subject refuses outright — the charter
+   requirement-4 wall, encoded in the predicate itself, not only at
+   preflight; no lineage record covers a mode change in the pilot.
+   Protected paths are regular blobs (100644 or
    100755) wherever they exist — symlinks are inadmissible in the
    protected domain, and gitlinks are refused tree-wide by §2.1.
    File/directory replacements decompose into entry deletions and
@@ -483,18 +487,23 @@ each on a fresh ephemeral runner, none reusable:
 | `verify` (Job 1) | yes | `contents: read` only, no secrets, no environment | none |
 | `recompute` | no (pinned code) | `contents: read`, `actions: read` | none |
 | `approve` | no (pinned code) | `id-token: write` only — the control-plane lookups (`actions: read`) belong to the **signer's own credential**, not to any job | presents identity to the signer |
-| `publish` | no (pinned code) | the two §9.7b credentials, released only by its protected environment | none |
+| `publish` | no (pinned code) | the two §9.7b credentials, vended by the publisher-token broker against its OIDC | `id-token: write`; presents identity to the publisher-token broker |
 
 `publish` (and the finalizer below) run in a dedicated protected
 **`notary-publishing` environment** with its administrator bypass
 disallowed and audited — but environment rules bind reviewers and refs,
 not workflow identity, so the credentials themselves are not
 environment secrets at all: `publish` presents its own OIDC
-(`id-token: write`) and the **external broker vends the two publisher
-tokens** against the exact identity (repository, `workflow_ref` and
-`workflow_sha`, ref, run, attempt, environment) precisely as the signer
-authenticates `approve` — a revoked, rerun, or foreign workflow gets
-nothing. Minting authority never enters any job; the current
+(`id-token: write`) and a **separately deployed publisher-token
+broker** — holding no notary key, no signing operation, and nothing but
+the two App credentials — vends the two publisher tokens against the
+exact identity (repository, `workflow_ref` and `workflow_sha`, ref,
+run, attempt, environment), the same authentication discipline the
+signing broker applies to `approve`. The two brokers are distinct
+deployments by requirement: the signing broker is forbidden
+repository-write capability, and the publisher-token broker is
+forbidden signing capability. A revoked, rerun, or foreign workflow
+gets nothing. Minting authority never enters any job; the current
 publisher's in-job App minting is what this replaces. Finalization
 necessarily runs after the merge, in a separate named workflow
 (`notary-finalize.yml`) triggered by the protected content ref, under
@@ -582,8 +591,9 @@ repository-write credentials, and its caller allowlist is exact — the
 and `workflow_sha`, job, run, attempt, ref, and the `notary-signing`
 environment, with `id-token: write` allocated for the OIDC proof and
 `actions: read` for control-plane lookups and nothing further — the
-allowlisted caller is the `approve` job, the only job that presents
-OIDC. Job 1's
+allowlisted caller of the **signing** operation is the `approve` job;
+`publish` presents OIDC only to the separate publisher-token broker,
+never to the signer. Job 1's
 token is audited to `contents: read` with no other permissions, no
 secrets, and no environment. The trusted job's `GITHUB_TOKEN` is
 read-only and it references no secrets beyond the OIDC exchange. The
@@ -684,10 +694,10 @@ state's trust roots** (the old keys and policy authorize the handover, so
 a successor-controlled key cannot self-authorize its own installation);
 transitions (and genesis) follow the same digest-bound authorization
 pattern as receipts: the typed signer emits the **administrative
-candidate** (the exact genesis or transition body, unsigned), a
-protected reviewer holding a predecessor-state reviewer key signs its
-digest under `axiom/notary-admin-approval/v1` (a scope added to the
-§2.1 role table's semantics; for genesis, the reviewer keys are those
+candidate** (the exact genesis or transition body, unsigned), the
+holder of the predecessor-state **administrative key** — per the §2.1
+role table, never the correction-reviewer key — signs its digest under
+`axiom/notary-admin-approval/v1` (for genesis, the administrative key
 named by the bootstrap ceremony), and the signer signs only after
 verifying that approval signature over the exact digest — environment
 approval alone binds no bytes here either, and a swapped-body
@@ -870,9 +880,12 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
    disallowed and audited (a bypassed approval carries no reviewer
    signature and refuses regardless, but the platform gate is
    configured off, not merely compensated for).
-2c. The `notary-publishing` environment created: the publisher and
-   finalizer credentials are environment secrets released only to the
-   pinned workflows on protected refs.
+2c. The `notary-publishing` environment created with its administrator
+   bypass disallowed and audited, and the **publisher-token broker
+   deployed** as a distinct service (no notary key, no signing
+   operation, only the two App credentials) vending against exact OIDC
+   identity — environment secrets are not the mechanism, because
+   environments gate reviewers and refs, not workflow identity.
 3. The dedicated `notary-signing` environment created (required
    reviewers, protected refs, no self-approval), holding no generation
    credentials and no write tokens; generation workflows migrated off
@@ -1086,9 +1099,11 @@ refused; activation consumer-spec differing from the genesis-bound
 template beyond the epoch substitution refused (same-file smuggling);
 replay over the whole tree instead of the protected projection would
 reject a valid candidate (positive control for the projection rule);
-publisher or finalizer credentials requested outside the
-notary-publishing environment, or from a wrong workflow or ref, refused
-by secret release; intermediate replay projection with a path both
+publisher or finalizer credentials requested from the publisher-token
+broker by a wrong workflow, ref, run, or environment vended nothing;
+publisher-token broker asked to sign, or signing broker asked for a
+write token, refused (capability separation of the two brokers);
+publishing-environment administrator bypass tested off; intermediate replay projection with a path both
 terminal and directory-prefix refused as no-valid-execution;
 noncanonical JCS bytes or wrong semantic-array order refused; genesis
 inventory containing a path outside the protected domain refused;
