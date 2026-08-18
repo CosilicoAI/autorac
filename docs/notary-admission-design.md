@@ -1,9 +1,9 @@
-# Notary admission: design v5
+# Notary admission: design v6
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 5 folds design-review rounds 1–4
-(thirty-four blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 6 folds design-review rounds 1–5
+(forty-two blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -85,14 +85,14 @@ field, missing field, wrong type, or duplicate key is a parse refusal.
 | Kind | JSON encoding |
 |---|---|
 | SHA-256 digest (`*_sha256`, filenames, broker payload) | 64-char lowercase hex string, no prefix; GitHub artifact digests have their `sha256:` prefix stripped before entry |
-| Git object id (`*_git_oid`, incl. `workflow_git_oid`) | 40-char lowercase hex string (SHA-1 object format in the pilot) |
+| Git object id (`*_git_oid`, incl. `workflow_sha_git_oid`) | 40-char lowercase hex string (SHA-1 object format in the pilot) |
 | Ed25519 signature | `signature_base64`: standard base64 with padding (RFC 4648 §4) |
 | `signer_spki_sha256` | SHA-256 of the DER-encoded SubjectPublicKeyInfo, hex as above |
 | `run_id`, `run_attempt` | JSON strings (decimal), never numbers |
 | `chain_predecessor_kind` | exactly one of `"genesis"`, `"receipt"`, `"transition"` |
 | `tier` | exactly one of `"public"`, `"restricted"`, `"ci-attested"` |
 | `ref` | the fully qualified Git ref string (`refs/...`) |
-| `workflow_git_oid` | the commit oid of the workflow-defining commit for the run, as reported by the Actions control plane (`head_sha` of the run) |
+| `workflow_sha_git_oid` | the Actions `workflow_sha` of the run — the commit the workflow file was loaded from, equal to OIDC `job_workflow_sha` because the pilot prohibits reusable workflows for Job 1 (caller and called are identical); never the run's `head_sha` |
 | Entry modes | six-character octal strings: `"100644"`, `"100755"`, `"120000"` |
 | Paths | UTF-8 strings; sorting is bytewise over the UTF-8 encoding |
 
@@ -192,7 +192,25 @@ digests consumed for its chain, in chain order (the unique assignment of
 by `gate_id`, **one entry per gate id** (duplicates are a parse refusal),
 each `{gate_id, outcome, tier}`; `diff_coverage`: `"pass"` or a typed
 refusal object (never `waived`, never `not-run`); `unprotected_changes`
-(sorted paths); `dependency_pins_sha256`; `verifier_commit_git_oid`.
+(sorted paths); `ineligible_records`: sorted array of `{record_sha256, reason}` with a
+closed reason enum (`"unprotected-path-transition"`,
+`"duplicate-transition-paths"`, `"wrong-lane"`, `"wrong-epoch"`,
+`"invalid-signature"`); `dependency_pins_sha256`: the digest of a
+canonical dependency inventory — a body of schema
+`axiom/notary-dependency-inventory/v1` binding the sorted action pins
+(`[ref_spec, git_oid]`), container image digests, the SHA-256 of the
+exact Python lockfile bytes, and the verifier identity — not the digest
+of some file the prose happened to suggest; `verifier`:
+`{repo, git_oid}`, the repository-qualified identity of the verifier
+code that ran. The `diff_coverage` refusal object is itself closed:
+`{code, path | null, detail}` with a closed code enum
+(`"uncovered-path"`, `"ambiguous-assignment"`, `"inconsistent-chain"`,
+`"record-cycle"`, `"inadmissible-entry"`, `"structural"`).
+
+The profile is likewise a closed committed schema at a normative path:
+`.axiom/notary/profile.json`, schema `axiom/notary-profile/v1`, binding
+`required_gates` (sorted `{gate_id, acceptable_outcomes, tier}`) and the
+oracle policy — so `profile_sha256` has exactly one preimage.
 
 The report is a *proposal*. Refusal reports are diagnostic artifacts, and
 even a pass report authorizes nothing: every claim-bearing field is
@@ -209,15 +227,21 @@ closed schema, enumerated: `schema`, `lane`, `epoch_sha256`;
 `chain_predecessor_sha256`, `chain_predecessor_kind`, `profile_sha256`,
 `path_policy_sha256`, `corpus_release`, `waiver_set_sha256`,
 `eligible_records`, `coverage_assignment`, `unprotected_changes`,
-`dependency_pins_sha256`, `verifier_commit_git_oid` — each independently
+`dependency_pins_sha256`, `verifier` — each independently
 recomputed by the trusted side, never copied on trust; `gates` as
 declared (deduplicated, profile-complete, outcomes acceptable); `job1`:
-`{workflow_path, workflow_git_oid, ref, run_id, run_attempt, job_name,
-check_run_id, conclusion, artifact_name, artifact_id, artifact_sha256}` —
-the artifact bound to the specific producing job and attempt via the
-workflow-jobs and per-attempt artifact endpoints, since artifacts
-associate with runs (not jobs) and reruns share a `run_id`; a digest that
-cannot be tied to the claimed attempt's named artifact refuses;
+`{workflow_path, workflow_sha_git_oid, ref, run_id, run_attempt,
+conclusion, artifact_name, artifact_id, artifact_sha256}` — **run-scoped
+provenance, stated as such**: GitHub artifacts carry no producing-job or
+attempt identity, so the receipt claims only that the named artifact
+with this digest existed in this run, which the pilot requires to
+contain exactly one artifact of that name. This narrowing is safe
+because no claim-bearing field depends on the artifact — the trusted
+side recomputes them all — and gate declarations are attributed to "the
+proposing run" as a whole: a different job in the candidate's own run
+forging them is the same trust domain and the same accepted residual as
+the candidate weakening its gates. An OIDC-bound upload attestation
+tightening this to job-level is future work, out of milestone one;
 `authorization`: `{environment, approval_context}` (§11 wording
 decision). Genesis and transitions are distinct schemas; a receipt cannot
 claim their role.
@@ -284,6 +308,22 @@ do not exist at this level. Over the protected subset:
    avoids this by not shipping redundant covering records. Records
    unusable in any valid assignment (dead-end retries) are legal, listed
    as unused, and create no ambiguity.
+
+   Two whole-record rules complete the assignment's consistency. First,
+   **a repository-state execution must exist**: build the consumed-record
+   dependency graph (an edge from record X to record Y wherever, in some
+   path's chain, a transition of Y consumes the state a transition of X
+   produced); the graph must be acyclic, and applying whole records in a
+   topological order from the base must find every transition's
+   before-state current when its record applies and terminate at the
+   subject — cross-path cycles between records (X and Y each feeding the
+   other on different paths) refuse as `record-cycle`, because no
+   repository state ever contained what the subject cherry-picks.
+   Second, **correction predecessors have predicate meaning**: a consumed
+   correction event's `predecessor_record_sha256` must be null or equal
+   the digest of the immediately preceding consumed record in the same
+   path's chain; anything else refuses. It is lineage, verified — not
+   opaque metadata implementations may ignore.
 2. **Blob-and-mode ground truth.** Each chain's first
    `(before_blob_sha256, before_mode)` equals the path's state at the
    base (`(null, null)` for additions); each link's after-state equals
@@ -379,10 +419,19 @@ releases key material to a runner.
 
 Effective-permission constraints, not deployment assumptions (§9): the
 external signer's own deployment holds no model, generation, or
-repository-write credentials; the trusted recomputation job's automatic
-`GITHUB_TOKEN` is read-only (`contents: read`, nothing else) and it
-references no other secrets; and the publisher's identity is denied the
-notary signing operation by the signer's caller allowlist.
+repository-write credentials, and its caller allowlist is exact — the
+trusted recomputation job alone, identified by repository, workflow path
+and `workflow_sha`, job, run, attempt, ref, and the `notary-signing`
+environment, with `id-token: write` allocated for the OIDC proof and
+`actions: read` for control-plane lookups and nothing further. Job 1's
+token is audited to `contents: read` with no other permissions, no
+secrets, and no environment. The trusted job's `GITHUB_TOKEN` is
+read-only and it references no secrets beyond the OIDC exchange. The
+publisher's identity is denied the notary signing operation by that same
+allowlist — and because `checks:write` is itself merge-authorizing, the
+publisher is pinned candidate-free code that validates the signed
+receipt and the current finalized predecessor before ever emitting the
+required check.
 
 **Publisher — separate job.** Holds only a token whose write capability
 is confined to the notary ref by repository ruleset (App tokens scope to
@@ -473,7 +522,28 @@ only the publisher App may push; no force pushes; no deletion; linear
 history. Its contents: content-addressed artifact files (reports,
 receipts, transitions, genesis, and void markers) plus `HEAD.json`
 (`{schema: "axiom/notary-head/v1", tip_sha256, tip_kind}`) as a
-convenience pointer.
+convenience pointer. Two marker schemas complete the branch's contents:
+`axiom/notary-finalization/v1` (`{schema, lane, epoch_sha256,
+target_sha256, target_kind, merged_tip_manifest_sha256, sequence}`) and
+`axiom/notary-void/v1` (`{schema, lane, epoch_sha256, target_sha256,
+target_kind, reason}`), each content-addressed like every other
+artifact. Marker authentication is structural: the branch accepts
+commits from the publisher App alone, linear history, no force pushes —
+so markers are exactly what the pinned publisher committed, in order.
+
+The chain state machine, exhaustively: an artifact is *pending* when its
+body is on the branch with no marker naming it; *finalized* when exactly
+one finalization marker names it; *void* when a void marker names it.
+Finalized and void are terminal and mutually exclusive — the first
+marker in branch history wins, and any later marker naming the same
+target is invalid, rejected by reconstruction. A finalization whose
+target was never pending on the branch, whose `target_kind` mismatches,
+or whose base does not equal the then-current finalized tip is invalid.
+Genesis bootstraps the branch: the branch's first two commits must be
+exactly the genesis body and its finalization marker, published by the
+same CAS branch creation — a competing genesis loses the atomic
+first-push and any later genesis body or marker is invalid by the
+second-genesis rule.
 
 **Verification does not trust the pointer.** The chain's truth is
 reconstructible by rule from the branch alone: the valid chain is the
@@ -545,7 +615,12 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
    any environment involved in notary authorization (#1194 re-scoped).
 4. **External signer with identity binding**: the notary key held only
    by the external typed signer; OIDC-claim validation of the requesting
-   workflow/job/run; no raw notary key material on any runner.
+   repository, workflow path and `workflow_sha`, job, run, attempt, ref,
+   and `notary-signing` environment, against an exact allowlist;
+   reusable workflows prohibited for Job 1; `id-token: write` and
+   `actions: read` allocated explicitly and nothing further; no raw
+   notary key material on any runner; Job 1's token audited to
+   `contents: read` with no secrets and no environment.
 5. **Compute isolation**: fresh ephemeral runners for the verification
    and trusted jobs.
 6. Trusted recomputation implemented (§5): every claim-bearing invariant
@@ -559,11 +634,15 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
    up-to-date-with-base merges (or verified merge-group heads) on the
    protected content branch; and the two-phase pending/finalize protocol
    with supersession voiding and permanent void markers.
-7a. Effective-permission constraints audited: the external signer
-   deployment holds no model, generation, or repository-write
-   credentials; the trusted recomputation job runs with a read-only
-   `GITHUB_TOKEN` and no other secrets; the publisher identity is denied
-   the notary signing operation.
+7a. Effective-permission constraints audited per §5: signer deployment
+   credentials, exact caller allowlist, Job-1 and trusted-job token
+   audits, and publisher signing denial.
+7b. Publisher write confinement is effective, not nominal: a layered
+   ruleset denies the publisher App pushes to every ref outside the
+   chain branch (accounting for ruleset layering and bypass lists), the
+   publisher runs pinned candidate-free code, and it validates the
+   signed receipt and current finalized predecessor before emitting the
+   App-bound required check.
 8. Signed-leg billing and abuse policy operational (#1193).
 9. Key ceremony completed per §8.
 10. Org-variable trust anchors eliminated from the signing path.
@@ -583,8 +662,10 @@ Grouped by refusal site; each case is a distinct test before the pilot
 gates anything.
 
 **Schemas, encodings, signatures:** unknown/missing field; wrong type;
-number where string required (`run_id`); digest with wrong case, length,
-or retained `sha256:` prefix; wrong content-address filename; malformed
+duplicate JSON member; invalid Unicode in a body; number where string
+required (`run_id`); digest with wrong case, length, or retained
+`sha256:` prefix; unsorted semantic array (gates, records, assignment,
+inventories); wrong content-address filename; malformed
 detached-signature file; wrong scope per the role table (review
 signature under the correction scope and conversely); signature by the
 wrong key for a scope; invalid producer/actor/review/genesis/transition/
@@ -612,7 +693,12 @@ null-sides; partial record consumption; duplicate transition paths
 within a record; record containing an unprotected-path transition
 (ineligible, with reason); **ambiguous assignment (two redundant
 covering records; split-vs-direct chains)**; dead-end retry record
-accepted as unused without ambiguity (positive control); nested
+accepted as unused without ambiguity (positive control); the cross-path
+record-order cycle (two records feeding each other on different paths)
+refusing as record-cycle; correction predecessor naming a nonexistent
+record; correction predecessor mismatching the preceding consumed
+record; `unused_eligible_records` incomplete (a consumed record listed,
+or an unused one omitted); nested
 protected change reported only as its directory by a non-recursive diff
 (must refuse or be impossible under the normative diff);
 `waived`/`not-run` post-epoch; path-policy precedence cases
@@ -665,8 +751,13 @@ chain rollback or void-marker erasure visible to reconstruction;
 `HEAD.json` diverging from chain reconstruction; publisher push outside
 the chain branch rejected; `HEAD.json` naming an unpublished or unsigned
 artifact; recomputation divergence in `eligible_records`,
-`corpus_release`, `waiver_set_sha256`, `dependency_pins_sha256`, or
-`verifier_commit_git_oid`.
+`corpus_release`, `waiver_set_sha256`, `dependency_pins_sha256`, or the
+`verifier` identity; malformed finalization or void marker;
+finalization without a pending target; void-after-finalize rejected
+(first marker wins); conflicting markers for one target; finalization
+whose base is not the then-current tip; competing genesis publication
+losing the atomic branch creation; wrong `workflow_sha` (head_sha
+substituted); signer-environment or attempt binding mismatch.
 
 ## 11. Decisions for sign-off
 
@@ -681,6 +772,12 @@ artifact; recomputation divergence in `eligible_records`,
 - Custody model for the producer, actor, reviewer, and administrative
   keys (the notary key is fixed by §5/§8); reviewer custody is the open
   question deferred from the rulespec-nz custody ruling.
+- Newly protected paths: when a transition expands the path policy, the
+  newly covered paths' current entries are inventoried in the transition
+  body and carry "transition-initialized" provenance (administrative,
+  visible, distinct from v5-attested and unattested-baseline) — the
+  recommended semantics; alternative: require such paths to enter empty
+  and be populated by covered changes.
 
 ## 12. Out of scope for milestone one
 
