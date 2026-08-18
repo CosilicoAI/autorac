@@ -1,9 +1,9 @@
-# Notary admission: design v10
+# Notary admission: design v11
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 10 folds design-review rounds 1–9
-(sixty-eight blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 11 folds design-review rounds 1–10
+(seventy-five blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -136,6 +136,7 @@ body's schema:
 | review | `axiom/lineage-correction-review/v1` | correction event (same body digest) |
 | genesis | `axiom/notary-genesis/v1` | genesis |
 | transition | `axiom/notary-transition/v1` | transition record |
+| approver | `axiom/notary-approval/v1` | receipt candidate (its body digest) |
 | notary | `axiom/notary-receipt/v1` | notary receipt |
 
 Signatures are detached files beside the body (`<digest>.json`,
@@ -231,10 +232,11 @@ tier comes from the digest-bound profile, so a report cannot strengthen a
 classification the profile did not grant; `diff_coverage`: exactly `"pass"` — the pass
 variant carries no refusal shapes, and `waived`/`not-run` exist in
 neither variant; `unprotected_changes`
-(sorted paths); `ineligible_records`: sorted array of `{record_sha256, reason}` with a
-closed reason enum (`"unprotected-path-transition"`,
-`"duplicate-transition-paths"`, `"wrong-lane"`, `"wrong-epoch"`,
-`"invalid-signature"`); `dependency_pins_sha256`: the digest of a
+(sorted paths); `ineligible_records`: sorted array of `{record_sha256, reasons}` —
+`reasons` is the sorted array of every applicable code from the closed
+enum (`"unprotected-path-transition"`, `"duplicate-transition-paths"`,
+`"wrong-lane"`, `"wrong-epoch"`, `"invalid-signature"`), the same shape
+in pass and refusal variants; `dependency_pins_sha256`: the digest of a
 canonical dependency inventory, a body of schema
 `axiom/notary-dependency-inventory/v1` with the closed shape
 `{schema, lane, actions: [[ref_spec, git_oid], …] sorted by ref_spec
@@ -298,9 +300,17 @@ proposing run" as a whole: a different job in the candidate's own run
 forging them is the same trust domain and the same accepted residual as
 the candidate weakening its gates. An OIDC-bound upload attestation
 tightening this to job-level is future work, out of milestone one;
-`authorization`: `{environment, approval_context}` (§11 wording
-decision). Genesis and transitions are distinct schemas; a receipt cannot
-claim their role.
+`authorization`: `{environment, approve_check_run_id,
+approval_signature_sha256}` — the `approve` job's own OIDC
+`check_run_id`, and the digest of the detached
+`axiom/notary-approval/v1` signature file (published beside the receipt
+on the chain branch). The receipt is assembled by the signer as
+**candidate plus authorization**: the recomputation stage produces the
+candidate (`axiom/notary-receipt-candidate/v1` — exactly the recomputed
+and `job1` fields, no authorization, so nothing circular); the reviewer
+approval signs the candidate digest; the final receipt binds
+`candidate_sha256` and the authorization block. Genesis and transitions
+are distinct schemas; a receipt cannot claim their role.
 
 ### 2.6 Storage
 
@@ -370,9 +380,15 @@ do not exist at this level. Over the protected subset:
    dependency graph (an edge from record X to record Y wherever, in some
    path's chain, a transition of Y consumes the state a transition of X
    produced); the graph must be acyclic, and applying whole records in a
-   topological order from the base must find every transition's
-   before-state current when its record applies and terminate at the
-   subject — cross-path cycles between records (X and Y each feeding the
+   topological order must replay **the protected-state projection**:
+   starting from the base's protected entries, every transition's
+   before-state must be current when its record applies, and the
+   replayed projection must terminate at the subject's protected
+   entries. Unprotected entries — including the candidate's own new
+   lineage files, which every ordinary candidate necessarily adds — are
+   outside the replay and accounted separately (`unprotected_changes`
+   and the §2.6/§3.2 lineage checks); a replay defined over the whole
+   tree would falsely reject every nonempty candidate — cross-path cycles between records (X and Y each feeding the
    other on different paths) refuse as `record-cycle`, because no
    repository state ever contained what the subject cherry-picks.
    Second, **correction predecessors have predicate meaning**: a consumed
@@ -438,7 +454,17 @@ each on a fresh ephemeral runner, none reusable:
 | `verify` (Job 1) | yes | `contents: read` only, no secrets, no environment | none |
 | `recompute` | no (pinned code) | `contents: read`, `actions: read` | none |
 | `approve` | no (pinned code) | none beyond `id-token: write` | presents identity to the signer |
-| `publish` | no (pinned code) | the two §9.7b credentials | none |
+| `publish` | no (pinned code) | the two §9.7b credentials, released only by its protected environment | none |
+
+`publish` (and the finalizer below) run in a dedicated protected
+**`notary-publishing` environment**: the merge-authorizing credentials
+are environment secrets released only to jobs on the pinned workflows
+and protected refs — "provisioned, never minted" is enforced by the
+platform's secret-release gate, exactly the mechanism the current
+signed-apply publisher already uses, not by convention. Finalization
+necessarily runs after the merge, in a separate named workflow
+(`notary-finalize.yml`) triggered by the protected content ref, under
+the same environment and credential binding.
 
 Job conclusions are read through the jobs-for-run endpoint (by job name
 and attempt), never self-asserted; the `approve` job's identity is
@@ -518,10 +544,12 @@ approval-signature reference.)
 Effective-permission constraints, not deployment assumptions (§9): the
 external signer's own deployment holds no model, generation, or
 repository-write credentials, and its caller allowlist is exact — the
-trusted recomputation job alone, identified by repository, workflow path
+`approve` job alone, identified by repository, workflow path
 and `workflow_sha`, job, run, attempt, ref, and the `notary-signing`
 environment, with `id-token: write` allocated for the OIDC proof and
-`actions: read` for control-plane lookups and nothing further. Job 1's
+`actions: read` for control-plane lookups and nothing further — the
+allowlisted caller is the `approve` job, the only job that presents
+OIDC. Job 1's
 token is audited to `contents: read` with no other permissions, no
 secrets, and no environment. The trusted job's `GITHUB_TOKEN` is
 read-only and it references no secrets beyond the OIDC exchange. The
@@ -682,12 +710,21 @@ produces an activation that cannot finalize and a bootstrap that
 voids. A genesis attempt observing a moved tip or an absent lock
 refuses.
 
-Genesis also **binds its prospective policies**: the body carries
-`bootstrap_policies` — the digests of the exact path-policy,
-transition-path-policy, and profile bodies the lane will adopt — and
-the genesis partition of protected paths is computed under that bound
-path policy, so the policy defining genesis provenance is fixed at
-signing and cannot be selected afterward. The lane's epoch pin cannot
+Genesis also **binds its prospective policies and the activation
+bytes**: the body carries `bootstrap_policies` — the digests of the
+exact path-policy, transition-path-policy, and profile bodies the lane
+will adopt — and `activation_spec_template_sha256`, the digest of the
+prospective consumer-spec file with the epoch value replaced by the
+fixed placeholder token
+`"0000000000000000000000000000000000000000000000000000000000000000"`
+(the epoch cannot be bound literally: it is the genesis digest itself).
+Activation's spec file must equal that template with the placeholder
+substituted by the actual epoch — byte-exact, mechanically checkable —
+so no other field of the consumer-spec file (a notary SPKI, an anchor
+pin) can ride the activation delta. The genesis partition of protected
+paths is computed under the bound path policy, so the policy defining
+genesis provenance is fixed at signing and cannot be selected
+afterward. The lane's epoch pin cannot
 live inside the genesis tree (that would be `epoch → tree → body →
 epoch`); it lands immediately after, in the **bootstrap activation
 transition** — the chain's second artifact, predecessor genesis, whose
@@ -779,6 +816,17 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
    cross-family review plus **Max's named sign-off**, with every §11
    decision closed.
 2. The reviewers-semantics resolution in §4 accepted.
+2a. The bootstrap authority named and audited: the single administrative
+   actor holding the lane-lock bypass, its custody, its one permitted
+   action (merging the activation commit), and its removal at
+   activation finalization — a security-critical, single-use authority.
+2b. The `notary-signing` environment's administrator-bypass setting
+   disallowed and audited (a bypassed approval carries no reviewer
+   signature and refuses regardless, but the platform gate is
+   configured off, not merely compensated for).
+2c. The `notary-publishing` environment created: the publisher and
+   finalizer credentials are environment secrets released only to the
+   pinned workflows on protected refs.
 3. The dedicated `notary-signing` environment created (required
    reviewers, protected refs, no self-approval), holding no generation
    credentials and no write tokens; generation workflows migrated off
@@ -984,7 +1032,20 @@ commits refused; premature lock removal or an unauthorized bootstrap
 bypass merge producing an activation that cannot finalize (voids);
 environment-admin approval bypass carrying no reviewer signature
 refused; reviewer approval signature over the wrong digest refused;
-`"gates"`-stage refusal carrying its assignment (positive control).
+`"gates"`-stage refusal carrying its assignment (positive control);
+approval signature invalid, by the wrong key, or under the wrong scope
+refused; approval signature over a different candidate digest refused;
+receipt whose candidate_sha256 mismatches the recomputed candidate
+refused; activation consumer-spec differing from the genesis-bound
+template beyond the epoch substitution refused (same-file smuggling);
+replay over the whole tree instead of the protected projection would
+reject a valid candidate (positive control for the projection rule);
+publisher or finalizer credentials requested outside the
+notary-publishing environment refused by secret release; well-typed but
+invalid path-policy action or profile oracle_policy refused; Actions
+artifact_id mismatch refused; multi-fault ineligible record carrying
+one deterministic sorted reasons array in the pass variant (positive
+control).
 
 ## 11. Decisions for sign-off
 
