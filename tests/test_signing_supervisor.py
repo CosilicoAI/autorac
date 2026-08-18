@@ -2525,7 +2525,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert '> "$RUNNER_TEMP/source-bundle-citations.txt"' in command
     assert 'source_lane="$(printf \'source-%02d\' "$source_index")"' in command
     assert '"$source_citation" "" true "$source_lane" "" "" false' in command
-    assert '"$CITATION" "" false target-preflight \\' in command
+    assert '"$CITATION" "$REVIEW_FINDING" false target-preflight \\' in command
     assert '"$REPLACE_RULESPEC_PATH" "" false' in command
     assert "source bundles require legacy replacements to merge first" in command
     assert "source-bundle replacements cannot include dependent migrations" in command
@@ -2545,7 +2545,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     )
     assert 'commit -m "$message"' in command
     source_loop = "while IFS= read -r source_citation; do"
-    assert command.rindex(source_loop) < command.index('"$CITATION" "$REVIEW_FINDING"')
+    assert command.rindex(source_loop) < command.rindex('"$CITATION" "$REVIEW_FINDING"')
     assert "Compose signed source bundle for ${CITATION}" in command
     assert (
         "queue-authorized re-encodes cannot add source inputs until queue "
@@ -4629,7 +4629,10 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     preflight_args = encode_args[0]
     assert preflight_args[-1] == primary
     assert "--apply-target-only" not in preflight_args
-    assert "--review-findings" not in preflight_args
+    review_index = preflight_args.index("--review-findings")
+    assert Path(preflight_args[review_index + 1]).read_text(encoding="utf-8") == (
+        "Preserve the composed target semantics.\n"
+    )
     replacement_index = preflight_args.index("--replace-rulespec-path")
     assert preflight_args[replacement_index + 1] == replacement_path
     assert "--replace-legacy-rulespec-path" not in preflight_args
