@@ -1,9 +1,9 @@
-# Notary admission: design v29
+# Notary admission: design v30
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 29 folds design-review rounds 1–28
-(one hundred thirty-five blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 30 folds design-review rounds 1–29
+(one hundred thirty-six blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -153,7 +153,7 @@ digest** — and a signature sidecar is named `<digest>.json.<role>.sig`
 with `<role>` one of the store's lineage scopes (`producer`, `actor`,
 `review`; chain artifacts live on the chain branch, never in the
 store, and carry their signatures under §7's chain-bundle grammar —
-the same filename pattern with the chain scopes as tokens). Each
+the same filename pattern with the chain **role names** as tokens). Each
 sidecar is canonical JSON:
 `{schema: "axiom/detached-signature/v1", body_sha256, scope,
 signer_spki_sha256, signature_base64}`. Every cross-scope verification
@@ -1032,18 +1032,27 @@ receipts, transitions, genesis, and void markers) plus `HEAD.json`
 (`{schema: "axiom/notary-head/v1", tip_sha256, tip_kind}`) as a
 convenience pointer. **Chain files follow the §2.1 grammar** — bodies
 `<digest>.json` with the stem the SHA-256 of the raw bytes, detached
-signatures `<digest>.json.<scope>.sig` with the scope name as token —
-and every signed artifact publishes as a **closed bundle in one
-commit**: genesis = body + its `genesis`-scope sidecar (the typed
-signer's) + its `admin-approver` sidecar; transition = body +
-`transition` sidecar + `admin-approver` sidecar; receipt = report
-body + candidate body + the `approver` sidecar over the candidate +
-receipt body + the `notary` sidecar over the receipt. Reports,
-candidates, markers, and `HEAD.json` are exactly the unsigned files —
-reports and candidates are bound by digest from signed bodies, and
-marker authentication is structural (below); a sidecar naming a
-marker, an unknown scope token, or any other file pattern invalidates
-the branch to reconstruction. Exactly one sidecar per (body, scope):
+signatures `<digest>.json.<role>.sig` with the **§2.1 role name as
+the token** (role names are `/`-free; scope strings are not) — and
+every signed artifact publishes as a **closed bundle in one commit**:
+genesis = body + its `genesis`-role sidecar (the typed signer's) +
+its `admin-approver` sidecar + **the four preimage bodies its
+`bootstrap_policies` digests name** (path policy, transition-path
+policy, profile, key registry — the §7 preimage rule below);
+transition = body + `transition` sidecar + `admin-approver` sidecar +
+**the new body of every trust file its delta changes**; receipt =
+report body + candidate body + the `approver` sidecar over the
+candidate + receipt body + the `notary` sidecar over the receipt.
+The unsigned files are closed by **digest-reachability, not by
+pattern**: every unsigned body on the branch must be digest-named by
+a signed body — the report by its candidate's `report_sha256`, the
+candidate by its receipt's `candidate_sha256`, preimages by
+`bootstrap_policies` or a transition delta's after-digests — while
+markers (structurally authenticated, below) and `HEAD.json` are the
+two named exceptions; an unsigned file reachable from no signed
+artifact, a sidecar naming a marker, an unknown role token, or any
+other file pattern invalidates the branch to reconstruction. Exactly
+one sidecar per (body, role):
 duplicates cannot coexist in a tree, and a later commit that adds,
 rewrites, or deletes any file of an already published bundle is
 mutation — append-only discipline identical to the lineage store's,
@@ -1068,7 +1077,8 @@ target is invalid, rejected by reconstruction. A finalization whose
 target was never pending on the branch, whose `target_kind` mismatches,
 or whose base does not equal the then-current finalized tip is invalid.
 Genesis bootstraps the branch: the branch's first two commits must be
-exactly the genesis body and its finalization marker, published by the
+exactly the complete genesis bundle and its finalization marker,
+published by the
 same CAS branch creation — a competing genesis loses the atomic
 first-push and any later genesis body or marker is invalid by the
 second-genesis rule. **Bootstrap is explicitly acyclic, policy-bound, and freeze-audited.**
@@ -1468,6 +1478,9 @@ refused; reviewer approval signature over the wrong digest refused;
 `"gates"`-stage refusal carrying its assignment (positive control);
 approval signature invalid, by the wrong key, or under the wrong scope
 refused; approval signature over a different candidate digest refused;
+a published, valid approval sidecar whose raw-file SHA-256 differs
+from `authorization.approval_signature_sha256` refused
+(wrapper/reference reconciliation);
 receipt whose candidate_sha256 mismatches the recomputed candidate
 refused; activation consumer-spec differing from the genesis-bound
 template beyond the epoch substitution refused (same-file smuggling);
@@ -1549,12 +1562,18 @@ either legacy root equal
 to any registry entry refused (each pairing a distinct test,
 corpus-release and producer included); finalized receipt whose
 referenced report is unpublished invalid to reconstruction; a bundle
-missing its notary, admin-approver, or approver sidecar never pending
-and invalid to reconstruction (a distinct case per artifact kind); a
+missing its typed-signer sidecar (`genesis`, `transition`, or
+`notary` per artifact kind) or its `admin-approver` or `approver`
+sidecar never pending
+and invalid to reconstruction (a distinct case per artifact kind and
+missing file); a genesis bundle missing any bootstrap preimage body,
+and a transition bundle missing a changed trust file's new body, each
+never pending (distinct cases); a
 later commit rewriting or deleting any published bundle file
 invalidating the branch at that commit (append-only discipline); a
-partial-bundle commit refused by the publisher; an unknown scope
-token, a sidecar naming a marker, or an unclassifiable chain file
+partial-bundle commit refused by the publisher; an unknown role
+token, a sidecar naming a marker, or an unsigned branch file
+digest-reachable from no signed artifact
 invalidating the branch to reconstruction;
 absent-profile preflight refusal carrying a truthful null digest
 (positive control);
