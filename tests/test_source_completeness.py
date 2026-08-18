@@ -4063,6 +4063,16 @@ def test_legal_section_citation_does_not_invent_arithmetic_topology():
     assert topology is None
 
 
+def test_section_symbol_decimal_citation_does_not_create_numeric_policy_value():
+    cleaned = authoritative_numeric_recall_text(
+        "The remaining household members are governed by § 273.11(c), and "
+        "earned income is reduced by 20 percent."
+    )
+
+    assert "273.11" not in cleaned
+    assert "20 percent" in cleaned
+
+
 def test_legal_section_citation_does_not_hide_real_arithmetic_topology():
     with_citation = completeness_module._explicit_source_arithmetic_topology(
         authoritative_numeric_recall_text(

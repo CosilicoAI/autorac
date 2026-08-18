@@ -2034,9 +2034,9 @@ _BUCHSTABE_REFERENCE = re.compile(
     flags=re.IGNORECASE,
 )
 _GERMAN_LEGAL_CITATION = re.compile(
-    r"§{1,2}\s*\d+[a-z]?"
-    r"(?:\s*,\s*\d+[a-z]?)*"
-    r"(?:\s*(?:und|bis|[-–—])\s*\d+[a-z]?)*",
+    r"§{1,2}\s*\d+(?:\.\d+)*[a-z]?"
+    r"(?:\s*,\s*\d+(?:\.\d+)*[a-z]?)*"
+    r"(?:\s*(?:und|bis|[-–—])\s*\d+(?:\.\d+)*[a-z]?)*",
     flags=re.IGNORECASE,
 )
 _EXPLICIT_LEGAL_SECTION_REFERENCE = re.compile(
