@@ -1,9 +1,9 @@
-# Notary admission: design v23
+# Notary admission: design v24
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 23 folds design-review rounds 1–22
-(one hundred twenty-six blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 24 folds design-review rounds 1–23
+(one hundred twenty-seven blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -395,9 +395,11 @@ outcomes acceptable) — plus `report_sha256` (the reconciled proposal)
 and `job1`: `{workflow_ref, workflow_sha_git_oid, ref, run_id,
 run_attempt, check_run_id, conclusion, artifact_name, artifact_id,
 artifact_sha256}` — `conclusion` must be the literal `"success"`;
-`artifact_name` and `authorization.environment` are non-empty JSON
-strings validated against the pinned workflow's declared artifact name
-and the `notary-signing` environment name. `workflow_ref` is the OIDC
+`artifact_name` is a non-empty JSON string validated against the
+pinned workflow's declared artifact name. (`authorization.environment`
+— a wrapper field, not a candidate field — is likewise a non-empty
+string validated against the `notary-signing` environment name where
+§2.5 defines the wrapper.) `workflow_ref` is the OIDC
 `workflow_ref` claim
 string verbatim (its `@`-suffix must equal `ref` or the candidate
 refuses), and `job1.check_run_id` is **`verify`'s** check-run id from
@@ -940,10 +942,11 @@ and can always manipulate qualified custom refs of the repository it
 holds, so single-ref confinement inside the lane repository is not
 implementable — whereas the publisher App's contents-write installation
 covers only the notary repository, and in the lane repository it holds
-a lane credential whose App installation holds `checks: write`,
-`statuses: write`, and `contents: read` — GitHub's source-bound
-required check needs the statuses permission at the installation even
-when runs are created via the Checks API — with runtime tokens
+a lane credential whose App installation holds `checks: write` and
+`contents: read` — sufficient for source-bound required checks, which
+branch protection binds by the creating App's id; no
+Commit-Status-path permission is taken, because an unused
+merge-authorizing permission is attack surface — with runtime tokens
 downscoped per operation. The lane repository's refs are
 physically outside the publisher's write capability. The chain branch's
 ruleset in the notary repository: only the publisher App may push; no
@@ -1163,8 +1166,9 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
    credentials** (two Apps, or two repository- and
    permission-downscoped installation tokens): a chain credential with
    contents-write on the notary repository alone, and a lane credential
-   with an installation holding `checks: write`, `statuses: write`,
-   and `contents: read` on the lane repository alone, runtime tokens
+   with an installation holding `checks: write` and `contents: read`
+   on the lane repository alone (no Commit-Status permission — branch
+   protection binds the required check by App id), runtime tokens
    downscoped per operation.
    The publisher job holds no App-minting authority — tokens are
    provisioned to it, never minted by it. The publisher runs pinned
@@ -1388,9 +1392,9 @@ registry key bytes failing base64, DER, Ed25519, or fingerprint
 validation refused; protected 100755 entry refused at base, subject,
 and inside a transition (domain-total wall); delete-then-recreate-
 executable across two finalized receipts refused by the same rule
-(positive control); approver/corpus-release collision refused per the
-enumerated pairs while notary/corpus-release is permitted (positive
-control); finalization requested by rotated not-yet-finalized workflow
+(positive control); approver/corpus-release and notary/corpus-release collisions refused
+per the enumerated pairs, while corpus-release/legacy_apply_root — the
+one permitted service pair — is accepted (positive control); finalization requested by rotated not-yet-finalized workflow
 code validated and executed by the broker, not the workflow (positive
 control); broker refusing finalization when the pending artifact,
 predecessor, or merged tree fails validation; clean-room chain
@@ -1412,7 +1416,8 @@ transition-path policy covering .axiom/notary accepted and covering
 .axiom/lineage refused (the opposite obligations); corpus-release root
 absent from the registry refused; invalid corpus-release signature
 refused; raw_key_id/SPKI pair inconsistent refused; legacy root equal
-to notary, admin-approver, or review refused; finalized receipt whose
+to notary, admin-approver, review, or approver refused (each a
+distinct test); finalized receipt whose
 referenced report is unpublished invalid to reconstruction;
 absent-profile preflight refusal carrying a truthful null digest
 (positive control);
