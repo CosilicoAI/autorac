@@ -1,9 +1,9 @@
-# Notary admission: design v4
+# Notary admission: design v5
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 4 folds design-review rounds 1–3
-(twenty-five blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 5 folds design-review rounds 1–4
+(thirty-four blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -70,11 +70,15 @@ signatures.
 
 ### 2.1 Conventions shared by every artifact
 
-**Serialization.** Bodies are canonical JSON (receipt-canonical
-serialization: UTF-16 code-unit key order, ECMAScript number formatting),
-UTF-8 bytes, content-addressed by SHA-256 of the body bytes. Every body
-carries `schema` and `lane`. Schemas are closed-world: an unknown field,
-missing field, or wrong type is a parse refusal.
+**Serialization.** Bodies are canonical JSON per **RFC 8785 (JCS)** —
+the complete named contract for property ordering, string escaping, and
+number serialization — over I-JSON-restricted input: no invalid Unicode,
+no duplicate keys; every digest, id, and mode in these schemas is a JSON
+string, so numeric-precision edge cases cannot arise. Bodies are UTF-8
+bytes, content-addressed by SHA-256. Every body carries `schema` and
+`lane` (`lane` is the canonical `owner/repo` name, compared
+case-sensitively byte-for-byte). Schemas are closed-world: an unknown
+field, missing field, wrong type, or duplicate key is a parse refusal.
 
 **Value encodings, normatively.** One table, no exceptions:
 
@@ -86,19 +90,25 @@ missing field, or wrong type is a parse refusal.
 | `signer_spki_sha256` | SHA-256 of the DER-encoded SubjectPublicKeyInfo, hex as above |
 | `run_id`, `run_attempt` | JSON strings (decimal), never numbers |
 | `chain_predecessor_kind` | exactly one of `"genesis"`, `"receipt"`, `"transition"` |
+| `tier` | exactly one of `"public"`, `"restricted"`, `"ci-attested"` |
+| `ref` | the fully qualified Git ref string (`refs/...`) |
+| `workflow_git_oid` | the commit oid of the workflow-defining commit for the run, as reported by the Actions control plane (`head_sha` of the run) |
+| Entry modes | six-character octal strings: `"100644"`, `"100755"`, `"120000"` |
 | Paths | UTF-8 strings; sorting is bytewise over the UTF-8 encoding |
 
-**Tree manifests.** A tree manifest binds **every entry** reachable from a
-tree, not only blobs: the canonical JSON array of
-`[path, mode, entry_sha256]` sorted bytewise by path, where `entry_sha256`
-is SHA-256 over blob content for blob modes and over the UTF-8 target
-string for symlinks. Pilot totality rules, applied to **whole trees** at
-verification, genesis, and finalization — not merely to diffs: a gitlink
-(mode 160000) anywhere in the tree is a refusal; a non-UTF-8 path anywhere
-in the tree is a refusal; modes outside {100644, 100755, 120000} are a
-refusal, and 120000 only outside the protected domain. Within these rules
-the manifest is a complete binding of the tree: two trees with equal
-manifests are entry-identical.
+**Tree manifests.** A tree manifest is the recursively flattened list of
+**terminal entries** (blobs and symlinks; directories appear only through
+their contents' paths): the canonical JSON array of
+`[path, mode, entry_sha256]` triples sorted bytewise by path, where
+`entry_sha256` is SHA-256 over the entry's raw blob bytes — for symlinks,
+the raw target bytes of the symlink blob, whatever they are. Pilot
+totality rules, applied to **whole trees** at verification, genesis, and
+finalization — not merely to diffs: a gitlink (mode 160000) anywhere in
+the tree is a refusal; a non-UTF-8 path anywhere in the tree is a
+refusal; terminal modes outside {"100644", "100755", "120000"} are a
+refusal, and "120000" only outside the protected domain. Within these
+rules the manifest function is total and exact: two trees with equal
+manifests are terminal-entry-identical.
 
 **Signature envelope.** Signing uses the existing broker frame verbatim:
 
@@ -175,8 +185,10 @@ Content-addressed output of the verification workflow. Fields: `schema`,
 `chain_predecessor_kind`; `profile_sha256`, `path_policy_sha256`;
 `corpus_release` `{name, content_sha256}`; `waiver_set_sha256`;
 `eligible_records` and `unused_eligible_records` (sorted digest arrays);
-`coverage_assignment` (per changed protected path, the ordered record
-digests consumed — the unique assignment of §3.3); `gates`: array sorted
+`coverage_assignment`: array sorted bytewise by path of
+`{path, record_sha256s}` — for each changed protected path, the record
+digests consumed for its chain, in chain order (the unique assignment of
+§3.3); `gates`: array sorted
 by `gate_id`, **one entry per gate id** (duplicates are a parse refusal),
 each `{gate_id, outcome, tier}`; `diff_coverage`: `"pass"` or a typed
 refusal object (never `waived`, never `not-run`); `unprotected_changes`
@@ -190,12 +202,22 @@ fails reconciliation rather than getting signed.
 
 ### 2.5 Notary receipt (signed) — `axiom/notary-receipt/v1`
 
-The only artifact that, once finalized (§7), authorizes admission. Fields:
-`schema`, `lane`, `epoch_sha256`; `report_sha256`; the §2.4 chain and
-tree fields, each independently recomputed by the trusted side; `gates`
-as declared (deduplicated, profile-complete, outcomes acceptable);
-`job1`: `{workflow_path, workflow_git_oid, ref, run_id, run_attempt,
-conclusion, artifact_sha256}` as read from the Actions control plane;
+The only artifact that, once finalized (§7), authorizes admission. Its
+closed schema, enumerated: `schema`, `lane`, `epoch_sha256`;
+`report_sha256`; `subject_commit_git_oid`, `subject_tree_manifest_sha256`,
+`base_commit_git_oid`, `base_tree_manifest_sha256`,
+`chain_predecessor_sha256`, `chain_predecessor_kind`, `profile_sha256`,
+`path_policy_sha256`, `corpus_release`, `waiver_set_sha256`,
+`eligible_records`, `coverage_assignment`, `unprotected_changes`,
+`dependency_pins_sha256`, `verifier_commit_git_oid` — each independently
+recomputed by the trusted side, never copied on trust; `gates` as
+declared (deduplicated, profile-complete, outcomes acceptable); `job1`:
+`{workflow_path, workflow_git_oid, ref, run_id, run_attempt, job_name,
+check_run_id, conclusion, artifact_name, artifact_id, artifact_sha256}` —
+the artifact bound to the specific producing job and attempt via the
+workflow-jobs and per-attempt artifact endpoints, since artifacts
+associate with runs (not jobs) and reruns share a `run_id`; a digest that
+cannot be tied to the claimed attempt's named artifact refuses;
 `authorization`: `{environment, approval_context}` (§11 wording
 decision). Genesis and transitions are distinct schemas; a receipt cannot
 claim their role.
@@ -238,21 +260,30 @@ records refuse in replay (§3.3).
 
 ### 3.3 The predicate, deterministic and total
 
-Compute the tree-entry diff between the base and subject manifests
-(equivalently `git diff-tree --no-renames`): per-path additions,
+Compute the tree-entry diff between the base and subject manifests —
+manifest set-difference is normative; the Git equivalent is
+`git diff-tree -r --raw -z --no-renames` (recursive: without `-r`,
+diff-tree reports directory names, which would let nested protected
+changes hide behind an unprotected directory entry): per-path additions,
 deletions, and modifications, including mode-only modifications. Renames
 do not exist at this level. Over the protected subset:
 
-1. **Unique valid assignment.** A valid assignment maps every changed
-   protected path to exactly one non-forking, non-cyclic chain of
-   transitions drawn from eligible records — records consumed atomically
-   (all transitions used, or none), no transition against an unchanged
-   path, endpoints per rule 2. If no valid assignment exists, refuse
-   (uncovered or inconsistent). **If more than one valid assignment
-   exists, refuse as ambiguous** — a candidate avoids this by not
-   shipping redundant covering records. Records unusable in any valid
-   assignment (dead-end retries) are legal, listed as unused, and create
-   no ambiguity.
+1. **Unique valid assignment.** Record hygiene first: a record's
+   transitions must have unique paths (duplicates refuse the record at
+   parse), and every transition path in an eligible record must be
+   protected under the base policy — a record touching any unprotected
+   path is ineligible, listed with its reason, and can never be
+   consumed, so consumption semantics never depend on unprotected diff
+   entries. A valid assignment then maps every changed protected path to
+   exactly one non-forking, non-cyclic chain of transitions drawn from
+   eligible records — records consumed atomically (every transition of a
+   consumed record used against the diff, or none), no transition
+   against an unchanged path, endpoints per rule 2. If no valid
+   assignment exists, refuse (uncovered or inconsistent). **If more than
+   one valid assignment exists, refuse as ambiguous** — a candidate
+   avoids this by not shipping redundant covering records. Records
+   unusable in any valid assignment (dead-end retries) are legal, listed
+   as unused, and create no ambiguity.
 2. **Blob-and-mode ground truth.** Each chain's first
    `(before_blob_sha256, before_mode)` equals the path's state at the
    base (`(null, null)` for additions); each link's after-state equals
@@ -343,8 +374,15 @@ self-approval) — an environment that holds no generation credentials and
 no write tokens, unlike today's `production-signing`, which provisions
 generation workflows with the apply key, a model credential, and a
 write-capable token and is structurally disqualified. Environment
-approval releases the *request* to the external signer; it never releases
-key material to a runner.
+approval releases the *request* to the external signer; it never
+releases key material to a runner.
+
+Effective-permission constraints, not deployment assumptions (§9): the
+external signer's own deployment holds no model, generation, or
+repository-write credentials; the trusted recomputation job's automatic
+`GITHUB_TOKEN` is read-only (`contents: read`, nothing else) and it
+references no other secrets; and the publisher's identity is denied the
+notary signing operation by the signer's caller allowlist.
 
 **Publisher — separate job.** Holds only a token whose write capability
 is confined to the notary ref by repository ruleset (App tokens scope to
@@ -427,31 +465,57 @@ state.
 
 ## 7. Two-phase publication and the canonical chain
 
-The canonical chain lives at a dedicated ref
-(`refs/notary/chain`) in the lane repository: content-addressed artifact
-files plus a single `HEAD.json` naming the current finalized tip
-(`{schema: "axiom/notary-head/v1", tip_sha256, tip_kind}`). All updates
-are compare-and-swap; the publisher's ruleset confines writes to this
-ref.
+The canonical chain lives on a **protected branch** —
+`refs/heads/notary/chain` — because GitHub rulesets protect branches and
+tags, not arbitrary ref namespaces, and a repository-scoped write token
+can otherwise manipulate qualified refs at will. The branch's ruleset:
+only the publisher App may push; no force pushes; no deletion; linear
+history. Its contents: content-addressed artifact files (reports,
+receipts, transitions, genesis, and void markers) plus `HEAD.json`
+(`{schema: "axiom/notary-head/v1", tip_sha256, tip_kind}`) as a
+convenience pointer.
 
-Admission is two-phase, which resolves the ordering circularity between
+**Verification does not trust the pointer.** The chain's truth is
+reconstructible by rule from the branch alone: the valid chain is the
+unique sequence of signed artifacts starting at genesis in which each
+artifact's base manifest equals its predecessor's subject manifest, each
+was finalized by an on-branch finalization commit, and no void marker
+names it. Because the ruleset forbids force pushes and deletions, a
+rollback, a void erasure, or a pointer rewrite is either blocked outright
+or visible as history the reconstruction rejects. `HEAD.json` diverging
+from the reconstruction is itself a refusal.
+
+Admission is two-phase, resolving the ordering circularity between
 "receipt must exist to authorize the merge" and "the merged state must
 equal what was verified":
 
 1. **Pending.** Job 1 verifies the candidate head (subject tree `T1`);
-   the signer signs the receipt (or transition). The publisher writes it
-   to the notary ref as *pending* and sets the required status check on
-   the candidate. A pending artifact authorizes exactly one thing: the
-   merge of a head whose tree manifest is `T1`. It is not the chain tip.
-2. **Finalize.** After the merge, the finalizer (publisher job,
-   triggered on the protected ref) recomputes the merged tip's tree
-   manifest. If it equals `T1`, it advances `HEAD.json` to the artifact
-   by CAS — the artifact is now finalized and chain-eligible. If it
-   differs (conflicted queue merge, stale squash), finalization refuses,
-   the artifact is permanently void (a voided digest is recorded and can
-   never finalize), and verification reruns from the true finalized tip.
-   A pending artifact whose candidate never merges simply never
-   finalizes; the chain never advanced, so nothing strands.
+   the signer signs the receipt (or transition). The publisher commits it
+   to the chain branch as *pending* and sets the required status check on
+   the candidate — a check whose required context is **bound to the
+   publisher App** in branch protection, so a same-named context from
+   Actions or any other integration does not satisfy the requirement. A
+   pending artifact authorizes exactly one thing: the merge of a head
+   whose tree manifest is `T1` onto the finalized tip it names as base.
+2. **Freshness.** The protected content branch requires strict
+   up-to-date-with-base merges (or a merge queue whose `merge_group`
+   head is itself verified). A pending artifact binds its base manifest;
+   when another candidate finalizes first, the stale candidate's base no
+   longer matches the finalized tip, the strict requirement forces a new
+   head, and the superseded pending artifact is voided by the publisher
+   rather than left green. The race sol named — two green pendings, the
+   second merging onto a moved base — is closed before merge, not
+   discovered after.
+3. **Finalize.** After the merge, the finalizer (publisher job,
+   triggered on the protected content ref) recomputes the merged tip's
+   tree manifest. If it equals `T1` and the artifact's base equals the
+   current finalized tip, it commits the finalization marker and
+   advances `HEAD.json` — compare-and-swap via the atomic branch update.
+   Otherwise finalization refuses, the artifact is permanently void (a
+   void marker commits to the chain branch; a voided digest can never
+   finalize), and verification reruns from the true finalized tip. A
+   pending artifact whose candidate never merges simply never finalizes;
+   the chain never advanced, so nothing strands.
 
 Squash and merge-queue rewrites are therefore harmless exactly when they
 preserve the verified tree, and void the attempt exactly when they do
@@ -488,9 +552,18 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
    re-derived from content-addressed inputs before signing; typed
    operations for genesis, transition, and receipt scopes; no raw-byte
    signing for those scopes.
-7. The publisher split implemented, with a repository ruleset confining
-   the publisher token's writes to the notary ref, and the two-phase
-   pending/finalize protocol with CAS and permanent voiding.
+7. The publisher split implemented: the chain on its protected branch
+   with an App-restricted, no-force-push, no-deletion ruleset; the
+   required admission check bound to the publisher App (a same-named
+   context from any other source must not satisfy it); strict
+   up-to-date-with-base merges (or verified merge-group heads) on the
+   protected content branch; and the two-phase pending/finalize protocol
+   with supersession voiding and permanent void markers.
+7a. Effective-permission constraints audited: the external signer
+   deployment holds no model, generation, or repository-write
+   credentials; the trusted recomputation job runs with a read-only
+   `GITHUB_TOKEN` and no other secrets; the publisher identity is denied
+   the notary signing operation.
 8. Signed-leg billing and abuse policy operational (#1193).
 9. Key ceremony completed per §8.
 10. Org-variable trust anchors eliminated from the signing path.
@@ -520,8 +593,10 @@ attempt against genesis, transition, or notary scopes; full pairwise
 cross-scope matrix including legacy operations.
 
 **Manifests and totality:** gitlink anywhere in the tree; non-UTF-8 path
-anywhere in the tree (changed or unchanged); inadmissible mode; symlink
-inside the protected domain; manifest sort-order violation; two trees
+anywhere in the tree (changed or unchanged); inadmissible terminal mode;
+symlink inside the protected domain; symlink with non-UTF-8 target bytes
+outside the protected domain manifests correctly (positive control —
+targets hash as raw bytes); manifest sort-order violation; two trees
 differing only by a gitlink refused rather than treated as
 manifest-equal.
 
@@ -533,9 +608,13 @@ admissible set.
 uncovered protected change; uncovered mode-only change; overlapping
 chains; transition against an unchanged path; forked, cyclic, or
 discontinuous chain; wrong starting or terminal blob/mode; malformed
-null-sides; partial record consumption; **ambiguous assignment (two
-redundant covering records; split-vs-direct chains)**; dead-end retry
-record accepted as unused without ambiguity (positive control);
+null-sides; partial record consumption; duplicate transition paths
+within a record; record containing an unprotected-path transition
+(ineligible, with reason); **ambiguous assignment (two redundant
+covering records; split-vs-direct chains)**; dead-end retry record
+accepted as unused without ambiguity (positive control); nested
+protected change reported only as its directory by a non-recursive diff
+(must refuse or be impossible under the normative diff);
 `waived`/`not-run` post-epoch; path-policy precedence cases
 (include-then-exclude; `rules-evil/x`; unmatched default-unprotected).
 
@@ -556,7 +635,9 @@ skip-flag attempt; profile or policy not committed at the base.
 wrong chain predecessor digest or kind enum; second genesis; genesis
 with a non-exhaustive, overlapping, or duplicate-path partition; genesis
 entry citing a record failing the v5 contract (wrong schema family,
-invalid signature, path/blob disagreement); nonexistent
+invalid signature, wrong encoder identity, wrong waiver binding,
+path/blob disagreement); transition whose enumerated delta contains a
+non-trust-surface path; nonexistent
 `record_sha256`; duplicate qualifying v5 records for one path; genesis
 carrying coverage; empty-delta first receipt leaving baseline provenance
 unchanged (positive control); post-epoch change vouched only by v5; v5
@@ -567,13 +648,25 @@ unfinalized transition used as predecessor; ordinary receipt attempting
 a trust-surface change.
 
 **Signer, publication, finalization:** OIDC identity mismatch (wrong
-workflow, job, run, repository, or ref); Job-1 run non-success; artifact
-digest mismatch; replayed artifact under a new run; signing a refusal
-report; stale base at recomputation; pending artifact treated as chain
-tip; finalization with merged-tip manifest differing from the verified
-subject (voids, permanently); voided digest re-finalization attempt; CAS
-loss on `HEAD.json`; publisher push outside the notary ref rejected by
-ruleset; `HEAD.json` naming an unpublished or unsigned artifact.
+workflow, job, run, repository, or ref); Job-1 run non-success; wrong
+`run_attempt` (artifact from an earlier attempt under the same run id);
+artifact name or producing-job mismatch; artifact digest mismatch;
+replayed artifact under a new run; signing a refusal report; stale base
+at recomputation; pending artifact treated as chain tip; superseded
+pending artifact voided when another candidate finalizes first (positive
+control) and refused if presented after; required-check context from a
+non-App source (same-named Actions check) not satisfying branch
+protection; merge-group head differing from the verified subject;
+finalization with merged-tip manifest differing from the verified
+subject (voids, permanently); voided digest re-finalization attempt;
+finalization when the artifact's base is not the current finalized tip;
+chain-branch force-push and deletion rejected by ruleset; unauthorized
+chain rollback or void-marker erasure visible to reconstruction;
+`HEAD.json` diverging from chain reconstruction; publisher push outside
+the chain branch rejected; `HEAD.json` naming an unpublished or unsigned
+artifact; recomputation divergence in `eligible_records`,
+`corpus_release`, `waiver_set_sha256`, `dependency_pins_sha256`, or
+`verifier_commit_git_oid`.
 
 ## 11. Decisions for sign-off
 
