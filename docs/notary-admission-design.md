@@ -1,9 +1,9 @@
-# Notary admission: design v12
+# Notary admission: design v13
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 12 folds design-review rounds 1–11
-(eighty blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 13 folds design-review rounds 1–12
+(eighty-six blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -93,7 +93,7 @@ field, missing field, wrong type, or duplicate key is a parse refusal.
 | `tier` (profile only) | exactly one of `"public"`, `"restricted"`, `"ci-attested"` — never a report or receipt field; consumers read tiers from the profile the receipt binds |
 | `ref` | the fully qualified Git ref string (`refs/...`) |
 | `workflow_sha_git_oid` | the commit the workflow file was loaded from, taken from the **trusted job's own OIDC `workflow_sha` claim** — normative because Job 1 and the trusted job run in the same workflow run (§5), so one authenticated claim covers both; reusable workflows are prohibited for this workflow; never the run's `head_sha`, which the workflow-run REST object reports instead of the loading commit |
-| Entry modes | six-character octal strings: `"100644"`, `"100755"`, `"120000"` |
+| Entry modes | six-character octal strings: `"100644"` and `"100755"` (the pilot admits no symlinks anywhere — charter requirement 4 rejects symlink deltas, and refusing the mode tree-wide is the total form) |
 | Paths | UTF-8 strings; sorting is bytewise over the UTF-8 encoding |
 | Semantic arrays | **one comparator everywhere**: elements order bytewise over the UTF-8 encoding of the element's sort key, which each array names — `gates` by `gate_id`, `required_gates` by `gate_id`, `acceptable_outcomes` and `reasons` by their string value, `eligible_records`/`unused_eligible_records` by digest, `ineligible_records` by `record_sha256`, `coverage_assignment` by `path`, dependency `actions` by `ref_spec`, `containers` by `image`, inventories by `path`; set-valued arrays are strictly unique on their key (JCS canonicalizes objects, not arrays — this row is what makes array bytes deterministic) |
 
@@ -106,8 +106,9 @@ the raw target bytes of the symlink blob, whatever they are. Pilot
 totality rules, applied to **whole trees** at verification, genesis, and
 finalization — not merely to diffs: a gitlink (mode 160000) anywhere in
 the tree is a refusal; a non-UTF-8 path anywhere in the tree is a
-refusal; terminal modes outside {"100644", "100755", "120000"} are a
-refusal, and "120000" only outside the protected domain. Within these
+refusal; terminal modes outside {"100644", "100755"} are a refusal —
+symlinks refuse tree-wide in the pilot, per charter requirement 4.
+Within these
 rules the manifest function is total and exact: two trees with equal
 manifests are terminal-entry-identical. Structural malformation refuses:
 input trees must be fsck-clean; a duplicate flattened terminal path —
@@ -138,6 +139,7 @@ body's schema:
 | genesis | `axiom/notary-genesis/v1` | genesis |
 | transition | `axiom/notary-transition/v1` | transition record |
 | approver | `axiom/notary-approval/v1` | receipt candidate (its body digest) |
+| admin-approver | `axiom/notary-admin-approval/v1` | genesis or transition administrative candidate (its body digest); signed by the **administrative** key of §8, never the correction-reviewer key — approving trust-root rotation is a wider power than validating a correction |
 | notary | `axiom/notary-receipt/v1` | notary receipt |
 
 Signatures are detached files beside the body (`<digest>.json`,
@@ -168,8 +170,11 @@ Signed by the producer key (non-authorizing). Fields: `schema`, `lane`,
 ```
 
 Modes are `"100644"` or `"100755"`, `null` exactly when the corresponding
-blob digest is `null`. A mode-only change is a real transition (equal blob
-digests, differing modes). `patch_note_sha256` is **opaque audit
+blob digest is `null`. A mode-only change is a transition shape the
+schema can carry, but **the pilot refuses protected-path mode changes
+outright** — charter requirement 4 rejects executable-mode deltas at
+preflight, and the pilot honors that wall rather than admitting covered
+mode transitions; relaxing it is the §11 charter-alignment decision. `patch_note_sha256` is **opaque audit
 metadata**: a producer-chosen digest of whatever diff rendering the
 runtime archived. It is never verified, carries no algorithm contract, and
 no refusal depends on it — endpoint blob digests and modes are the sole
@@ -257,10 +262,11 @@ the repository-qualified identity of the verifier code that ran.
 SHA-256 over the raw bytes of the repository-root
 `known-validation-gaps.yaml` at the base, which current mechanics
 require to be a present, bounded regular file — an absent or non-regular
-waiver file is a refusal, not an empty hash. The `diff_coverage` refusal object is itself closed:
-`{code, path | null, detail}` with a closed code enum
-(`"uncovered-path"`, `"ambiguous-assignment"`, `"inconsistent-chain"`,
-`"record-cycle"`, `"inadmissible-entry"`, `"structural"`).
+waiver file is a refusal, not an empty hash. The refusal variant's `refusal` member is itself closed:
+`{code, path | null, detail}` with the single code enum of §2.4
+(coverage and gate codes alike) — there is no `diff_coverage` refusal
+object anywhere; the pass variant's `diff_coverage` is the literal
+`"pass"` and nothing else.
 
 The profile is likewise a closed committed schema at a normative path:
 `.axiom/notary/profile.json`, schema `axiom/notary-profile/v1`, fields
@@ -281,51 +287,50 @@ fails reconciliation rather than getting signed.
 
 ### 2.5 Notary receipt (signed) — `axiom/notary-receipt/v1`
 
-The only artifact that, once finalized (§7), authorizes admission. Its
-closed schema, enumerated: `schema`, `lane`, `epoch_sha256`;
-`report_sha256`; `subject_commit_git_oid`, `subject_tree_manifest_sha256`,
-`base_commit_git_oid`, `base_tree_manifest_sha256`,
-`chain_predecessor_sha256`, `chain_predecessor_kind`, `profile_sha256`,
-`path_policy_sha256`, `corpus_release`, `waiver_set_sha256`,
-`eligible_records`, `coverage_assignment`, `unprotected_changes`,
-`dependency_pins_sha256`, `verifier` — each independently
-recomputed by the trusted side, never copied on trust; `gates` as
-declared (deduplicated, profile-complete, outcomes acceptable); `job1`:
-`{workflow_ref, workflow_sha_git_oid, ref, run_id, run_attempt,
-check_run_id, conclusion, artifact_name, artifact_id, artifact_sha256}`
-— `workflow_ref` is the OIDC `workflow_ref` claim string verbatim (one
-authoritative source and grammar; its `@`-suffix must equal `ref` or the
-receipt refuses), and `check_run_id` is the trusted job's own OIDC
-`check_run_id` claim — **run-scoped
-provenance, stated as such**: GitHub artifacts carry no producing-job or
-attempt identity, so the receipt claims only that the named artifact
-with this digest existed in this run, which the pilot requires to
-contain exactly one artifact of that name. This narrowing is safe
-because no claim-bearing field depends on the artifact — the trusted
-side recomputes them all — and gate declarations are attributed to "the
-proposing run" as a whole: a different job in the candidate's own run
-forging them is the same trust domain and the same accepted residual as
-the candidate weakening its gates. An OIDC-bound upload attestation
-tightening this to job-level is future work, out of milestone one;
+The only artifact that, once finalized (§7), authorizes admission — in
+two layers, candidate and wrapper, each a closed schema.
+
+**The candidate** (`axiom/notary-receipt-candidate/v1`) is produced by
+the `recompute` job and carries exactly: the full §2.4 pass-report
+field set — every recomputed field including `diff_coverage` (exactly
+`"pass"`), `eligible_records`, `unused_eligible_records`,
+`ineligible_records`, `coverage_assignment`, `unprotected_changes`, and
+`gates` (validated declarations: deduplicated, profile-complete,
+outcomes acceptable) — plus `report_sha256` (the reconciled proposal)
+and `job1`: `{workflow_ref, workflow_sha_git_oid, ref, run_id,
+run_attempt, check_run_id, conclusion, artifact_name, artifact_id,
+artifact_sha256}`. `workflow_ref` is the OIDC `workflow_ref` claim
+string verbatim (its `@`-suffix must equal `ref` or the candidate
+refuses), and `job1.check_run_id` is **`verify`'s** check-run id from
+the jobs-for-run lookup — the `approve` job's own OIDC `check_run_id`
+appears only in the wrapper's authorization block, never here. The
+candidate contains no authorization — nothing circular.
+
+The `job1` block is **run-scoped provenance, stated as such**: GitHub
+artifacts carry no producing-job or attempt identity, so it claims only
+that the named artifact with this digest existed in this run, which the
+pilot requires to contain exactly one artifact of that name. The
+narrowing is safe because no claim-bearing field depends on the
+artifact — the trusted side recomputes them all — and gate declarations
+attribute to the proposing run as a whole: a different job in the
+candidate's own run forging them is the same trust domain and the same
+accepted residual as the candidate weakening its gates. An OIDC-bound
+upload attestation tightening this to job-level is future work, out of
+milestone one.
+
+**The final receipt** (`axiom/notary-receipt/v1`) is exactly
+`{schema, lane, epoch_sha256, candidate_sha256, authorization}` with
 `authorization`: `{environment, approve_check_run_id,
 approval_signature_sha256}` — the `approve` job's own OIDC
 `check_run_id`, and the digest of the detached
-`axiom/notary-approval/v1` signature file (published beside the receipt
-on the chain branch). The final receipt's closed schema is exactly
-`{schema, lane, epoch_sha256, candidate_sha256, authorization}` — the
-candidate's fields are referenced by digest, never flattened, and the
-candidate body **must be published on the chain branch beside the
-receipt** (a receipt whose candidate is unpublished is unverifiable and
-invalid to reconstruction). The candidate
-(`axiom/notary-receipt-candidate/v1`) carries every §2.4-recomputed
-field plus `job1`, in the pass-report shapes, and no authorization —
-nothing circular. To remove the earlier ambiguity in one sentence:
-`job1.check_run_id` inside the candidate is **`verify`'s** check run id
-from jobs-for-run; the `approve` job's own OIDC `check_run_id` appears
-only in `authorization.approve_check_run_id`. The reviewer approval
-signs the candidate digest; the signer assembles and signs the final
-receipt. Genesis and transitions
-are distinct schemas; a receipt cannot claim their role.
+`axiom/notary-approval/v1` signature file. Candidate fields are
+referenced by digest, never flattened, and the candidate body and
+approval-signature file **must be published on the chain branch beside
+the receipt** — a receipt whose candidate or approval file is
+unpublished is unverifiable and invalid to reconstruction. The reviewer
+approval signs the candidate digest; the signer assembles and signs the
+wrapper. Genesis and transitions are distinct schemas; a receipt cannot
+claim their role.
 
 ### 2.6 Storage
 
@@ -429,7 +434,9 @@ do not exist at this level. Over the protected subset:
    protected domain, and gitlinks are refused tree-wide by §2.1.
    File/directory replacements decompose into entry deletions and
    additions and are covered as such.
-4. **Binary verdict.** `diff_coverage` is `"pass"` or a typed refusal.
+4. **Binary verdict.** The predicate outcome is `"pass"` (the pass
+   variant's `diff_coverage` literal) or a typed refusal (the refusal
+   variant's `refusal` member).
    From the enforcement epoch there is no `waived` and no `not-run`. This
    is deliberately stricter than consumer-side declaration completeness.
 
@@ -479,13 +486,16 @@ each on a fresh ephemeral runner, none reusable:
 | `publish` | no (pinned code) | the two §9.7b credentials, released only by its protected environment | none |
 
 `publish` (and the finalizer below) run in a dedicated protected
-**`notary-publishing` environment**: the merge-authorizing credentials
-are environment secrets released only to jobs on the pinned workflows
-and protected refs — "provisioned, never minted" is enforced by the
-platform's secret-release gate — borrowing the environment-gating
-mechanism the current signed-apply publisher uses for its secrets,
-while removing what that publisher still does wrong: it mints its App
-token in-job, and here minting authority never enters any job. Finalization
+**`notary-publishing` environment** with its administrator bypass
+disallowed and audited — but environment rules bind reviewers and refs,
+not workflow identity, so the credentials themselves are not
+environment secrets at all: `publish` presents its own OIDC
+(`id-token: write`) and the **external broker vends the two publisher
+tokens** against the exact identity (repository, `workflow_ref` and
+`workflow_sha`, ref, run, attempt, environment) precisely as the signer
+authenticates `approve` — a revoked, rerun, or foreign workflow gets
+nothing. Minting authority never enters any job; the current
+publisher's in-job App minting is what this replaces. Finalization
 necessarily runs after the merge, in a separate named workflow
 (`notary-finalize.yml`) triggered by the protected content ref, under
 the same environment and credential binding.
@@ -562,8 +572,8 @@ and signs. An environment-bypassed job carries no reviewer signature
 and refuses. Approval is thereby digest-bound to a completed receipt by
 signature, not by platform semantics; key material never reaches a
 runner. (This resolves the §11 approval-wording decision in the
-stronger form: `authorization.approval_context` is the reviewer
-approval-signature reference.)
+stronger form: `authorization.approval_signature_sha256` is the
+reviewer approval-signature reference.)
 
 Effective-permission constraints, not deployment assumptions (§9): the
 external signer's own deployment holds no model, generation, or
@@ -940,9 +950,8 @@ cross-scope matrix including legacy operations.
 
 **Manifests and totality:** gitlink anywhere in the tree; non-UTF-8 path
 anywhere in the tree (changed or unchanged); inadmissible terminal mode;
-symlink inside the protected domain; symlink with non-UTF-8 target bytes
-outside the protected domain manifests correctly (positive control —
-targets hash as raw bytes); manifest sort-order violation; two trees
+symlink inside the protected domain; any symlink anywhere refused (charter requirement 4, tree-wide in the
+pilot); manifest sort-order violation; two trees
 differing only by a gitlink refused rather than treated as
 manifest-equal.
 
@@ -951,7 +960,8 @@ wrong lane; wrong epoch; mode present on a null side; mode outside the
 admissible set.
 
 **Eligibility and coverage:** record present at the base (replay);
-uncovered protected change; uncovered mode-only change; overlapping
+uncovered protected change; protected mode-only change refused
+(charter wall); overlapping
 chains; transition against an unchanged path; forked, cyclic, or
 discontinuous chain; wrong starting or terminal blob/mode; malformed
 null-sides; partial record consumption; duplicate transition paths
@@ -1087,7 +1097,12 @@ signature refused (swapped-body-after-platform-approval); path policy
 attempting to protect `.axiom/lineage` refused; bootstrap bypass
 authority retained after activation finalization failing the §9.2a
 audit; administrator bypass of the required lane check tested;
-receipt with unpublished candidate invalid to reconstruction; well-typed but
+receipt with unpublished candidate or approval file invalid to
+reconstruction; sorted-but-duplicate entries refused in each set-valued
+array (acceptable_outcomes, eligible_records, unused_eligible_records,
+ineligible_records, reasons); protected-path mode change refused
+(charter wall, pilot); publisher token request from a revoked or rerun
+workflow identity vended nothing; well-typed but
 invalid path-policy action or profile oracle_policy refused; Actions
 artifact_id mismatch refused; multi-fault ineligible record carrying
 one deterministic sorted reasons array in the pass variant (positive
@@ -1099,7 +1114,8 @@ control).
   extend the path policy to composition outputs.
 - Licensed or unavailable oracles: fail closed, or visibly reduced-tier
   receipt.
-- Approval wording: `authorization.approval_context` binds durable
+- Approval wording — resolved in §5's stronger form:
+  `authorization.approval_signature_sha256` binds durable
   digest-bound reviewer evidence, or records "the protected signing
   policy authorized this receipt" (honest for plain environment
   approval; the stronger form needs an explicit approval artifact).
