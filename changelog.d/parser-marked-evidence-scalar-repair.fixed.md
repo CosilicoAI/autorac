@@ -1,0 +1,1 @@
+Guarded pre-apply repair now quotes parser-marked `source:`/`excerpt:` scalars containing YAML-significant `: ` (e.g. Danish amendment text `ændres »12« til: »24«`) at PyYAML's exact scanner mark — comment-preserving, fail-closed, content untouched.
