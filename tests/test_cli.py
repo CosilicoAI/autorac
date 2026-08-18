@@ -116,6 +116,7 @@ from axiom_encode.cli import (
     _person_scoped_definition_issue_names,
     _promote_boolean_comparison_predicates_to_judgment,
     _qualify_deferred_output_subsection_paths,
+    _quote_unquoted_source_scalars,
     _quoted_review_finding_excerpts,
     _read_only_guard_encoder_execution_identity,
     _reanchor_legacy_exact_dependent_proof_excerpts,
@@ -33882,6 +33883,193 @@ rules: []
         assert run.outcome["auto_repaired_unquoted_source_scalars"] == ["source:7"]
         assert run.outcome["overlay_validation_success"] is True
         assert run.outcome["status"] == "apply_applied"
+
+    def test_encode_apply_repairs_unquoted_proof_excerpt_colons(self, capsys, tmp_path):
+        args = self._make_args(tmp_path, backend="codex", sync=False)
+        args.apply = True
+        result = self._make_eval_result(False)
+        result.error = "Generated RuleSpec failed compile validation"
+        output_file = tmp_path / "out" / "codex-test-model" / "statutes/42/426.yaml"
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text(
+            """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/426
+rules:
+  - name: hospital_insurance_entitlement
+    kind: parameter
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: parameter
+            source:
+              corpus_citation_path: us/statute/42/426
+              excerpt: entitlement changes at age: 65
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 'true'
+"""
+        )
+        result.output_file = str(output_file)
+        applied_file = args.policy_repo_path / "statutes/42/426.yaml"
+
+        with (
+            patch("axiom_encode.cli.run_model_eval", return_value=[result]),
+            patch(
+                "axiom_encode.cli._validate_generated_encoding_in_policy_overlay",
+                return_value=(True, [], {}),
+            ) as mock_overlay,
+            patch(
+                "axiom_encode.cli._apply_generated_encoding_result",
+                return_value=[applied_file],
+            ) as mock_apply,
+            patch.dict(os.environ, TEST_APPLY_SIGNING_ENV, clear=True),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cmd_encode(args)
+
+        assert exc_info.value.code == 0
+        output = capsys.readouterr().out
+        assert "apply=auto_repaired_unquoted_source_scalars:excerpt:15" in output
+        repaired = yaml.safe_load(output_file.read_text())
+        assert (
+            repaired["rules"][0]["metadata"]["proof"]["atoms"][0]["source"]["excerpt"]
+            == "entitlement changes at age: 65"
+        )
+        assert mock_overlay.call_count == 1
+        mock_apply.assert_called_once()
+        run = EncodingDB(args.db).get_recent_runs(limit=1)[0]
+        assert run.outcome["auto_repaired_unquoted_source_scalars"] == ["excerpt:15"]
+        assert run.outcome["overlay_validation_success"] is True
+        assert run.outcome["status"] == "apply_applied"
+
+    @pytest.mark.parametrize(
+        (
+            "fixture_name",
+            "fixture_sha256",
+            "line_number",
+            "column_number",
+            "byte_column_number",
+        ),
+        (
+            (
+                "terra_p1r4_rejected.yaml",
+                "218738a3ee2d62b195599522f0177d5b969d70d7f2f53425cab189e0b28e335c",
+                288,
+                39,
+                42,
+            ),
+            (
+                "sol_p1r4_rejected.yaml",
+                "24ad3da727512998428cab4489f475a26737c7822af6b1a2195f7c49fac1c299",
+                351,
+                39,
+                42,
+            ),
+        ),
+    )
+    def test_generated_yaml_repair_quotes_trace_candidate_proof_excerpts(
+        self,
+        fixture_name,
+        fixture_sha256,
+        line_number,
+        column_number,
+        byte_column_number,
+        tmp_path,
+    ):
+        original = (
+            Path(__file__).parent / "fixtures" / "generated_yaml_scanner" / fixture_name
+        ).read_text()
+        # These are the complete rejected RuleSpecs embedded in run 32093928177's
+        # retry traces. The final output paths contain later, valid attempts.
+        assert hashlib.sha256(original.encode()).hexdigest() == fixture_sha256
+        generated = tmp_path / "paragraf-1.yaml"
+        generated.write_text(original)
+
+        with pytest.raises(yaml.scanner.ScannerError) as exc_info:
+            yaml.safe_load(original)
+
+        mark = exc_info.value.problem_mark
+        assert (mark.line + 1, mark.column + 1) == (
+            line_number,
+            column_number,
+        )
+        offending_line = original.splitlines()[mark.line]
+        assert offending_line[mark.column] == ":"
+        assert len(offending_line[: mark.column].encode("utf-8")) + 1 == (
+            byte_column_number
+        )
+        result = SimpleNamespace(backend="openai")
+        with pytest.raises(RuntimeError) as diagnostic_exc:
+            _stamp_generated_source_attestation_for_apply(result, generated)
+        assert str(diagnostic_exc.value) == (
+            "[generated-yaml:scanner] invalid YAML at line "
+            f"{line_number}, column {column_number}: unexpected mapping-value ':' "
+            "delimiter; quote scalar text containing ': '"
+        )
+
+        repaired = _quote_unquoted_source_scalars(rules_file=generated)
+
+        assert repaired == [f"excerpt:{line_number}"]
+        repaired_text = generated.read_text()
+        expected_lines = original.splitlines(keepends=True)
+        expected_lines[line_number - 1] = (
+            "              excerpt: 'ændres »12« til: »24«'\n"
+        )
+        assert repaired_text == "".join(expected_lines)
+        assert yaml.safe_load(repaired_text)["format"] == "rulespec/v1"
+
+        source_path = "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-1"
+        with patch(
+            "axiom_encode.cli._generated_result_source_attestation",
+            return_value=_complete_source_attestation(source_path),
+        ):
+            _stamp_generated_source_attestation_for_apply(result, generated)
+        assert yaml.safe_load(generated.read_text())["format"] == "rulespec/v1"
+
+    def test_generated_yaml_proof_excerpt_repair_keeps_invalid_document_unchanged(
+        self, tmp_path
+    ):
+        generated = tmp_path / "paragraf-1.yaml"
+        original = """format: rulespec/v1
+rules:
+  - metadata:
+      proof:
+        atoms:
+          - source:
+              excerpt: ændres »12« til: »24«
+    versions:
+      - formula: if condition: 1 else: 0
+"""
+        generated.write_text(original)
+
+        repaired = _quote_unquoted_source_scalars(rules_file=generated)
+
+        assert repaired == []
+        assert generated.read_text() == original
+
+    def test_generated_yaml_source_evidence_repair_preserves_inline_comments(
+        self, tmp_path
+    ):
+        generated = tmp_path / "generated.yaml"
+        original = """excerpt: valid evidence # reviewer: note
+source: changes at age: 65 # source: note
+"""
+        generated.write_text(original)
+
+        repaired = _quote_unquoted_source_scalars(rules_file=generated)
+
+        assert repaired == ["source:2"]
+        assert generated.read_text() == (
+            "excerpt: valid evidence # reviewer: note\n"
+            "source: 'changes at age: 65' # source: note\n"
+        )
+        assert yaml.safe_load(generated.read_text()) == {
+            "excerpt": "valid evidence",
+            "source": "changes at age: 65",
+        }
 
     def test_encode_apply_blocks_non_validation_generation_failure(
         self, capsys, tmp_path
