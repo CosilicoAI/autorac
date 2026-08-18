@@ -1,9 +1,9 @@
-# Notary admission: design v15
+# Notary admission: design v16
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 15 folds design-review rounds 1–14
-(ninety-five blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 16 folds design-review rounds 1–15
+(ninety-nine blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -91,11 +91,11 @@ field, missing field, wrong type, or duplicate key is a parse refusal.
 | Git object id (`*_git_oid`, incl. `workflow_sha_git_oid`) | 40-char lowercase hex string (SHA-1 object format in the pilot) |
 | Ed25519 signature | `signature_base64`: standard base64 with padding (RFC 4648 §4) |
 | `signer_spki_sha256` | SHA-256 of the DER-encoded SubjectPublicKeyInfo, hex as above |
-| `run_id`, `run_attempt` | JSON strings (decimal), never numbers |
+| `run_id`, `run_attempt`, `check_run_id`, `approve_check_run_id`, `artifact_id` | JSON strings, canonical decimal, no leading zeros, never numbers |
 | `chain_predecessor_kind` | exactly one of `"genesis"`, `"receipt"`, `"transition"` |
 | `tier` (profile only) | exactly one of `"public"`, `"restricted"`, `"ci-attested"` — never a report or receipt field; consumers read tiers from the profile the receipt binds |
 | `ref` | the fully qualified Git ref string (`refs/...`) |
-| `workflow_sha_git_oid` | the commit the workflow file was loaded from, taken from the **trusted job's own OIDC `workflow_sha` claim** — normative because Job 1 and the trusted job run in the same workflow run (§5), so one authenticated claim covers both; reusable workflows are prohibited for this workflow; never the run's `head_sha`, which the workflow-run REST object reports instead of the loading commit |
+| `workflow_sha_git_oid` | the commit the workflow file was loaded from: **context-derived at candidate time** (`github.workflow_sha` in the `recompute` job), then **authenticated by equality** to `approve`'s OIDC `workflow_sha` claim at signing — one run, one workflow, so the equality is exact; reusable workflows are prohibited; never the run's `head_sha` |
 | Entry modes | six-character octal strings: `"100644"` and `"100755"` (the pilot admits no symlinks anywhere — charter requirement 4 rejects symlink deltas, and refusing the mode tree-wide is the total form) |
 | Paths | UTF-8 strings; sorting is bytewise over the UTF-8 encoding |
 | Semantic arrays | **one comparator everywhere**: elements order bytewise over the UTF-8 encoding of the element's sort key, which each array names — `gates` by `gate_id`, `required_gates` by `gate_id`, `acceptable_outcomes` and `reasons` by their string value, `eligible_records`/`unused_eligible_records` by digest, `ineligible_records` by `record_sha256`, `coverage_assignment` by `path`, dependency `actions` by `ref_spec`, `containers` by `image`, inventories by `path`; set-valued arrays are strictly unique on their key (JCS canonicalizes objects, not arrays — this row is what makes array bytes deterministic) |
@@ -271,9 +271,17 @@ require to be a present, bounded regular file — an absent or non-regular
 waiver file is a refusal, not an empty hash. The refusal variant's `refusal` member is itself closed:
 `{code, path | null, detail}` with the single code enum of §2.4
 (coverage and gate codes alike), `detail` a JSON string — and
-deterministic under simultaneous faults: the reported refusal is the
-first failing rule in §3.3's evaluation order, and within that rule the
-bytewise-least affected path. There is no `diff_coverage` refusal
+deterministic under simultaneous faults, with all three members fixed:
+the evaluation order is total — structural (§2.1 manifest rules in
+listed order), preflight (§4 in listed order), state-identical,
+eligibility (§3.2 in listed order), assignment (§3.3 rules 1–4 in
+order), gates (missing before unacceptable, then bytewise-least
+`gate_id`) — the reported refusal is the first failing check; `path` is
+the bytewise-least affected path for path-scoped codes and `null`
+otherwise; `detail` is the fixed template string defined per code (no
+free text), so identical faults produce identical bytes. The
+state-identical refusal carries code `"state-identical"`, stage
+`"preflight"`, added to the closed enum. There is no `diff_coverage` refusal
 object anywhere; the pass variant's `diff_coverage` is the literal
 `"pass"` and nothing else.
 
@@ -301,7 +309,7 @@ two layers, candidate and wrapper, each a closed schema.
 
 **The candidate** (`axiom/notary-receipt-candidate/v1`) is produced by
 the `recompute` job and carries exactly: the full §2.4 pass-report
-field set — every recomputed field including `diff_coverage` (exactly
+field set with `schema` replaced by the candidate's own identifier — every recomputed field including `diff_coverage` (exactly
 `"pass"`), `eligible_records`, `unused_eligible_records`,
 `ineligible_records`, `coverage_assignment`, `unprotected_changes`, and
 `gates` (validated declarations: deduplicated, profile-complete,
@@ -449,9 +457,10 @@ do not exist at this level. Over the protected subset:
    outright; additions and deletions carry their single endpoint's mode
    and are unaffected (the wall never fires on a null side). And the
    wall is closed against laundering through intermediates: **every
-   consumed transition must preserve mode** (`before_mode ==
-   after_mode` whenever both are non-null), so a 100644→100755→100644
-   chain refuses at its first link regardless of matching endpoints.
+   non-null mode across a path's entire consumed chain must agree**
+   (per-transition preservation alone still admits an executable
+   intermediate through a delete-and-recreate pair), so any chain
+   passing through a differing mode refuses wherever it occurs.
    This is the charter requirement-4 wall in the predicate itself;
    relaxing it is the §11 charter-alignment decision. Protected paths
    are regular blobs (100644 or
@@ -632,14 +641,19 @@ minted by it; publishes per §7; holds no signing capability.
 
 Trust roots for every step resolve through one normative committed
 registry: `.axiom/notary/keys.json` at the base, schema
-`axiom/notary-key-registry/v1` — a closed object mapping each role
-(`producer`, `actor`, `correction-reviewer`, `admin-approver`,
-`approver`) to its sorted, strictly unique array of authorized SPKI
-sha256 values (the notary key's SPKI is additionally pinned in the
-lane's consumer verification spec). Detached signatures validate
-against the registry entry for their role — never against a signature
-file's self-declared fingerprint — and the registry is a §4 trust
-surface: it moves only by transition, which is what key rotation is.
+`axiom/notary-key-registry/v1` — a closed object mapping each role to
+its sorted (by `spki_sha256`), strictly unique array of
+`{spki_sha256, public_key_pem_base64}` entries: **the key bytes
+themselves**, because a fingerprint alone cannot verify an Ed25519
+signature. Registry role names are exactly the §2.1 role-table roles —
+`producer`, `actor`, `review`, `admin-approver`, `approver` — plus
+`notary` (whose entry mirrors the SPKI pinned in the lane's consumer
+verification spec; a mismatch refuses). Scope-to-registry resolution
+is the role table itself: a detached signature under a scope verifies
+against the key bytes registered for that scope's role, never against
+the signature file's self-declared fingerprint (which is
+cross-checked, not trusted). The registry is a §4 trust surface: it
+moves only by transition, which is what key rotation is.
 Runtime organization variables are not trust anchors anywhere in the
 notary path.
 
@@ -664,9 +678,13 @@ inventories forming an **exhaustive, disjoint, exactly-once partition of
 the protected paths** at genesis (the typed signer verifies the
 partition property against the manifest before signing):
 
-- `bootstrap_policies`: an object with exactly three members —
-  `{path_policy_sha256, transition_path_policy_sha256, profile_sha256}`
-  — the prospective policy bodies §7 binds;
+- `bootstrap_policies`: an object with exactly four members —
+  `{path_policy_sha256, transition_path_policy_sha256, profile_sha256,
+  key_registry_sha256}` — the prospective policy and registry bodies §7
+  binds; the ceremony's administrative key must be authorized by that
+  prospective registry, verified by the typed signer at genesis (the
+  bootstrap breaks the predecessor-roots recursion by binding its own
+  root set, exactly as it binds its policies);
 - `activation_spec_template_sha256`: the §7 epoch-placeholder template
   digest (both fields are part of the closed genesis schema, so the
   epoch digest is uniquely constructible and the same-file-smuggling
@@ -708,7 +726,11 @@ the chain across them. Closed schema: `schema`, `lane`, `epoch_sha256`,
 after_entry_sha256 | null, after_mode | null}` restricted to
 trust-surface paths, and `reason`.
 
-Rules: transition eligibility has a deterministic oracle — a committed
+Rules: a transition whose delta is empty, or whose base manifest
+equals its subject manifest, refuses — the state-identical ban of §1
+covers transitions and receipts alike, and the signer and publisher
+both enforce it; transition eligibility has a deterministic oracle — a
+committed
 `.axiom/notary/transition-path-policy.json` (same rule shape and
 semantics as the path policy, schema
 `axiom/notary-transition-path-policy/v1`), evaluated under the
@@ -814,8 +836,9 @@ afterward. The lane's epoch pin cannot
 live inside the genesis tree (that would be `epoch → tree → body →
 epoch`); it lands immediately after, in the **bootstrap activation
 transition** — the chain's second artifact, predecessor genesis, whose
-delta is exactly the consumer-spec epoch pin plus those three policy
-files, digest-identical to `bootstrap_policies`; its eligibility oracle
+delta is exactly the consumer-spec epoch pin plus those four bound
+files (the three policies and the key registry), digest-identical to
+`bootstrap_policies`; its eligibility oracle
 is the genesis-bound transition-path policy. Enforcement begins at
 activation finalization; the lock spans the whole interval, so no
 ordinary candidate can slip between. The stale-genesis laundering path
@@ -1143,7 +1166,14 @@ workflow_sha diverging from approve's OIDC claim refused; wrapper
 lane or epoch diverging from candidate or chain refused;
 authorization.environment not derived from OIDC refused; untyped or
 empty lineage identity fields refused; simultaneous-fault refusal
-reporting the first rule and least path (positive control); intermediate replay projection with a path both
+reporting the first rule, least path, and template detail (positive
+control); state-identical transition (empty delta) refused by signer
+and publisher; delete-and-recreate chain through a differing
+intermediate mode refused (chain-wide agreement); registry entry whose
+key bytes hash to a different spki_sha256 refused; scope resolved to
+the wrong registry role refused; genesis over a locked tip whose
+ceremony key is absent from the genesis-bound prospective registry
+refused; activation delta missing the key registry refused; intermediate replay projection with a path both
 terminal and directory-prefix refused as no-valid-execution;
 noncanonical JCS bytes or wrong semantic-array order refused; genesis
 inventory containing a path outside the protected domain refused;
