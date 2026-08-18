@@ -1,9 +1,9 @@
-# Notary admission: design v25
+# Notary admission: design v27
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 25 folds design-review rounds 1–24
-(one hundred twenty-nine blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 27 folds design-review rounds 1–26
+(one hundred thirty-three blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -813,29 +813,27 @@ verification reads it from here). The three typed scopes —
 `genesis`, `transition`, and `notary` — all resolve to the **`notary`**
 registry entry: the external typed signer signs all three with the
 notary key, and the admin-approver's separate signature is what
-authorizes the administrative ones. **Role-key exclusions are enumerated pairs, nothing implicit** — and
-the governing principles are stated with them. **The `notary` SPKI is
-disjoint from every other role, without exception**, because any alias
-means a private key outside the typed signer can freshly sign the
-notary domain (domain separation prevents replay, not signing). **The
-`legacy_apply_root` is likewise disjoint from every registry role,
-without exception**: §9.15's freeze pins *which* key is the v5 root,
-never *when* its signatures were made, so the holder of an aliased
-private key could freshly sign v5 records over hand-edited bytes right
-up to the lane lock and have genesis bless them as `v5_attested` — the
-exact retroactive laundering this design exists to refuse. (The
-production signing broker already rejects an apply/corpus-release root
-collision, so the total exclusion restores deployed behavior rather
-than adding a constraint.) The
-forbidden collisions are exactly: `notary`×{every other role,
-`legacy_apply_root` included}; `legacy_apply_root`×{every registry
-role}; `producer`×{`review`, `admin-approver`,
-`approver`, `corpus-release`}; `actor`×{`review`, `admin-approver`,
-`approver`, `corpus-release`}; `review`×`admin-approver`;
-`approver`×{`producer`, `actor`, `corpus-release`}. Any listed
-collision refuses the registry; there is **no permitted service
-pair** — every role, service roles included, holds its own key. (The
-charter's separate-key requirement made
+authorizes the administrative ones. **Role-key separation is total, not enumerated**: the SPKI sets of
+all roles — the seven registry roles and `legacy_apply_root` — are
+**pairwise disjoint**, and any SPKI appearing under two roles refuses
+the registry. Four consecutive review rounds each found a pair a
+sparse forbidden-pair matrix had missed, so the contract is the
+universal rule, with no permitted alias left for an implementer to
+weigh. Two consequences carry their rationale by name. A `notary`
+alias would mean a private key outside the typed signer can freshly
+sign the notary domain (domain separation prevents replay, not
+signing). A `legacy_apply_root` alias would reopen pre-epoch
+laundering: §9.15's freeze pins *which* key is the v5 root, never
+*when* its signatures were made, so an aliased holder could freshly
+sign v5 records over hand-edited bytes right up to the lane lock and
+have genesis bless them as `v5_attested` — and the production signing
+broker already rejects an apply/corpus-release root collision, so
+totality restores deployed behavior rather than adding a constraint.
+The same shape covers every other pair — an `admin-approver` alias of
+`approver`, for one, would escalate ordinary reviewer compromise into
+authority over trust-surface rotation. Whether one person may hold two
+roles' keys is §8 custody policy; the registry contract is about keys:
+no SPKI serves two roles. (The charter's separate-key requirement made
 checkable; the cross-scope matrix alone cannot detect deliberate key
 reuse across scopes.) For every other scope,
 scope-to-registry resolution is the role table itself: a detached signature under a scope verifies
@@ -1261,7 +1259,7 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
     holder could freshly sign v5 records over hand-edited bytes before
     the lane lock and have genesis bless them (§5's window argument —
     and the production broker already rejects this collision); the
-    registry validator enforces the full §5 matrix.
+    registry validator enforces §5's total pairwise disjointness.
 
 ## 10. Negative-test floor
 
@@ -1455,12 +1453,13 @@ registry key bytes failing base64, DER, Ed25519, or fingerprint
 validation refused; protected 100755 entry refused at base, subject,
 and inside a transition (domain-total wall); delete-then-recreate-
 executable across two finalized receipts refused by the same rule
-(positive control); **a table-driven collision suite over every forbidden §5 pair** —
-the matrix now total over `notary` and `legacy_apply_root`: every
-pairing of each a distinct refusal case, `notary`×`review`,
-`notary`×`admin-approver`, and
-`corpus-release`×`legacy_apply_root` included — with an all-distinct
-registry accepted (positive control); finalization requested by rotated not-yet-finalized workflow
+(positive control); **a table-driven collision suite over every unordered role pair** —
+§5's separation is total, so the table is the full pairwise matrix
+over the seven registry roles plus `legacy_apply_root`: all
+twenty-eight pairs distinct refusal cases (`notary`×`review`,
+`admin-approver`×`approver`, and `corpus-release`×`legacy_apply_root`
+included) — with an all-distinct registry accepted (positive
+control); finalization requested by rotated not-yet-finalized workflow
 code validated and executed by the broker, not the workflow (positive
 control); broker refusing finalization when the pending artifact,
 predecessor, or merged tree fails validation; clean-room chain
@@ -1518,7 +1517,7 @@ ineligible_records occurrence, or an omitted or extra applicable
 reason;
 reusable verify job refused; duplicate prompt_sha256s refused; empty
 or wrong pinned artifact_name refused; review/admin-approver SPKI
-collision refused; approver/automation SPKI collision refused; policy
+collision refused (a member of the total suite); policy
 protecting .axiom/lineage or .axiom/notary refused as policy-invalid; intermediate replay projection with a path both
 terminal and directory-prefix refused as no-valid-execution;
 noncanonical JCS bytes or wrong semantic-array order refused; genesis
