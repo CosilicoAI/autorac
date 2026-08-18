@@ -1,9 +1,9 @@
-# Notary admission: design v31
+# Notary admission: design v32
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 31 folds design-review rounds 1–30
-(one hundred thirty-eight blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 32 folds design-review rounds 1–31
+(one hundred thirty-nine blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -1046,16 +1046,29 @@ transition = body + `transition` sidecar + `admin-approver` sidecar +
 after sides; deletions publish nothing); receipt =
 report body + candidate body + the `approver` sidecar over the
 candidate + receipt body + the `notary` sidecar over the receipt.
-**Preimages have their own opaque grammar**: `<digest>.raw`, the raw
+**Preimages have their own grammar — opaque at dispatch, semantic
+at use**: `<digest>.raw`, the raw
 lane-file bytes stored verbatim, `<digest>` the lowercase 64-hex
-SHA-256 of exactly those bytes — trust files are YAML, TOML, and
+SHA-256 of exactly those bytes. Trust files are YAML, TOML, and
 JSON, so preimages are exempt from the §2.1 body contract and are
-**never parsed**, whatever their bytes resemble (a `.raw` file whose
-content looks like a schema-carrying JSON body is still opaque bytes;
-the suffix alone selects the treatment, so no type precedence
-exists). This holds even for the JSON policy files: every preimage
+**never dispatched as chain artifacts**, whatever their bytes
+resemble (a `.raw` file whose
+content looks like a schema-carrying JSON body is still no body;
+the suffix alone selects the namespace, so no type precedence
+exists) — this holds even for the JSON policy files: every preimage
 lands under `.raw`, and the `.json` namespace holds chain-artifact
-bodies alone.
+bodies alone. Dispatch opacity is not semantic opacity: **once a
+preimage is digest-bound to a named trust path, its user decodes and
+validates the bytes under that trust file's own contract** — the key
+registry preimage under `axiom/notary-key-registry/v1` (mandatory:
+reconstruction recovers each state's key bytes from here, because a
+detached signature carries only a fingerprint and a fingerprint
+cannot verify a signature), the policy and profile preimages under
+their own schemas, and schema-less trust files (workflow YAML, the
+waiver file, the toolchain pin) by digest identity alone, their
+semantics living in lane enforcement. A bound preimage that fails
+its own contract fails the reconstruction or validation step that
+needed it.
 The unsigned files are closed by **digest-reachability, not by
 pattern**: every unsigned `.json` body on the branch must be
 digest-named by a signed body — the report by its candidate's
@@ -1592,8 +1605,13 @@ each accepted verbatim under `.raw` (positive controls — the honest
 waiver-file and toolchain-pin transitions are constructible); a raw
 preimage wrapped in JSON refused (digest no longer the delta's
 after-digest); a `.raw` file whose bytes resemble a schema-carrying
-JSON body accepted as opaque and never parsed (positive control — no
-type precedence); a `.raw` file digest-reachable from no
+JSON body never dispatched as a chain artifact (positive control —
+dispatch opacity); the registry preimage decoded and validated under
+its own schema at reconstruction, recovering the historical keys that
+verify a post-rotation signature (positive control — semantic use); a
+bound registry preimage failing its own schema validation failing
+reconstruction; a sidecar naming a `.raw` file invalidating the
+branch; a `.raw` file digest-reachable from no
 bootstrap_policies digest or delta after-digest invalidating the
 branch; a transition delta out of bytewise path order, or with a
 duplicate path, refused at parse; two honest constructions of one
