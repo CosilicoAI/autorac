@@ -1,0 +1,45 @@
+- name: payable during inclusive payment period
+  period: 2026-03
+  input:
+    de:statutes/estg/66#input.month_is_on_or_after_first_qualifying_month: true
+    de:statutes/estg/66#input.month_is_on_or_before_last_qualifying_month: true
+  output:
+    de:statutes/estg/66#kindergeld_payable_for_month: holds
+- name: not payable before first qualifying month
+  period: 2026-03
+  input:
+    de:statutes/estg/66#input.month_is_on_or_after_first_qualifying_month: false
+    de:statutes/estg/66#input.month_is_on_or_before_last_qualifying_month: true
+  output:
+    de:statutes/estg/66#kindergeld_payable_for_month: not_holds
+- name: not payable after last qualifying month
+  period: 2026-03
+  input:
+    de:statutes/estg/66#input.month_is_on_or_after_first_qualifying_month: true
+    de:statutes/estg/66#input.month_is_on_or_before_last_qualifying_month: false
+  output:
+    de:statutes/estg/66#kindergeld_payable_for_month: not_holds
+- name: increased kindergeld rounds down below half euro
+  period: 2026-03
+  input:
+    de:statutes/estg/66#input.child_allowances_under_sections_31_and_32_6_1_are_increased: true
+    de:statutes/estg/66#input.correspondingly_increased_kindergeld_amount: 100.49
+  output:
+    de:statutes/estg/66#kindergeld_before_whole_euro_rounding: 100.49
+    de:statutes/estg/66#kindergeld_after_whole_euro_rounding: 100
+- name: increased kindergeld rounds up from half euro
+  period: 2026-03
+  input:
+    de:statutes/estg/66#input.child_allowances_under_sections_31_and_32_6_1_are_increased: true
+    de:statutes/estg/66#input.correspondingly_increased_kindergeld_amount: 100.5
+  output:
+    de:statutes/estg/66#kindergeld_before_whole_euro_rounding: 100.5
+    de:statutes/estg/66#kindergeld_after_whole_euro_rounding: 101
+- name: unchanged kindergeld uses monthly statutory amount
+  period: 2026-03
+  input:
+    de:statutes/estg/66#input.child_allowances_under_sections_31_and_32_6_1_are_increased: false
+    de:statutes/estg/66#input.correspondingly_increased_kindergeld_amount: 100.5
+  output:
+    de:statutes/estg/66#kindergeld_before_whole_euro_rounding: 259
+    de:statutes/estg/66#kindergeld_after_whole_euro_rounding: 259
