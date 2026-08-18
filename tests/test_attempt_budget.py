@@ -7,6 +7,7 @@ import pytest
 import scripts.enforce_attempt_budget as budget_mod
 from scripts.enforce_attempt_budget import (
     ENCODE_JOB_NAME,
+    ENCODE_STEP_NAME,
     evaluate_attempt_budget,
     make_encode_job_checker,
     run_citation,
@@ -180,8 +181,8 @@ class TestEncodeJobChecker:
         # encode job skipped. Only run 1 actually reached the model.
         fetch, _ = self._jobs_fixture(
             {
-                1: [{"name": ENCODE_JOB_NAME, "conclusion": "failure"}],
-                2: [{"name": ENCODE_JOB_NAME, "conclusion": "skipped"}],
+                1: [self._encode_job("failure")],
+                2: [self._encode_job("skipped")],
                 3: [{"name": "Enforce failed-attempt budget", "conclusion": "failure"}],
             }
         )
@@ -200,10 +201,48 @@ class TestEncodeJobChecker:
         assert decision.streak == 1
         assert not decision.exhausted
 
+    @staticmethod
+    def _encode_job(step_conclusion: str, *, job_conclusion: str = "failure") -> dict:
+        return {
+            "name": ENCODE_JOB_NAME,
+            "conclusion": job_conclusion,
+            "steps": [
+                {"name": ENCODE_STEP_NAME, "conclusion": step_conclusion},
+            ],
+        }
+
+    def test_preflight_failure_inside_encode_job_is_neutral(self) -> None:
+        fetch, _ = self._jobs_fixture(
+            {
+                1: [
+                    {
+                        "name": ENCODE_JOB_NAME,
+                        "conclusion": "failure",
+                        "steps": [
+                            {
+                                "name": "Resolve trusted prior-run repair candidate",
+                                "conclusion": "failure",
+                            },
+                            {"name": ENCODE_STEP_NAME, "conclusion": "skipped"},
+                        ],
+                    }
+                ]
+            }
+        )
+        decision = evaluate_attempt_budget(
+            [_run(1, "2026-08-12T01:00:00Z", "failure")],
+            citation=CITATION,
+            budget=1,
+            current_run_id=99,
+            spent_model_tokens=make_encode_job_checker(fetch),
+        )
+        assert decision.streak == 0
+        assert not decision.exhausted
+
     def test_real_failures_still_count(self) -> None:
         fetch, _ = self._jobs_fixture(
             {
-                run_id: [{"name": ENCODE_JOB_NAME, "conclusion": "failure"}]
+                run_id: [self._encode_job("failure")]
                 for run_id in (1, 2, 3)
             }
         )
@@ -225,7 +264,7 @@ class TestEncodeJobChecker:
     def test_lookup_cap_counts_conservatively(self) -> None:
         fetch, calls = self._jobs_fixture(
             {
-                run_id: [{"name": ENCODE_JOB_NAME, "conclusion": "skipped"}]
+                run_id: [self._encode_job("skipped", job_conclusion="skipped")]
                 for run_id in range(1, 6)
             }
         )
@@ -264,7 +303,7 @@ class TestEncodeJobChecker:
         # cap; an unverifiable phantom success below them must not reset
         # the streak fed by genuine failures further down.
         jobs_by_run: dict[int, list[dict]] = {
-            run_id: [{"name": ENCODE_JOB_NAME, "conclusion": "skipped"}]
+            run_id: [self._encode_job("skipped", job_conclusion="skipped")]
             for run_id in range(5, 15)
         }
         fetch, calls = self._jobs_fixture(jobs_by_run)
@@ -302,10 +341,10 @@ class TestEncodeJobChecker:
         # without any encode having succeeded. It must not lift the block.
         fetch, _ = self._jobs_fixture(
             {
-                1: [{"name": ENCODE_JOB_NAME, "conclusion": "failure"}],
-                2: [{"name": ENCODE_JOB_NAME, "conclusion": "failure"}],
-                3: [{"name": ENCODE_JOB_NAME, "conclusion": "skipped"}],
-                4: [{"name": ENCODE_JOB_NAME, "conclusion": "failure"}],
+                1: [self._encode_job("failure")],
+                2: [self._encode_job("failure")],
+                3: [self._encode_job("skipped", job_conclusion="skipped")],
+                4: [self._encode_job("failure")],
             }
         )
         runs = [
@@ -327,9 +366,9 @@ class TestEncodeJobChecker:
     def test_real_success_still_resets_streak(self) -> None:
         fetch, _ = self._jobs_fixture(
             {
-                1: [{"name": ENCODE_JOB_NAME, "conclusion": "failure"}],
-                2: [{"name": ENCODE_JOB_NAME, "conclusion": "success"}],
-                3: [{"name": ENCODE_JOB_NAME, "conclusion": "failure"}],
+                1: [self._encode_job("failure")],
+                2: [self._encode_job("success", job_conclusion="success")],
+                3: [self._encode_job("failure")],
             }
         )
         runs = [
@@ -385,7 +424,7 @@ class TestMainExitContract:
             lambda **kwargs: (
                 jobs
                 if jobs is not None
-                else [{"name": ENCODE_JOB_NAME, "conclusion": "failure"}]
+                else [TestEncodeJobChecker._encode_job("failure")]
             ),
         )
 
