@@ -52,6 +52,7 @@ RUNS_PER_PAGE = 100
 # guard itself blocked conclude "failure" with the encode job skipped and
 # must not feed back into the streak.
 ENCODE_JOB_NAME = "Queue protected signed RuleSpec re-encode"
+ENCODE_STEP_NAME = "Encode, review, validate, and apply"
 # At most this many per-run jobs lookups per evaluation; beyond the cap a
 # failure is counted without verification (conservative toward blocking).
 MAX_JOB_LOOKUPS = 10
@@ -145,12 +146,15 @@ def make_encode_job_checker(
     *,
     max_lookups: int = MAX_JOB_LOOKUPS,
     encode_job_name: str = ENCODE_JOB_NAME,
+    encode_step_name: str = ENCODE_STEP_NAME,
 ) -> Callable[[dict], bool]:
     """Build a ``spent_model_tokens`` classifier backed by the jobs API.
 
-    A run counts as model-spending only when its encode job exists with a
-    non-skipped conclusion. Past ``max_lookups`` (or on lookup errors)
-    the classification is conservative toward blocking in both
+    A run counts as model-spending only when its encode job contains the
+    actual encode step with a non-skipped conclusion. Looking only at the
+    enclosing job is insufficient: trusted-repair and other preflight steps
+    can fail that job before the model runs. Past ``max_lookups`` (or on
+    lookup errors) the classification is conservative toward blocking in both
     directions: unverified failures count against the budget and
     unverified successes stay neutral rather than resetting the streak.
     Bounded so a long history cannot stall the guard.
@@ -177,7 +181,13 @@ def make_encode_job_checker(
         ]
         if not encode_jobs:
             return False
-        return any(job.get("conclusion") != "skipped" for job in encode_jobs)
+        encode_steps = [
+            step
+            for job in encode_jobs
+            for step in (job.get("steps") or [])
+            if isinstance(step, dict) and step.get("name") == encode_step_name
+        ]
+        return any(step.get("conclusion") != "skipped" for step in encode_steps)
 
     return spent_model_tokens
 
