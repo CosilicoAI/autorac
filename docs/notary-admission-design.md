@@ -1,9 +1,9 @@
-# Notary admission: design v22
+# Notary admission: design v23
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 22 folds design-review rounds 1–21
-(one hundred twenty-one blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 23 folds design-review rounds 1–22
+(one hundred twenty-six blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -234,9 +234,16 @@ refusals carry `coverage_assignment`, `unused_eligible_records`,
 | `"assignment"` | prefix through the record lists — **never** an assignment or unused partition (an ambiguity has neither) |
 | `"gates"` | the full prefix, plus the gates-stage extras below |
 
-The prefix property is the single rule; the table describes what it
-yields per stage and never overrides it — including for structural
-refusals, whose prefixes reflect how far establishment actually got. Only `"gates"`-stage refusals
+Formally the refusal report is a **discriminated union on `stage`**:
+the common shape (`schema`, `lane`, `epoch_sha256`,
+`subject_commit_git_oid`, `stage`, `refusal`, `established`) for every
+stage, and the `"gates"` variant alone extending it with
+`coverage_assignment`, `unused_eligible_records`,
+`unprotected_changes`, and `gates` — closed-world parsing accepts
+exactly the variant its discriminator names. The prefix property is
+the single rule for `established`; the table describes what it yields
+per stage and never overrides it — including for structural refusals,
+whose prefixes reflect how far establishment actually got. Only `"gates"`-stage refusals
 additionally carry `coverage_assignment`, `unused_eligible_records`,
 `unprotected_changes`, and `gates` — there coverage succeeded, so all
 four are determinate.
@@ -764,18 +771,24 @@ verification reads it from here). The three typed scopes —
 `genesis`, `transition`, and `notary` — all resolve to the **`notary`**
 registry entry: the external typed signer signs all three with the
 notary key, and the admin-approver's separate signature is what
-authorizes the administrative ones. **Role-key exclusions are enumerated pairs, nothing implicit** — the
-forbidden collisions are exactly: `producer`×{`review`,
-`admin-approver`, `approver`, `notary`, `corpus-release`};
-`actor`×{`review`, `admin-approver`, `approver`, `notary`,
-`corpus-release`}; `review`×`admin-approver`;
-`approver`×{`producer`, `actor`, `notary`, `corpus-release`}; plus the
-genesis-time `legacy_apply_root`×{`notary`, `admin-approver`,
-`review`, `approver`} refusals of §9.16. Any listed collision refuses
-the registry; unlisted pairs (e.g. `notary`×`corpus-release`, two
-service-held verification roots) are permitted. (The charter's
-separate-key requirement made checkable; the cross-scope matrix alone
-cannot detect deliberate key reuse across scopes.) For every other scope,
+authorizes the administrative ones. **Role-key exclusions are enumerated pairs, nothing implicit** — and
+the governing principle is stated with them: **the `notary` SPKI is
+disjoint from every other role, without exception**, because any alias
+means a private key outside the typed signer can freshly sign the
+notary domain (domain separation prevents replay, not signing). The
+forbidden collisions are exactly: `notary`×{every other role,
+`legacy_apply_root` included}; `producer`×{`review`, `admin-approver`,
+`approver`, `corpus-release`}; `actor`×{`review`, `admin-approver`,
+`approver`, `corpus-release`}; `review`×`admin-approver`;
+`approver`×{`producer`, `actor`, `corpus-release`,
+`legacy_apply_root`}; plus the genesis-time
+`legacy_apply_root`×{`notary`, `admin-approver`, `review`, `approver`}
+refusals of §9.16. Any listed collision refuses the registry; the one
+deliberately permitted service pair is
+`corpus-release`×`legacy_apply_root` (both verification roots of
+retiring infrastructure). (The charter's separate-key requirement made
+checkable; the cross-scope matrix alone cannot detect deliberate key
+reuse across scopes.) For every other scope,
 scope-to-registry resolution is the role table itself: a detached signature under a scope verifies
 against the key bytes registered for that scope's role, never against
 the signature file's self-declared fingerprint (which is
@@ -802,7 +815,11 @@ Produced only through the typed signer under administrative authorization
 (§6.4's authority). Its body binds: `schema`, `lane`,
 `genesis_commit_git_oid`, `genesis_tree_manifest_sha256`, and two frozen
 inventories forming an **exhaustive, disjoint, exactly-once partition of
-the protected paths** at genesis (the typed signer verifies the
+the protected paths** at genesis — where **every protected entry must be
+mode 100644**: the domain-total wall of §3.3 applies at genesis and
+activation exactly as in ordinary coverage, so a pre-epoch hand chmod
+cannot hide under a path/blob-only v5 record (current v5 applied_files
+bind no modes) and then poison every successor's base (the typed signer verifies the
 partition property against the manifest before signing):
 
 - `bootstrap_policies`: an object with exactly four members —
@@ -923,7 +940,11 @@ and can always manipulate qualified custom refs of the repository it
 holds, so single-ref confinement inside the lane repository is not
 implementable — whereas the publisher App's contents-write installation
 covers only the notary repository, and in the lane repository it holds
-checks-write and contents-read alone. The lane repository's refs are
+a lane credential whose App installation holds `checks: write`,
+`statuses: write`, and `contents: read` — GitHub's source-bound
+required check needs the statuses permission at the installation even
+when runs are created via the Checks API — with runtime tokens
+downscoped per operation. The lane repository's refs are
 physically outside the publisher's write capability. The chain branch's
 ruleset in the notary repository: only the publisher App may push; no
 force pushes; no deletion; linear history. Its contents: content-addressed artifact files (reports,
@@ -1038,9 +1059,10 @@ equal what was verified":
    rather than left green. The race sol named — two green pendings, the
    second merging onto a moved base — is closed before merge, not
    discovered after.
-3. **Finalize.** After the merge, the finalizer (publisher job,
-   triggered on the protected content ref) recomputes the merged tip's
-   tree manifest. Finalization requires all of: the merged tip manifest
+3. **Finalize.** After the merge, the finalize workflow *requests*
+   finalization with its OIDC identity, and the **publisher-token
+   broker** — per §5 the sole holder of the chain credential —
+   recomputes the merged tip's tree manifest. Finalization requires all of: the merged tip manifest
    equals the artifact's subject manifest; **the artifact's
    `chain_predecessor_sha256` and kind equal the current finalized tip
    exactly** — manifest-state agreement is not enough, because two
@@ -1116,7 +1138,10 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
    `contents: read` with no secrets and no environment.
 5. **Compute isolation**: fresh ephemeral runners for the verification
    and trusted jobs.
-6. Trusted recomputation implemented (§5): every claim-bearing invariant
+6. Trusted recomputation implemented (§5): typed operations for
+   genesis, transition, receipt, **and finalization** (the last a
+   broker-side validate-and-CAS, never a vended credential); every
+   claim-bearing invariant
    re-derived from content-addressed inputs before signing; typed
    operations for genesis, transition, and receipt scopes; no raw-byte
    signing for those scopes.
@@ -1138,7 +1163,9 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
    credentials** (two Apps, or two repository- and
    permission-downscoped installation tokens): a chain credential with
    contents-write on the notary repository alone, and a lane credential
-   with checks-write and contents-read on the lane repository alone.
+   with an installation holding `checks: write`, `statuses: write`,
+   and `contents: read` on the lane repository alone, runtime tokens
+   downscoped per operation.
    The publisher job holds no App-minting authority — tokens are
    provisioned to it, never minted by it. The publisher runs pinned
    candidate-free code and validates **every merge-authorizing
@@ -1167,8 +1194,11 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
     `corpus-release` entry — Job 1's toolchain verification must read
     it from the registry before any lane activates.
 16. Genesis-time equality refusals: `legacy_apply_root` equal to the
-    `notary`, `admin-approver`, or `review` entries refuses; the
-    registry validator enforces the §5 pairwise exclusions.
+    `notary`, `admin-approver`, `review`, or `approver` entries
+    refuses — the last matters concretely because legacy signed-apply
+    retirement is not a pilot precondition, and an aliased apply
+    authority could otherwise forge receipt approvals; the registry
+    validator enforces the full §5 matrix.
 
 ## 10. Negative-test floor
 
@@ -1241,8 +1271,9 @@ non-trust-surface path; nonexistent
 `record_sha256`; duplicate qualifying v5 records for one path; genesis
 carrying coverage; state-identical receipt (base manifest equals subject manifest)
 refused; mode-preserving transition rule refusing a
-100644→100755→100644 chain at its first link; protected addition and
-deletion unaffected by the mode wall (positive controls); post-epoch change vouched only by v5; v5
+100644→100755→100644 chain at its first link; protected 100644 addition and
+deletion admissible (positive controls — the domain-total wall refuses
+100755 anywhere, additions included); post-epoch change vouched only by v5; v5
 record whose blob differs from its frozen pair; transition whose
 recomputed diff differs from its enumerated delta (smuggled content);
 transition evaluated under successor roots (self-authorizing rotation);
@@ -1328,8 +1359,9 @@ refused; activation consumer-spec differing from the genesis-bound
 template beyond the epoch substitution refused (same-file smuggling);
 replay over the whole tree instead of the protected projection would
 reject a valid candidate (positive control for the projection rule);
-publisher or finalizer credentials requested from the publisher-token
-broker by a wrong workflow, ref, run, or environment vended nothing;
+a finalization request from a wrong workflow, ref, run, or
+environment refused by the broker (no finalizer credential is ever
+vended — finalization is a broker-side operation);
 publisher-token broker asked to sign, or signing broker asked for a
 write token, refused (capability separation of the two brokers);
 publishing-environment administrator bypass tested off; signature
@@ -1363,7 +1395,10 @@ code validated and executed by the broker, not the workflow (positive
 control); broker refusing finalization when the pending artifact,
 predecessor, or merged tree fails validation; clean-room chain
 reconstruction succeeding from the branch alone after a key rotation
-(positive control — published preimages); cross-receipt correction
+(positive control — published preimages); missing or wrong historical
+policy, profile, or registry preimage on the branch failing
+reconstruction; genesis or activation containing a 100755 protected
+entry refused; cross-receipt correction
 with a null predecessor and the amended record named in reason
 accepted (positive control); noncanonical decimal id ("01") refused; invalid
 RFC 3339 emitted_at refused; registry notary entry differing from the
