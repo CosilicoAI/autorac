@@ -1,9 +1,9 @@
-# Notary admission: design v21
+# Notary admission: design v22
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 21 folds design-review rounds 1–20
-(one hundred eighteen blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 22 folds design-review rounds 1–21
+(one hundred twenty-one blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -533,30 +533,34 @@ do not exist at this level. Over the protected subset:
    tree would falsely reject every nonempty candidate — cross-path cycles between records (X and Y each feeding the
    other on different paths) refuse as `record-cycle`, because no
    repository state ever contained what the subject cherry-picks.
-   Second, **correction predecessors have predicate meaning**: a consumed
-   correction event's `predecessor_record_sha256` must be null or equal
-   the digest of the immediately preceding consumed record in the same
-   path's chain; anything else refuses. It is lineage, verified — not
-   opaque metadata implementations may ignore.
+   Second, **correction predecessors have predicate meaning, scoped to
+   the current candidate**: a consumed correction event's
+   `predecessor_record_sha256` must be null or equal the digest of the
+   immediately preceding consumed record in the same path's chain
+   within this assignment; anything else refuses. A correction landing
+   in a later candidate than the record it amends uses null — the
+   historical relationship belongs in `reason`, since cross-receipt
+   pointers would force references to permanently ineligible records.
+   It is lineage, verified — not opaque metadata implementations may
+   ignore.
 2. **Blob-and-mode ground truth.** Each chain's first
    `(before_blob_sha256, before_mode)` equals the path's state at the
    base (`(null, null)` for additions); each link's after-state equals
    the next link's before-state; the final after-state equals the path's
    state in the subject (`(null, null)` for deletions). Mode-only changes
    need a covering transition like any other change.
-3. **Admissible entries and the mode wall, presence-aware.** For a
-   protected path **present at both endpoints**, differing modes refuse
-   outright; additions and deletions carry their single endpoint's mode
-   and are unaffected (the wall never fires on a null side). And the
-   wall is closed against laundering through intermediates: **every
-   non-null mode across a path's entire consumed chain must agree**
-   (per-transition preservation alone still admits an executable
-   intermediate through a delete-and-recreate pair), so any chain
-   passing through a differing mode refuses wherever it occurs.
-   This is the charter requirement-4 wall in the predicate itself;
-   relaxing it is the §11 charter-alignment decision. Protected paths
-   are regular blobs (100644 or
-   100755) wherever they exist — symlinks are inadmissible in the
+3. **Admissible entries and the mode wall, domain-total.** The pilot's
+   protected domain is **100644-only**: a protected entry with mode
+   `"100755"` — at the base, at the subject, or inside any transition —
+   refuses. This is stronger than an endpoint or chain rule and closes
+   every laundering shape at once, including delete-in-one-receipt,
+   recreate-executable-in-the-next: no admissible executable state
+   exists anywhere in the protected domain, so there is nothing to
+   launder toward. (Every rulespec file is a 100644 YAML file; the
+   restriction costs the pilot nothing.) Executable support, if ever
+   wanted, is the §11 charter-alignment decision and arrives with the
+   chain-state tombstone machinery a cross-receipt wall needs.
+   Protected paths are regular 100644 blobs wherever they exist — symlinks are inadmissible in the
    protected domain, and gitlinks are refused tree-wide by §2.1.
    File/directory replacements decompose into entry deletions and
    additions and are covered as such.
@@ -627,9 +631,19 @@ repository-write capability, and the publisher-token broker is
 forbidden signing capability. A revoked, rerun, or foreign workflow
 gets nothing. Minting authority never enters any job; the current
 publisher's in-job App minting is what this replaces. Finalization
-necessarily runs after the merge, in a separate named workflow
-(`notary-finalize.yml`) triggered by the protected content ref, under
-the same environment and credential binding.
+necessarily runs after the merge — but its trust does not ride any
+lane workflow file, because a workflow-rotation transition changes the
+very file GitHub would load post-merge, and the successor code is not
+yet finalized. So **finalization is a typed broker operation**: the
+`notary-finalize.yml` workflow (triggered by the protected content
+ref, in the publishing environment) merely *requests* finalization
+with its OIDC identity; the **publisher-token broker itself**
+re-derives the merged tip's manifest, validates the signed pending
+artifact, its chain predecessor, and the state-machine rules, and
+executes the CAS commit with its own credential. Even
+not-yet-finalized workflow code can only ask; it validates nothing and
+holds nothing, so squash rewrites and credential-bearing workflow
+rotations stay harmless.
 
 Job conclusions are read through the jobs-for-run endpoint (by job name
 and attempt), never self-asserted; the `approve` job's identity is
@@ -750,14 +764,18 @@ verification reads it from here). The three typed scopes —
 `genesis`, `transition`, and `notary` — all resolve to the **`notary`**
 registry entry: the external typed signer signs all three with the
 notary key, and the admin-approver's separate signature is what
-authorizes the administrative ones. **Role-key exclusions are pairwise and explicit**: an SPKI under
-`producer` or `actor` must not appear under any admission-side role
-(`review`, `admin-approver`, `approver`, `notary`); `review` and
-`admin-approver` must be disjoint (a correction reviewer must not hold
-rotation authority); and `approver` must be disjoint from every
-automation role. Any listed collision refuses the registry (the
-charter's separate-key requirement made checkable; the cross-scope
-matrix alone cannot detect deliberate key reuse across scopes). For every other scope,
+authorizes the administrative ones. **Role-key exclusions are enumerated pairs, nothing implicit** — the
+forbidden collisions are exactly: `producer`×{`review`,
+`admin-approver`, `approver`, `notary`, `corpus-release`};
+`actor`×{`review`, `admin-approver`, `approver`, `notary`,
+`corpus-release`}; `review`×`admin-approver`;
+`approver`×{`producer`, `actor`, `notary`, `corpus-release`}; plus the
+genesis-time `legacy_apply_root`×{`notary`, `admin-approver`,
+`review`, `approver`} refusals of §9.16. Any listed collision refuses
+the registry; unlisted pairs (e.g. `notary`×`corpus-release`, two
+service-held verification roots) are permitted. (The charter's
+separate-key requirement made checkable; the cross-scope matrix alone
+cannot detect deliberate key reuse across scopes.) For every other scope,
 scope-to-registry resolution is the role table itself: a detached signature under a scope verifies
 against the key bytes registered for that scope's role, never against
 the signature file's self-declared fingerprint (which is
@@ -984,7 +1002,12 @@ is closed by the audited freeze: genesis is valid only over the locked
 tip, and the activation transition chains from it before anything else
 may.
 
-**Verification does not trust the pointer.** The chain's truth is
+**Verification does not trust the pointer — and the branch carries its
+own preimages.** Genesis publishes the full policy, profile, and
+key-registry bodies (not digests alone) beside its body on the chain
+branch, and every transition that changes them publishes the new
+bodies likewise, so administrative approvals and historical keys
+verify from the branch alone after any number of rotations. The chain's truth is
 reconstructible by rule from the branch alone: the valid chain is the
 unique sequence of signed artifacts starting at genesis in which each
 artifact's base manifest equals its predecessor's subject manifest, each
@@ -1330,7 +1353,19 @@ byte-correct at genesis absent from the activation diff accepted
 (positive control — installed values, not diff membership);
 generation-side SPKI colliding with an admission-side role refused;
 registry key bytes failing base64, DER, Ed25519, or fingerprint
-validation refused; noncanonical decimal id ("01") refused; invalid
+validation refused; protected 100755 entry refused at base, subject,
+and inside a transition (domain-total wall); delete-then-recreate-
+executable across two finalized receipts refused by the same rule
+(positive control); approver/corpus-release collision refused per the
+enumerated pairs while notary/corpus-release is permitted (positive
+control); finalization requested by rotated not-yet-finalized workflow
+code validated and executed by the broker, not the workflow (positive
+control); broker refusing finalization when the pending artifact,
+predecessor, or merged tree fails validation; clean-room chain
+reconstruction succeeding from the branch alone after a key rotation
+(positive control — published preimages); cross-receipt correction
+with a null predecessor and the amended record named in reason
+accepted (positive control); noncanonical decimal id ("01") refused; invalid
 RFC 3339 emitted_at refused; registry notary entry differing from the
 consumer pin refused; waiver bytes disagreeing with the base toolchain
 pin refused; equal-manifest transition carrying a forged nonempty
