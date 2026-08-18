@@ -1,9 +1,9 @@
-# Notary admission: design v19
+# Notary admission: design v20
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 19 folds design-review rounds 1–18
-(one hundred eleven blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 20 folds design-review rounds 1–19
+(one hundred sixteen blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -226,13 +226,19 @@ assignment nor a determinate unused partition); only `gates`-stage
 refusals carry `coverage_assignment`, `unused_eligible_records`,
 `unprotected_changes`, and `gates` (coverage succeeded there).
 
-| `stage` | additional required fields |
+| `stage` | `established` content |
 |---|---|
-| `"structural"` | none |
-| `"preflight"` | both tree manifests, base/chain fields, policy and profile digests |
-| `"eligibility"` | the preflight fields + `eligible_records`, `ineligible_records` |
-| `"assignment"` | the eligibility fields + `unused_eligible_records` |
-| `"gates"` | the assignment fields + `coverage_assignment`, `unprotected_changes`, `gates` |
+| `"structural"` | the all-null prefix (nothing established) |
+| `"preflight"` | whatever prefix the failing check permitted — a `policy-invalid` for an absent profile truthfully carries `profile_sha256: null` |
+| `"eligibility"` | prefix through the record lists |
+| `"assignment"` | prefix through the record lists — **never** an assignment or unused partition (an ambiguity has neither) |
+| `"gates"` | the full prefix, plus the gates-stage extras below |
+
+The prefix property is the single rule; the table describes what it
+yields per stage and never overrides it. Only `"gates"`-stage refusals
+additionally carry `coverage_assignment`, `unused_eligible_records`,
+`unprotected_changes`, and `gates` — there coverage succeeded, so all
+four are determinate.
 
 A `"gates"`-stage refusal does carry its unique assignment — coverage
 succeeded; a gate outcome did not. The refusal member is named
@@ -285,10 +291,13 @@ prerequisite order: `address-mismatch` and `malformed-record` are
 always computable; `invalid-signature`, `wrong-lane`, `wrong-epoch`,
 `duplicate-transition-paths`, and `unprotected-path-transition` apply
 only when the body parsed (never beside `malformed-record`). Entries
-are keyed by the **store-filename digest** (the name the file claims),
-not the body digest — so a valid body added at its correct path *and*
-at an alias yields one eligible record plus one ineligible
-`address-mismatch` entry, with no identity collision. Same shape in
+are keyed by `store_name` — the literal filename string under
+`.axiom/lineage/` (total over every tree: a name that is not a valid
+lowercase-hex digest, or differs from the body's digest, is simply an
+`address-mismatch` entry under its literal name) — so a valid body
+added at its correct path *and* at an alias yields one eligible record
+plus one ineligible entry, with no identity collision and no
+unrepresentable key. Same shape in
 pass and refusal variants; `dependency_pins_sha256`: the digest of a
 canonical dependency inventory, a body of schema
 `axiom/notary-dependency-inventory/v1` with the closed shape
@@ -724,7 +733,11 @@ SHA-256 equals the beside fingerprint, else the registry refuses) —
 because a fingerprint alone cannot verify a signature. Registry role names are exactly the §2.1 role-table roles —
 `producer`, `actor`, `review`, `admin-approver`, `approver` — plus
 `notary` (whose entry mirrors the SPKI pinned in the lane's consumer
-verification spec; a mismatch refuses). The three typed scopes —
+verification spec; a mismatch refuses) and `corpus-release` (the
+signed-corpus-release verification root the gate execution requires —
+today provisioned from an organization variable, which §9.10
+eliminates in favor of this registry entry; Job 1's toolchain
+verification reads it from here). The three typed scopes —
 `genesis`, `transition`, and `notary` — all resolve to the **`notary`**
 registry entry: the external typed signer signs all three with the
 notary key, and the admin-approver's separate signature is what
@@ -782,13 +795,18 @@ partition property against the manifest before signing):
   schema, not beside it);
 - `legacy_apply_root`: `{raw_key_id, public_key_spki_der_base64}` —
   the exact legacy apply public key that authenticates v5 records at
-  genesis, bound in the closed schema like every other root (the
-  conversion is normative: the raw Ed25519 key bytes wrap into a DER
-  SPKI, and `raw_key_id` is the legacy broker's key identifier for
-  cross-checking). The organization variable that supplies this root
-  today is eliminated by §9.10; a genesis validating v5 records against
-  any key other than this bound root refuses, so root substitution at
-  genesis cannot reclassify pre-epoch hand edits as attested;
+  genesis. `raw_key_id` follows the current formula normatively:
+  `"sha256:" + lowercase-hex SHA-256 of the raw 32-byte Ed25519 key`;
+  the raw key wraps into the DER SPKI for the second field, and the
+  pair must be mutually consistent or genesis refuses. Binding alone
+  proves consistency, not history — so §9 requires the historical
+  root's fingerprint to be **frozen independently before genesis**
+  (recorded in the sign-off packet and compared at ceremony time
+  against the currently provisioned production value, witnessed), and
+  the anti-reclassification claim is scoped to that precondition: given
+  the independently frozen fingerprint, root substitution at genesis
+  cannot reclassify pre-epoch hand edits as attested. The organization
+  variable supplying this root today is eliminated by §9.10;
 - `v5_attested`: sorted `[path, entry_sha256, record_sha256]` — paths
   whose blobs are vouched at genesis by a legacy record that passes the
   **current v5 authentication contract**: schema exactly
@@ -840,10 +858,13 @@ policy, repository-structure rules); the recomputed base→subject diff
 must equal `delta` exactly, every delta path must match the
 transition-path policy, and no delta path may be protected content — a
 protected-content or unclassified change smuggled into a transition
-refuses; and a path policy (or transition-path policy) whose rules
-would protect any `.axiom/lineage/` or `.axiom/notary/` path is itself
-invalid (`policy-invalid`) — the lineage store and trust files live
-outside the coverage domain by construction, not assertion;
+refuses. The two policies have opposite obligations toward the
+reserved prefixes: the **path policy** (protected-content domain) is
+invalid if it protects any `.axiom/lineage/` or `.axiom/notary/` path;
+the **transition-path policy** must **include** the `.axiom/notary/`
+trust files — that is precisely what transitions rotate — and is
+invalid if it covers `.axiom/lineage/` (the store moves by eligibility,
+never by transition);
 signatures and authorization are evaluated **under the predecessor
 state's trust roots** (the old keys and policy authorize the handover, so
 a successor-controlled key cannot self-authorize its own installation);
@@ -1107,6 +1128,15 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
 14. Golden-regeneration QA retained and audited — the charter keeps it
     as the distributional defense, §1 relies on it as a mitigation, and
     its removal fails this precondition.
+15. The legacy apply root's fingerprint frozen independently before
+    genesis (sign-off packet record, compared witnessed against the
+    production value at ceremony time), and the corpus-release root
+    migrated from its organization variable into the registry's
+    `corpus-release` entry — Job 1's toolchain verification must read
+    it from the registry before any lane activates.
+16. Genesis-time equality refusals: `legacy_apply_root` equal to the
+    `notary`, `admin-approver`, or `review` entries refuses; the
+    registry validator enforces the §5 pairwise exclusions.
 
 ## 10. Negative-test floor
 
@@ -1297,6 +1327,16 @@ consumer pin refused; waiver bytes disagreeing with the base toolchain
 pin refused; equal-manifest transition carrying a forged nonempty
 delta refused; bad newly-introduced record enumerated ineligible while
 the candidate passes (positive control — structural scope);
+non-hex or uppercase store filename enumerated address-mismatch under
+its literal store_name (positive control — total keying);
+transition-path policy covering .axiom/notary accepted and covering
+.axiom/lineage refused (the opposite obligations); corpus-release root
+absent from the registry refused; invalid corpus-release signature
+refused; raw_key_id/SPKI pair inconsistent refused; legacy root equal
+to notary, admin-approver, or review refused; finalized receipt whose
+referenced report is unpublished invalid to reconstruction;
+absent-profile preflight refusal carrying a truthful null digest
+(positive control);
 base-present invalid record inert — successor with an honest diff
 passes (positive control — no lane poison); refusal during repository
 or predecessor resolution carrying a truthful all-null established
