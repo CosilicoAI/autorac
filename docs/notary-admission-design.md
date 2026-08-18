@@ -1,9 +1,9 @@
-# Notary admission: design v17
+# Notary admission: design v18
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 17 folds design-review rounds 1–16
-(one hundred three blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 18 folds design-review rounds 1–17
+(one hundred eight blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -204,9 +204,17 @@ refusal has no unique assignment; a structural refusal has no manifest),
 so the report is **two closed schemas**, not one with impossible fields.
 
 `axiom/notary-report-refusal/v1`: `{schema, lane, epoch_sha256,
-subject_commit_git_oid, stage, refusal}` plus stage-established fields
-per this normative table (present exactly when the stage is reached,
-null-less and closed at each stage):
+subject_commit_git_oid, stage, refusal, established}` — `established`
+is a closed object of the report's contextual fields in fixed
+dependency order (repository and predecessor resolution, then
+manifests and chain fields, then policy and profile digests, then
+record lists), each nullable with the **prefix property**: a non-null
+field implies every field before it is non-null, and a field is
+non-null exactly when its computation completed before the failing
+check. A refusal during repository or predecessor resolution therefore
+carries a truthful all-null prefix rather than impossible mandatory
+fields. The stage table below gives the maximum established set per
+stage:
 
 | `stage` | additional required fields |
 |---|---|
@@ -221,8 +229,15 @@ succeeded; a gate outcome did not. The refusal member is named
 `refusal` in both variants (never `diff_coverage`), and its single
 closed code enum is: `"uncovered-path"`, `"ambiguous-assignment"`,
 `"inconsistent-chain"`, `"record-cycle"`, `"no-valid-execution"`,
-`"inadmissible-entry"`, `"structural"`, `"gate-unacceptable"`,
-`"gate-missing"`. `ineligible_records`
+`"inadmissible-entry"`, `"structural"`, `"state-identical"`,
+`"trust-surface-change"`, `"policy-invalid"`, `"predecessor-stale"`,
+`"gate-unacceptable"`, `"gate-missing"`, `"gate-extra"` — with
+templates for the added codes: `state-identical` → "base and subject
+states are identical"; `trust-surface-change` → "ordinary candidate
+changes a trust surface"; `policy-invalid` → "required policy or
+profile absent or invalid at the base"; `predecessor-stale` → "base is
+not the finalized chain tip"; `gate-extra` → "gate outside the
+profile". `ineligible_records`
 entries carry `reasons`: the **sorted array of every applicable reason
 code**, so a multi-fault record has one deterministic representation.
 Refusal reports are diagnostics; no downstream artifact ever binds
@@ -253,8 +268,9 @@ neither variant; `unprotected_changes`
 (sorted paths); `ineligible_records`: sorted array of `{record_sha256, reasons}` —
 `reasons` is the sorted array of every applicable code from the closed
 enum (`"unprotected-path-transition"`, `"duplicate-transition-paths"`,
-`"wrong-lane"`, `"wrong-epoch"`, `"invalid-signature"`), the same shape
-in pass and refusal variants; `dependency_pins_sha256`: the digest of a
+`"wrong-lane"`, `"wrong-epoch"`, `"invalid-signature"`,
+`"malformed-record"`, `"address-mismatch"`), the same shape in pass and
+refusal variants; `dependency_pins_sha256`: the digest of a
 canonical dependency inventory, a body of schema
 `axiom/notary-dependency-inventory/v1` with the closed shape
 `{schema, lane, actions: [[ref_spec, git_oid], …] sorted by ref_spec
@@ -276,9 +292,12 @@ the evaluation order is total — structural (§2.1 manifest rules in
 listed order), preflight (§4 in listed order), state-identical,
 eligibility (§3.2 in listed order), assignment (§3.3 rules 1–4 in
 order), gates (missing before unacceptable, then bytewise-least
-`gate_id`) — the reported refusal is the first failing check; `path` is
-the bytewise-least affected path for path-scoped codes and `null`
-otherwise; `detail` is the fixed template string defined per code — normatively:
+`gate_id`) — checks run in that total order **globally across all
+paths before the next check** (every path's rule-1 existence check
+precedes any path's rule-2 chain validation, so `uncovered-path` on
+any path wins over `inconsistent-chain` on another); the reported
+refusal is the first failing check, `path` the bytewise-least affected
+path within it, `null` otherwise; `detail` is the fixed template string defined per code — normatively:
 `uncovered-path` → "no eligible transition covers this path";
 `ambiguous-assignment` → "more than one valid assignment";
 `inconsistent-chain` → "eligible transitions exist but no valid chain";
@@ -332,7 +351,11 @@ field set with `schema` replaced by the candidate's own identifier — every rec
 outcomes acceptable) — plus `report_sha256` (the reconciled proposal)
 and `job1`: `{workflow_ref, workflow_sha_git_oid, ref, run_id,
 run_attempt, check_run_id, conclusion, artifact_name, artifact_id,
-artifact_sha256}`. `workflow_ref` is the OIDC `workflow_ref` claim
+artifact_sha256}` — `conclusion` must be the literal `"success"`;
+`artifact_name` and `authorization.environment` are non-empty JSON
+strings validated against the pinned workflow's declared artifact name
+and the `notary-signing` environment name. `workflow_ref` is the OIDC
+`workflow_ref` claim
 string verbatim (its `@`-suffix must equal `ref` or the candidate
 refuses), and `job1.check_run_id` is **`verify`'s** check-run id from
 the jobs-for-run lookup — the `approve` job's own OIDC `check_run_id`
@@ -379,12 +402,17 @@ detached signatures beside it. The lineage directory is outside the
 protected-content coverage domain but inside the preflight's structural
 checks: schema-valid, authenticated, correctly content-addressed,
 append-only; deleting or mutating an existing record is a refusal.
-Structural checks govern **records present at the base** — the store's
-integrity as inherited; a **newly introduced** record that is
-malformed, misaddressed, or badly signed is not a structural refusal
-but an eligibility-stage ineligible record, enumerated with its
-reasons, so one bad new record cannot veto an otherwise covered
-candidate.
+Base-present records are **inert history**: the structural rule
+enforces append-only discipline alone (no deletion, no mutation) and
+never re-validates their contents — an invalid record that once rode
+in as ineligible sits harmless forever, since eligibility is the only
+door and it never reopens for base-present files. (Re-validating the
+inherited store would let one admitted bad record permanently poison
+every successor.) A **newly introduced** record that is malformed,
+misaddressed, or badly signed is an eligibility-stage ineligible
+record, enumerated with its reasons — never a structural refusal — so
+one bad new record cannot veto an otherwise covered candidate, now or
+later.
 Reports, receipts, genesis, and transition records publish per §7 and are
 never part of the subject tree.
 
@@ -723,9 +751,13 @@ partition property against the manifest before signing):
   bootstrap breaks the predecessor-roots recursion by binding its own
   root set, exactly as it binds its policies);
 - `activation_spec_template_sha256`: the §7 epoch-placeholder template
-  digest (both fields are part of the closed genesis schema, so the
-  epoch digest is uniquely constructible and the same-file-smuggling
-  protection is inside the schema, not beside it);
+  digest; `consumer_spec_path`: the lane path of the operative consumer
+  verification spec file — the fifth bootstrap path is named, not
+  guessed, so a digest-matching decoy elsewhere binds nothing; and
+  `notary_repository`: the `owner/repo` string of the dedicated chain
+  repository (all part of the closed genesis schema, so the epoch
+  digest is uniquely constructible and the bindings are inside the
+  schema, not beside it);
 - `v5_attested`: sorted `[path, entry_sha256, record_sha256]` — paths
   whose blobs are vouched at genesis by a legacy record that passes the
   **current v5 authentication contract**: schema exactly
@@ -1038,6 +1070,9 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
     dual-era operation.
 13. Retirement of lane signed-apply legs (#1195) is a cutover exit
     criterion, not a pilot precondition.
+14. Golden-regeneration QA retained and audited — the charter keeps it
+    as the distributional defense, §1 relies on it as a mitigation, and
+    its removal fails this precondition.
 
 ## 10. Negative-test floor
 
@@ -1160,9 +1195,10 @@ lane lock, or against a tip that moved, refused (stale-genesis
 laundering closed); lane movement between genesis signing and
 publication impossible under the audited lock (positive control);
 ordinary candidate between genesis and activation refused; activation
-transition with any delta beyond the epoch pin and the three
-genesis-bound policy files refused; activation omitting the epoch pin
-or any policy file refused; activation installing a policy file whose
+transition changing any path outside the five named bootstrap paths
+refused; activation leaving any bootstrap path's installed bytes
+unequal to its genesis-bound digest refused (installed values, not
+diff membership); activation installing a policy file whose
 digest differs from bootstrap_policies refused; genesis with absent
 bootstrap_policies refused; wrong
 `check_run_id` or a trusted job in a reusable or separate-run topology
@@ -1226,7 +1262,16 @@ RFC 3339 emitted_at refused; registry notary entry differing from the
 consumer pin refused; waiver bytes disagreeing with the base toolchain
 pin refused; equal-manifest transition carrying a forged nonempty
 delta refused; bad newly-introduced record enumerated ineligible while
-the candidate passes (positive control — structural scope); intermediate replay projection with a path both
+the candidate passes (positive control — structural scope);
+base-present invalid record inert — successor with an honest diff
+passes (positive control — no lane poison); refusal during repository
+or predecessor resolution carrying a truthful all-null established
+prefix (positive control); established-prefix violation refused;
+wrong-address new record enumerated address-mismatch; malformed new
+record enumerated malformed-record; absent Job-1 artifact refused;
+reusable approve, publish, or finalizer job refused; unsorted or
+duplicate key-registry role array refused; consumer-spec decoy at a
+non-named path binding nothing (positive control); intermediate replay projection with a path both
 terminal and directory-prefix refused as no-valid-execution;
 noncanonical JCS bytes or wrong semantic-array order refused; genesis
 inventory containing a path outside the protected domain refused;
