@@ -145,8 +145,14 @@ body's schema:
 | admin-approver | `axiom/notary-admin-approval/v1` | genesis or transition administrative candidate (its body digest); signed by the **administrative** key of §8, never the correction-reviewer key — approving trust-root rotation is a wider power than validating a correction |
 | notary | `axiom/notary-receipt/v1` | notary receipt |
 
-Signatures are detached files beside the body (`<digest>.json`,
-`<digest>.json.<role>.sig`), each canonical JSON:
+Signatures are detached files beside the body, under a **normative
+store-name grammar**: a record body is named `<digest>.json` where
+`<digest>` is exactly the lowercase 64-hex SHA-256 of the body's raw
+bytes — **the stem is the address; the `.json` suffix is grammar, not
+digest** — and a signature sidecar is named `<digest>.json.<role>.sig`
+with `<role>` one of the store's lineage scopes (`producer`, `actor`,
+`review`; chain artifacts live on the chain branch, never in the
+store). Each sidecar is canonical JSON:
 `{schema: "axiom/detached-signature/v1", body_sha256, scope,
 signer_spki_sha256, signature_base64}`. Every cross-scope verification
 must fail, legacy `apply_ed25519`/`eval_ed25519` included (§10 tests the
@@ -216,10 +222,15 @@ check. Its exact ordered members: `base_commit_git_oid`,
 `base_tree_manifest_sha256`, `subject_tree_manifest_sha256`,
 `profile_sha256`, `path_policy_sha256`, `eligible_records`,
 `ineligible_records` — types as in the pass schema. A refusal during
-repository or predecessor resolution therefore carries a truthful
-all-null prefix rather than impossible mandatory fields. Stage
-maxima: `structural` and `preflight` refusals stop wherever the prefix
-stopped; `eligibility` and `assignment` refusals may establish through
+repository or predecessor resolution is a `resolution`-stage refusal —
+`chain-unresolvable` when the finalized chain state cannot be
+reconstructed, `subject-unresolvable` when the subject commit or tree
+cannot be resolved — and carries the truthful prefix resolution
+actually established: all-null when chain reconstruction failed (it
+runs first), the three chain fields when the subject failed after the
+chain resolved. Stage
+maxima: `resolution`, `structural`, and `preflight` refusals stop
+wherever the prefix stopped; `eligibility` and `assignment` refusals may establish through
 the record lists — **an assignment-stage refusal never carries an
 assignment or unused list** (an ambiguity refusal has neither a unique
 assignment nor a determinate unused partition); only `gates`-stage
@@ -228,6 +239,7 @@ refusals carry `coverage_assignment`, `unused_eligible_records`,
 
 | `stage` | `established` content |
 |---|---|
+| `"resolution"` | the actual completed prefix — all-null when chain reconstruction fails (it runs first); the three chain fields when subject resolution fails after the chain resolved |
 | `"structural"` | the actual completed prefix — a late structural failure (an empty subtree found while building the subject manifest, after resolution and the base manifest succeeded) truthfully carries the resolved predecessor and base fields; manifests establish in fixed order, **base first, then subject**, so identical faults establish identical prefixes |
 | `"preflight"` | whatever prefix the failing check permitted — a `policy-invalid` for an absent profile truthfully carries `profile_sha256: null` |
 | `"eligibility"` | prefix through the record lists |
@@ -251,7 +263,8 @@ four are determinate.
 A `"gates"`-stage refusal does carry its unique assignment — coverage
 succeeded; a gate outcome did not. The refusal member is named
 `refusal` in both variants (never `diff_coverage`), and its single
-closed code enum is: `"uncovered-path"`, `"ambiguous-assignment"`,
+closed code enum is: `"subject-unresolvable"`,
+`"chain-unresolvable"`, `"uncovered-path"`, `"ambiguous-assignment"`,
 `"inconsistent-chain"`, `"record-cycle"`, `"no-valid-execution"`,
 `"inadmissible-entry"`, `"structural"`, `"state-identical"`,
 `"trust-surface-change"`, `"policy-invalid"`, `"predecessor-stale"`,
@@ -262,7 +275,13 @@ changes a trust surface"; `policy-invalid` → "required policy, profile, or key
 or invalid at the base" (registry invalidity refuses under this code);
 a non-representable offending path reports `path: null` with the
 template unchanged — the I-JSON path contract never carries non-UTF-8
-bytes; `predecessor-stale` → "base is
+bytes; `subject-unresolvable` → "subject commit or tree cannot be
+resolved" (the common `subject_commit_git_oid` field carries the
+requested oid, which is input, not resolution); `chain-unresolvable` →
+"finalized chain state cannot be reconstructed" (an absent, malformed,
+or invalid-to-reconstruction chain — distinct from `predecessor-stale`,
+whose chain resolved and whose base is simply not the tip);
+`predecessor-stale` → "base is
 not the finalized chain tip"; `gate-extra` → "gate outside the
 profile". `ineligible_records`
 entries carry `reasons`: the **sorted array of every applicable reason
@@ -293,25 +312,31 @@ classification the profile did not grant; `diff_coverage`: exactly `"pass"` — 
 variant carries no refusal shapes, and `waived`/`not-run` exist in
 neither variant; `unprotected_changes`
 (sorted paths); `ineligible_records`: sorted array of
-`{store_name, reasons}` — `store_name` is the literal filename string
-relative to `.axiom/lineage/`, `.json` suffix included, whatever bytes
-it holds within the UTF-8 tree domain; the array sorts bytewise by
-`store_name`. (Eligible records remain digest-keyed — they passed the
-address check, so name and digest coincide; ineligible entries are
-name-keyed precisely because their names may not be digests.)
+`{store_name, reasons}` — `store_name` is the literal name string
+relative to `.axiom/lineage/`, suffix and any `/` separators included,
+whatever bytes it holds within the UTF-8 tree domain; the array sorts
+bytewise by `store_name`. (Eligible records remain digest-keyed — they
+passed the address check, so stem and digest coincide; ineligible
+entries are name-keyed precisely because their names may not be
+addresses.)
 `reasons` is the sorted array of every applicable code **whose
 prerequisites are satisfied**, from the closed enum with this
-prerequisite order: `address-mismatch` and `malformed-record` are
-always computable; `invalid-signature`, `wrong-lane`, `wrong-epoch`,
+prerequisite order: `address-mismatch`, `unrecognized-store-name`, and
+`malformed-record` are always computable — with
+`unrecognized-store-name` **exclusive**: a non-grammar name's contents
+are never evaluated, so it is that entry's sole reason; `invalid-signature`,
+`wrong-lane`, `wrong-epoch`,
 `duplicate-transition-paths`, and `unprotected-path-transition` apply
 only when the body parsed (never beside `malformed-record`). Entries
-are keyed by `store_name` — the literal filename string under
-`.axiom/lineage/` (total over every tree: a name that is not a valid
-lowercase-hex digest, or differs from the body's digest, is simply an
-`address-mismatch` entry under its literal name) — so a valid body
-added at its correct path *and* at an alias yields one eligible record
-plus one ineligible entry, with no identity collision and no
-unrepresentable key. Same shape in
+are keyed by `store_name` under the §2.6 classification, total over
+every tree: a name matching the §2.1 body grammar whose stem differs
+from the file's raw-byte digest is an `address-mismatch` entry; a name
+matching neither the body grammar nor the
+sidecar-of-a-newly-introduced-body pattern is an
+`unrecognized-store-name` entry — each under its literal name — so a
+valid body added at its correct address *and* at an alias yields one
+eligible record plus one ineligible entry, with no identity collision
+and no unrepresentable key. Same shape in
 pass and refusal variants; `dependency_pins_sha256`: the digest of a
 canonical dependency inventory, a body of schema
 `axiom/notary-dependency-inventory/v1` with the closed shape
@@ -330,8 +355,9 @@ waiver file is a refusal, not an empty hash. The refusal variant's `refusal` mem
 `{code, path | null, detail}` with the single code enum of §2.4
 (coverage and gate codes alike), `detail` a JSON string — and
 deterministic under simultaneous faults, with all three members fixed:
-the evaluation order is total — structural (§2.1 manifest rules in
-listed order), preflight (§4 in listed order), state-identical,
+the evaluation order is total — resolution (finalized-chain
+reconstruction, then subject resolution), structural (§2.1 manifest
+rules in listed order), preflight (§4 in listed order), state-identical,
 eligibility (§3.2 in listed order), assignment (§3.3 rules 1–4 in
 order), gates (missing, then extra, then unacceptable; within each,
 bytewise-least `gate_id`) — checks run in that total order **globally across all
@@ -346,6 +372,8 @@ path within it, `null` otherwise; `detail` is the fixed template string defined 
 `record-cycle` → "consumed records admit no execution order";
 `no-valid-execution` → "no topological order yields realizable trees";
 `inadmissible-entry` → "entry mode or type inadmissible";
+`subject-unresolvable` → "subject commit or tree cannot be resolved";
+`chain-unresolvable` → "finalized chain state cannot be reconstructed";
 `structural` → "tree or store structurally malformed";
 `state-identical` → "base and subject states are identical";
 `gate-missing` → "required gate absent";
@@ -458,7 +486,18 @@ every successor.) A **newly introduced** record that is malformed,
 misaddressed, or badly signed is an eligibility-stage ineligible
 record, enumerated with its reasons — never a structural refusal — so
 one bad new record cannot veto an otherwise covered candidate, now or
-later.
+later. **Every newly introduced store file is classified exactly
+once** by the §2.1 grammar: a name matching the body grammar with stem
+equal to its raw-byte digest enters the record pipeline (eligible, or
+ineligible for content reasons); a sidecar naming a newly introduced
+body is signature evidence, verified with that body and never
+separately enumerated (an absent or invalid required sidecar is the
+body's `invalid-signature` reason); everything else — a body-grammar
+name with a wrong stem (`address-mismatch`), or any other name: an
+orphan sidecar, a sidecar naming a base-present body, a nested name, a
+non-lineage role suffix, a non-hex or uppercase stem
+(`unrecognized-store-name`) — is an ineligible entry under its literal
+name, riding in as enumerated, inert history.
 Reports, receipts, genesis, and transition records publish per §7 and are
 never part of the subject tree.
 
@@ -775,21 +814,28 @@ verification reads it from here). The three typed scopes —
 registry entry: the external typed signer signs all three with the
 notary key, and the admin-approver's separate signature is what
 authorizes the administrative ones. **Role-key exclusions are enumerated pairs, nothing implicit** — and
-the governing principle is stated with them: **the `notary` SPKI is
+the governing principles are stated with them. **The `notary` SPKI is
 disjoint from every other role, without exception**, because any alias
 means a private key outside the typed signer can freshly sign the
-notary domain (domain separation prevents replay, not signing). The
+notary domain (domain separation prevents replay, not signing). **The
+`legacy_apply_root` is likewise disjoint from every registry role,
+without exception**: §9.15's freeze pins *which* key is the v5 root,
+never *when* its signatures were made, so the holder of an aliased
+private key could freshly sign v5 records over hand-edited bytes right
+up to the lane lock and have genesis bless them as `v5_attested` — the
+exact retroactive laundering this design exists to refuse. (The
+production signing broker already rejects an apply/corpus-release root
+collision, so the total exclusion restores deployed behavior rather
+than adding a constraint.) The
 forbidden collisions are exactly: `notary`×{every other role,
-`legacy_apply_root` included}; `producer`×{`review`, `admin-approver`,
+`legacy_apply_root` included}; `legacy_apply_root`×{every registry
+role}; `producer`×{`review`, `admin-approver`,
 `approver`, `corpus-release`}; `actor`×{`review`, `admin-approver`,
 `approver`, `corpus-release`}; `review`×`admin-approver`;
-`approver`×{`producer`, `actor`, `corpus-release`,
-`legacy_apply_root`}; plus the genesis-time
-`legacy_apply_root`×{`notary`, `admin-approver`, `review`, `approver`}
-refusals of §9.16. Any listed collision refuses the registry; the one
-deliberately permitted service pair is
-`corpus-release`×`legacy_apply_root` (both verification roots of
-retiring infrastructure). (The charter's separate-key requirement made
+`approver`×{`producer`, `actor`, `corpus-release`}. Any listed
+collision refuses the registry; there is **no permitted service
+pair** — every role, service roles included, holds its own key. (The
+charter's separate-key requirement made
 checkable; the cross-scope matrix alone cannot detect deliberate key
 reuse across scopes.) For every other scope,
 scope-to-registry resolution is the role table itself: a detached signature under a scope verifies
@@ -852,7 +898,14 @@ partition property against the manifest before signing):
   against the currently provisioned production value, witnessed), and
   the anti-reclassification claim is scoped to that precondition: given
   the independently frozen fingerprint, root substitution at genesis
-  cannot reclassify pre-epoch hand edits as attested. The organization
+  cannot reclassify pre-epoch hand edits as attested. One residual is
+  inherent to grandfathering and stated rather than claimed away: a
+  fresh v5 record signed under the *true* frozen root before the lane
+  lock is indistinguishable from a historical one, so `v5_attested`
+  trust is bounded by the legacy key's custody up to the lock — §5's
+  total `legacy_apply_root` exclusion keeps every registry-role holder
+  out of that window, and the lock closes it (a locked, pinned tip
+  admits no new store files). The organization
   variable supplying this root today is eliminated by §9.10;
 - `v5_attested`: sorted `[path, entry_sha256, record_sha256]` — paths
   whose blobs are vouched at genesis by a legacy record that passes the
@@ -941,16 +994,18 @@ separate repository is the capability boundary rulesets cannot provide
 inside the lane repo: a Contents-write App token is repository-scoped
 and can always manipulate qualified custom refs of the repository it
 holds, so single-ref confinement inside the lane repository is not
-implementable — whereas the publisher App's contents-write installation
-covers only the notary repository, and in the lane repository it holds
-a lane credential whose App installation holds `checks: write` and
+implementable — whereas the **chain App's** contents-write
+installation covers only the notary repository, and in the lane
+repository the publisher holds a credential from the **distinct lane
+App** (§9.7b: a separate registration with its own private key), whose
+installation holds `checks: write` and
 `contents: read` — sufficient for source-bound required checks, which
 branch protection binds by the creating App's id; no
 Commit-Status-path permission is taken, because an unused
 merge-authorizing permission is attack surface — with runtime tokens
 downscoped per operation. The lane repository's refs are
-physically outside the publisher's write capability. The chain branch's
-ruleset in the notary repository: only the publisher App may push; no
+physically outside both Apps' write capability. The chain branch's
+ruleset in the notary repository: only the chain App may push; no
 force pushes; no deletion; linear history. Its contents: content-addressed artifact files (reports,
 receipts, transitions, genesis, and void markers) plus `HEAD.json`
 (`{schema: "axiom/notary-head/v1", tip_sha256, tip_kind}`) as a
@@ -960,7 +1015,7 @@ target_sha256, target_kind, merged_tip_manifest_sha256, sequence}`) and
 `axiom/notary-void/v1` (`{schema, lane, epoch_sha256, target_sha256,
 target_kind, reason}`), each content-addressed like every other
 artifact. Marker authentication is structural: the branch accepts
-commits from the publisher App alone, linear history, no force pushes —
+commits from the chain App alone, linear history, no force pushes —
 so markers are exactly what the pinned publisher committed, in order.
 
 The chain state machine, exhaustively: an artifact is *pending* when its
@@ -1050,7 +1105,7 @@ equal what was verified":
    the signer signs the receipt (or transition). The publisher commits it
    to the chain branch as *pending* and sets the required status check on
    the candidate — a check whose required context is **bound to the
-   publisher App** in branch protection, so a same-named context from
+   lane App** in branch protection, so a same-named context from
    Actions or any other integration does not satisfy the requirement. A
    pending artifact authorizes exactly one thing: the merge of a head
    whose tree manifest is `T1` onto the finalized tip it names as base.
@@ -1151,7 +1206,7 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
    signing for those scopes.
 7. The publisher split implemented: the chain on its protected branch
    with an App-restricted, no-force-push, no-deletion ruleset; the
-   required admission check bound to the publisher App (a same-named
+   required admission check bound to the lane App (a same-named
    context from any other source must not satisfy it); strict
    up-to-date-with-base merges (or verified merge-group heads) on the
    protected content branch; and the two-phase pending/finalize protocol
@@ -1198,12 +1253,15 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
     migrated from its organization variable into the registry's
     `corpus-release` entry — Job 1's toolchain verification must read
     it from the registry before any lane activates.
-16. Genesis-time equality refusals: `legacy_apply_root` equal to the
-    `notary`, `admin-approver`, `review`, or `approver` entries
-    refuses — the last matters concretely because legacy signed-apply
-    retirement is not a pilot precondition, and an aliased apply
-    authority could otherwise forge receipt approvals; the registry
-    validator enforces the full §5 matrix.
+16. Genesis-time equality refusals: `legacy_apply_root` equal to
+    **any** registry entry refuses — `approver` matters concretely
+    because legacy signed-apply retirement is not a pilot
+    precondition, so an aliased apply authority could forge receipt
+    approvals; `corpus-release` matters because an aliased service-key
+    holder could freshly sign v5 records over hand-edited bytes before
+    the lane lock and have genesis bless them (§5's window argument —
+    and the production broker already rejects this collision); the
+    registry validator enforces the full §5 matrix.
 
 ## 10. Negative-test floor
 
@@ -1338,7 +1396,10 @@ refused; duplicate profile gate ids and duplicate inventory
 ref_spec/image keys refused; `workflow_ref`/`ref` suffix mismatch
 refused; publisher lane-content write attempt failing (two-credential
 split, positive control); publisher job holding App-minting authority
-forbidden by audit; publisher identity attempting the notary signing
+forbidden by audit; one App registration serving both publisher
+credentials, a shared App private key, or a root installation granting
+repositories or permissions beyond its enumerated scope, each refused
+by the §9.7b audit; publisher identity attempting the notary signing
 operation refused; a non-publisher updating the chain branch, or
 non-linear history, rejected; void marker carrying a sequence refused;
 genesis finalization sequence not "1" refused; sequence "01" or
@@ -1376,7 +1437,8 @@ riding an ordinary candidate refused (trust surface); candidate
 workflow_sha diverging from approve's OIDC claim refused; wrapper
 lane or epoch diverging from candidate or chain refused;
 authorization.environment not derived from OIDC refused; untyped or
-empty lineage identity fields refused; simultaneous-fault refusal
+empty lineage identity fields refused; empty correction `reason`
+refused; simultaneous-fault refusal
 reporting the first rule, least path, and template detail (positive
 control); state-identical transition (empty delta) refused by signer
 and publisher; delete-and-recreate chain through a differing
@@ -1394,10 +1456,11 @@ validation refused; protected 100755 entry refused at base, subject,
 and inside a transition (domain-total wall); delete-then-recreate-
 executable across two finalized receipts refused by the same rule
 (positive control); **a table-driven collision suite over every forbidden §5 pair** —
-each pair a distinct refusal case, `notary`×`review` and
-`notary`×`admin-approver` included — while
-corpus-release/legacy_apply_root, the one permitted service pair, is
-accepted (positive control); finalization requested by rotated not-yet-finalized workflow
+the matrix now total over `notary` and `legacy_apply_root`: every
+pairing of each a distinct refusal case, `notary`×`review`,
+`notary`×`admin-approver`, and
+`corpus-release`×`legacy_apply_root` included — with an all-distinct
+registry accepted (positive control); finalization requested by rotated not-yet-finalized workflow
 code validated and executed by the broker, not the workflow (positive
 control); broker refusing finalization when the pending artifact,
 predecessor, or merged tree fails validation; clean-room chain
@@ -1413,21 +1476,33 @@ consumer pin refused; waiver bytes disagreeing with the base toolchain
 pin refused; equal-manifest transition carrying a forged nonempty
 delta refused; bad newly-introduced record enumerated ineligible while
 the candidate passes (positive control — structural scope);
-non-hex or uppercase store filename enumerated address-mismatch under
-its literal store_name (positive control — total keying);
+non-hex or uppercase store filename enumerated
+unrecognized-store-name under its literal store_name (positive
+control — total keying); a body-grammar name whose stem differs from
+its raw-byte digest enumerated address-mismatch; an honest body at
+`<digest>.json` accepted — the stem is the address, the suffix is
+grammar (positive control); an orphan sidecar, a sidecar naming a
+base-present body, a nested store name, and a non-lineage role suffix
+each enumerated unrecognized-store-name; the sidecar of an eligible
+newly-introduced body not separately enumerated (positive control);
 transition-path policy covering .axiom/notary accepted and covering
 .axiom/lineage refused (the opposite obligations); corpus-release root
 absent from the registry refused; invalid corpus-release signature
 refused; raw_key_id/SPKI pair inconsistent refused; legacy root equal
-to notary, admin-approver, review, or approver refused (each a
-distinct test); finalized receipt whose
+to any registry entry refused (each role a distinct test,
+corpus-release and producer included); finalized receipt whose
 referenced report is unpublished invalid to reconstruction;
 absent-profile preflight refusal carrying a truthful null digest
 (positive control);
 base-present invalid record inert — successor with an honest diff
-passes (positive control — no lane poison); refusal during repository
-or predecessor resolution carrying a truthful all-null established
-prefix (positive control); established-prefix violation refused;
+passes (positive control — no lane poison); chain-reconstruction
+failure refusing chain-unresolvable with a truthful all-null
+established prefix (positive control); absent subject commit refusing
+subject-unresolvable with the three chain fields established (the
+chain resolved first); malformed or invalid-to-reconstruction
+predecessor artifact refusing chain-unresolvable — distinct from
+predecessor-stale, which requires a resolved chain;
+established-prefix violation refused;
 wrong-address new record enumerated address-mismatch; malformed new
 record enumerated malformed-record; absent Job-1 artifact refused;
 reusable approve, publish, or finalizer job refused; unsorted or
