@@ -1,9 +1,9 @@
-# Notary admission: design v30
+# Notary admission: design v31
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 30 folds design-review rounds 1–29
-(one hundred thirty-six blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 31 folds design-review rounds 1–30
+(one hundred thirty-eight blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -98,7 +98,7 @@ field, missing field, wrong type, or duplicate key is a parse refusal.
 | `workflow_sha_git_oid` | the commit the workflow file was loaded from: **context-derived at candidate time** (`github.workflow_sha` in the `recompute` job), then **authenticated by equality** to `approve`'s OIDC `workflow_sha` claim at signing — one run, one workflow, so the equality is exact; reusable workflows are prohibited; never the run's `head_sha` |
 | Entry modes | six-character octal strings: `"100644"` and `"100755"` (the pilot admits no symlinks anywhere — charter requirement 4 rejects symlink deltas, and refusing the mode tree-wide is the total form) |
 | Paths | UTF-8 strings; sorting is bytewise over the UTF-8 encoding |
-| Semantic arrays | **one comparator everywhere**: elements order bytewise over the UTF-8 encoding of the element's sort key, which each array names — `gates` by `gate_id`, `required_gates` by `gate_id`, `acceptable_outcomes` and `reasons` by their string value, `eligible_records`/`unused_eligible_records` by digest, `ineligible_records` by `store_name`, `coverage_assignment` by `path`, dependency `actions` by `ref_spec`, `containers` by `image`, inventories by `path`; set-valued arrays are strictly unique on their key (JCS canonicalizes objects, not arrays — this row is what makes array bytes deterministic) |
+| Semantic arrays | **one comparator everywhere**: elements order bytewise over the UTF-8 encoding of the element's sort key, which each array names — `gates` by `gate_id`, `required_gates` by `gate_id`, `acceptable_outcomes` and `reasons` by their string value, `eligible_records`/`unused_eligible_records` by digest, `ineligible_records` by `store_name`, `coverage_assignment` by `path`, transition `delta` by `path`, dependency `actions` by `ref_spec`, `containers` by `image`, inventories by `path`; set-valued arrays are strictly unique on their key (JCS canonicalizes objects, not arrays — this row is what makes array bytes deterministic) |
 
 **Tree manifests.** A tree manifest is the recursively flattened list of
 **terminal entries** (blobs and symlinks; directories appear only through
@@ -957,10 +957,12 @@ the preflight refuses them — so the transition record exists to advance
 the chain across them. Closed schema: `schema`, `lane`, `epoch_sha256`,
 `chain_predecessor_sha256`, `chain_predecessor_kind`,
 `base_tree_manifest_sha256`, `subject_tree_manifest_sha256`,
-`subject_commit_git_oid`, `delta`: sorted array of
+`subject_commit_git_oid`, `delta`: array of
 `{path, before_entry_sha256 | null, before_mode | null,
 after_entry_sha256 | null, after_mode | null}` restricted to
-trust-surface paths, and `reason`.
+trust-surface paths — sorted bytewise by `path` under §2.1's one
+comparator, paths strictly unique, so any two honest constructions of
+one delta produce identical body bytes and one digest — and `reason`.
 
 Rules: a transition whose delta is empty, or whose base manifest
 equals its subject manifest, refuses — the state-identical ban of §1
@@ -1036,21 +1038,35 @@ signatures `<digest>.json.<role>.sig` with the **§2.1 role name as
 the token** (role names are `/`-free; scope strings are not) — and
 every signed artifact publishes as a **closed bundle in one commit**:
 genesis = body + its `genesis`-role sidecar (the typed signer's) +
-its `admin-approver` sidecar + **the four preimage bodies its
+its `admin-approver` sidecar + **the four preimages its
 `bootstrap_policies` digests name** (path policy, transition-path
 policy, profile, key registry — the §7 preimage rule below);
 transition = body + `transition` sidecar + `admin-approver` sidecar +
-**the new body of every trust file its delta changes**; receipt =
+**the raw preimage of every trust file its delta changes** (non-null
+after sides; deletions publish nothing); receipt =
 report body + candidate body + the `approver` sidecar over the
 candidate + receipt body + the `notary` sidecar over the receipt.
+**Preimages have their own opaque grammar**: `<digest>.raw`, the raw
+lane-file bytes stored verbatim, `<digest>` the lowercase 64-hex
+SHA-256 of exactly those bytes — trust files are YAML, TOML, and
+JSON, so preimages are exempt from the §2.1 body contract and are
+**never parsed**, whatever their bytes resemble (a `.raw` file whose
+content looks like a schema-carrying JSON body is still opaque bytes;
+the suffix alone selects the treatment, so no type precedence
+exists). This holds even for the JSON policy files: every preimage
+lands under `.raw`, and the `.json` namespace holds chain-artifact
+bodies alone.
 The unsigned files are closed by **digest-reachability, not by
-pattern**: every unsigned body on the branch must be digest-named by
-a signed body — the report by its candidate's `report_sha256`, the
-candidate by its receipt's `candidate_sha256`, preimages by
-`bootstrap_policies` or a transition delta's after-digests — while
-markers (structurally authenticated, below) and `HEAD.json` are the
+pattern**: every unsigned `.json` body on the branch must be
+digest-named by a signed body — the report by its candidate's
+`report_sha256`, the candidate by its receipt's `candidate_sha256` —
+and every `.raw` preimage by a `bootstrap_policies` digest or a
+transition delta's after-digest, while
+markers (structurally authenticated, below) and the literal
+`HEAD.json` are the
 two named exceptions; an unsigned file reachable from no signed
-artifact, a sidecar naming a marker, an unknown role token, or any
+artifact, a sidecar naming a marker or a `.raw` file, an unknown role
+token, or any
 other file pattern invalidates the branch to reconstruction. Exactly
 one sidecar per (body, role):
 duplicates cannot coexist in a tree, and a later commit that adds,
@@ -1135,9 +1151,11 @@ may.
 
 **Verification does not trust the pointer — and the branch carries its
 own preimages.** Genesis publishes the full policy, profile, and
-key-registry bodies (not digests alone) beside its body on the chain
-branch, and every transition that changes them publishes the new
-bodies likewise, so administrative approvals and historical keys
+key-registry preimages (raw bytes under the `.raw` grammar, not
+digests alone) beside its body on the chain
+branch, and every transition that changes a trust file publishes the
+new raw preimage likewise, so administrative approvals and historical
+keys
 verify from the branch alone after any number of rotations. The chain's truth is
 reconstructible by rule from the branch alone: the valid chain is the
 unique sequence of signed artifacts starting at genesis in which each
@@ -1566,9 +1584,21 @@ missing its typed-signer sidecar (`genesis`, `transition`, or
 `notary` per artifact kind) or its `admin-approver` or `approver`
 sidecar never pending
 and invalid to reconstruction (a distinct case per artifact kind and
-missing file); a genesis bundle missing any bootstrap preimage body,
-and a transition bundle missing a changed trust file's new body, each
-never pending (distinct cases); a
+missing file); a genesis bundle missing any bootstrap preimage,
+and a transition bundle missing a changed trust file's raw preimage,
+each
+never pending (distinct cases); a YAML and a TOML trust-file preimage
+each accepted verbatim under `.raw` (positive controls — the honest
+waiver-file and toolchain-pin transitions are constructible); a raw
+preimage wrapped in JSON refused (digest no longer the delta's
+after-digest); a `.raw` file whose bytes resemble a schema-carrying
+JSON body accepted as opaque and never parsed (positive control — no
+type precedence); a `.raw` file digest-reachable from no
+bootstrap_policies digest or delta after-digest invalidating the
+branch; a transition delta out of bytewise path order, or with a
+duplicate path, refused at parse; two honest constructions of one
+two-path transition producing identical body bytes and one digest
+(permutation-invariance positive control); a
 later commit rewriting or deleting any published bundle file
 invalidating the branch at that commit (append-only discipline); a
 partial-bundle commit refused by the publisher; an unknown role
