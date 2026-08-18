@@ -1,9 +1,9 @@
-# Notary admission: design v24
+# Notary admission: design v25
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 24 folds design-review rounds 1–23
-(one hundred twenty-seven blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 25 folds design-review rounds 1–24
+(one hundred twenty-nine blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -749,7 +749,8 @@ receipt and the current finalized predecessor before ever emitting the
 required check.
 
 **Publisher — separate job, two-keyed.** Holds two separately
-constrained credentials per §9.7b — a chain credential (contents-write
+constrained credentials per §9.7b, from **two distinct App
+registrations** — a chain credential (contents-write
 on the notary repository alone) and a lane credential (checks-write and
 contents-read on the lane repository alone) — provisioned to it, never
 minted by it; publishes per §7; holds no signing capability.
@@ -1158,14 +1159,14 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
 7a. Effective-permission constraints audited per §5: signer deployment
    credentials, exact caller allowlist, Job-1 and trusted-job token
    audits, and publisher signing denial.
-7b. Publisher write confinement is physical and two-keyed: because App
-   installation permissions span the repositories an installation
-   covers, one App cannot hold contents-write on the notary repository
-   without holding it wherever else it is installed with that
-   permission — so the publisher uses **two separately constrained
-   credentials** (two Apps, or two repository- and
-   permission-downscoped installation tokens): a chain credential with
-   contents-write on the notary repository alone, and a lane credential
+7b. Publisher write confinement is physical and two-keyed: **two
+   distinct App registrations with separate private keys and disjoint
+   installation permissions** — token downscoping is not an
+   alternative, because the App credential that mints a downscoped
+   token can equally mint an undownscoped one across everything its
+   installation grants, and the audit therefore covers the **root App
+   permissions**, not only delivered tokens: a chain App with
+   contents-write on the notary repository alone, and a lane App
    with an installation holding `checks: write` and `contents: read`
    on the lane repository alone (no Commit-Status permission — branch
    protection binds the required check by App id), runtime tokens
@@ -1392,9 +1393,11 @@ registry key bytes failing base64, DER, Ed25519, or fingerprint
 validation refused; protected 100755 entry refused at base, subject,
 and inside a transition (domain-total wall); delete-then-recreate-
 executable across two finalized receipts refused by the same rule
-(positive control); approver/corpus-release and notary/corpus-release collisions refused
-per the enumerated pairs, while corpus-release/legacy_apply_root — the
-one permitted service pair — is accepted (positive control); finalization requested by rotated not-yet-finalized workflow
+(positive control); **a table-driven collision suite over every forbidden §5 pair** —
+each pair a distinct refusal case, `notary`×`review` and
+`notary`×`admin-approver` included — while
+corpus-release/legacy_apply_root, the one permitted service pair, is
+accepted (positive control); finalization requested by rotated not-yet-finalized workflow
 code validated and executed by the broker, not the workflow (positive
 control); broker refusing finalization when the pending artifact,
 predecessor, or merged tree fails validation; clean-room chain
