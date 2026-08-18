@@ -1,9 +1,9 @@
-# Notary admission: design v27
+# Notary admission: design v28
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 27 folds design-review rounds 1–26
-(one hundred thirty-three blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 28 folds design-review rounds 1–27
+(one hundred thirty-four blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -193,9 +193,9 @@ ground truth.
 
 ### 2.3 Correction event — `axiom/lineage-correction/v1`
 
-Signed by the actor (role `actor`) and countersigned by a protected
-reviewer key distinct from the actor's (role `review`, per the §2.1 role
-table). Fields: `schema`, `lane`, `epoch_sha256`; `actor` and
+Signed by the actor (role `actor`) and countersigned by the
+protected correction-review key, distinct from the actor's (role
+`review`, per the §2.1 role table). Fields: `schema`, `lane`, `epoch_sha256`; `actor` and
 `reason` — non-empty JSON strings; `predecessor_record_sha256 | null`;
 `transitions` as §2.2. The
 countersignature validates lineage; it never authorizes merge. Corrections
@@ -756,8 +756,10 @@ structurally disqualified). Platform approval alone cannot bind bytes —
 neither OIDC nor the jobs API authenticates job inputs — so the binding
 is cryptographic: **a protected reviewer signs the candidate digest**
 under its own scope, `axiom/notary-approval/v1` (a detached signature
-by a reviewer key from §8's ceremony, distinct from every automation
-key), and that signature is the durable, signer-verifiable approval
+by the receipt-approver key — role `approver` — from §8's ceremony:
+its own key, disjoint under §5's total rule from every other role's,
+the correction-review key included), and that signature is the
+durable, signer-verifiable approval
 evidence. The **signing step** is the external signer, which validates
 the `approve` job's OIDC identity, re-reads the candidate by digest,
 **verifies the reviewer approval signature over that exact digest**,
@@ -814,9 +816,14 @@ verification reads it from here). The three typed scopes —
 registry entry: the external typed signer signs all three with the
 notary key, and the admin-approver's separate signature is what
 authorizes the administrative ones. **Role-key separation is total, not enumerated**: the SPKI sets of
-all roles — the seven registry roles and `legacy_apply_root` — are
+all roles — the seven registry roles and both retained legacy roots,
+`legacy_apply_root` and `legacy_eval_root` — are
 **pairwise disjoint**, and any SPKI appearing under two roles refuses
-the registry. Four consecutive review rounds each found a pair a
+the registry. The eval root belongs in the universe for the same
+reason the apply root does: §9.13 keeps signed-leg retirement a
+cutover exit criterion, not a pilot precondition, so both legacy
+authorities stay active through dual-era operation, and the registry
+cannot police a key it does not bind — genesis binds both. Four consecutive review rounds each found a pair a
 sparse forbidden-pair matrix had missed, so the contract is the
 universal rule, with no permitted alias left for an implementer to
 weigh. Two consequences carry their rationale by name. A `notary`
@@ -830,8 +837,10 @@ have genesis bless them as `v5_attested` — and the production signing
 broker already rejects an apply/corpus-release root collision, so
 totality restores deployed behavior rather than adding a constraint.
 The same shape covers every other pair — an `admin-approver` alias of
-`approver`, for one, would escalate ordinary reviewer compromise into
-authority over trust-surface rotation. Whether one person may hold two
+`approver` would escalate ordinary reviewer compromise into
+authority over trust-surface rotation, and an `admin-approver` alias
+of `legacy_eval_root` would let the eval custodian sign
+administrative approvals for trust-surface transitions. Whether one person may hold two
 roles' keys is §8 custody policy; the registry contract is about keys:
 no SPKI serves two roles. (The charter's separate-key requirement made
 checkable; the cross-scope matrix alone cannot detect deliberate key
@@ -905,6 +914,14 @@ partition property against the manifest before signing):
   out of that window, and the lock closes it (a locked, pinned tip
   admits no new store files). The organization
   variable supplying this root today is eliminated by §9.10;
+- `legacy_eval_root`: `{raw_key_id, public_key_spki_der_base64}` —
+  the current external eval-signing root, same shape, formula, and
+  mutual-consistency refusal as `legacy_apply_root`. It is bound
+  **solely to extend §5's disjointness wall**: it authenticates
+  nothing at genesis (v5 vouching uses the apply root alone), but an
+  unbound active authority could alias an admission role undetected.
+  Frozen per §9.15 exactly like the apply root; its organization
+  variable is likewise eliminated by §9.10;
 - `v5_attested`: sorted `[path, entry_sha256, record_sha256]` — paths
   whose blobs are vouched at genesis by a legacy record that passes the
   **current v5 authentication contract**: schema exactly
@@ -1154,8 +1171,12 @@ Before the typed signer holds any notary-scope key: generate
 committed code (consumer verification specs pin the SPKI), storage and
 rotation procedure (rotation is a §6.4 transition evaluated under
 predecessor roots), revocation and recovery. The producer, actor,
-reviewer, and administrative keys get the same treatment under their own
-scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
+correction-review, receipt-approver, and administrative keys get the
+same treatment under their own scopes — **five distinct keys**: §5's
+total rule forbids the correction-review and receipt-approver roles
+from sharing one "reviewer" key, so the ceremony mints and custodies
+each separately. §10's pairwise cross-scope matrix is part of ceremony
+acceptance.
 
 ## 9. Preconditions (nothing admission-capable merges before these)
 
@@ -1245,20 +1266,23 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
 14. Golden-regeneration QA retained and audited — the charter keeps it
     as the distributional defense, §1 relies on it as a mitigation, and
     its removal fails this precondition.
-15. The legacy apply root's fingerprint frozen independently before
-    genesis (sign-off packet record, compared witnessed against the
-    production value at ceremony time), and the corpus-release root
+15. The legacy apply and eval roots' fingerprints frozen
+    independently before genesis (sign-off packet records, compared
+    witnessed against the production values at ceremony time), and the corpus-release root
     migrated from its organization variable into the registry's
     `corpus-release` entry — Job 1's toolchain verification must read
     it from the registry before any lane activates.
-16. Genesis-time equality refusals: `legacy_apply_root` equal to
-    **any** registry entry refuses — `approver` matters concretely
+16. Genesis-time equality refusals: **either legacy root** equal to
+    any registry entry — or to the other legacy root — refuses;
+    for `legacy_apply_root`, `approver` matters concretely
     because legacy signed-apply retirement is not a pilot
     precondition, so an aliased apply authority could forge receipt
     approvals; `corpus-release` matters because an aliased service-key
     holder could freshly sign v5 records over hand-edited bytes before
     the lane lock and have genesis bless them (§5's window argument —
-    and the production broker already rejects this collision); the
+    and the production broker already rejects this collision); for
+    `legacy_eval_root`, an aliased eval authority could sign
+    administrative approvals (round 27's counterexample); the
     registry validator enforces §5's total pairwise disjointness.
 
 ## 10. Negative-test floor
@@ -1455,9 +1479,10 @@ and inside a transition (domain-total wall); delete-then-recreate-
 executable across two finalized receipts refused by the same rule
 (positive control); **a table-driven collision suite over every unordered role pair** —
 §5's separation is total, so the table is the full pairwise matrix
-over the seven registry roles plus `legacy_apply_root`: all
-twenty-eight pairs distinct refusal cases (`notary`×`review`,
-`admin-approver`×`approver`, and `corpus-release`×`legacy_apply_root`
+over the seven registry roles plus both legacy roots: all
+thirty-six pairs distinct refusal cases (`notary`×`review`,
+`admin-approver`×`approver`, `corpus-release`×`legacy_apply_root`,
+and `legacy_eval_root`×`admin-approver` — round 27's counterexample —
 included) — with an all-distinct registry accepted (positive
 control); finalization requested by rotated not-yet-finalized workflow
 code validated and executed by the broker, not the workflow (positive
@@ -1487,8 +1512,9 @@ newly-introduced body not separately enumerated (positive control);
 transition-path policy covering .axiom/notary accepted and covering
 .axiom/lineage refused (the opposite obligations); corpus-release root
 absent from the registry refused; invalid corpus-release signature
-refused; raw_key_id/SPKI pair inconsistent refused; legacy root equal
-to any registry entry refused (each role a distinct test,
+refused; raw_key_id/SPKI pair inconsistent refused for either legacy root;
+either legacy root equal
+to any registry entry refused (each pairing a distinct test,
 corpus-release and producer included); finalized receipt whose
 referenced report is unpublished invalid to reconstruction;
 absent-profile preflight refusal carrying a truthful null digest
@@ -1549,9 +1575,11 @@ control).
   digest-bound reviewer evidence, or records "the protected signing
   policy authorized this receipt" (honest for plain environment
   approval; the stronger form needs an explicit approval artifact).
-- Custody model for the producer, actor, reviewer, and administrative
-  keys (the notary key is fixed by §5/§8); reviewer custody is the open
-  question deferred from the rulespec-nz custody ruling.
+- Custody model for the producer, actor, correction-review,
+  receipt-approver, and administrative keys (the notary key is fixed
+  by §5/§8) — the two review-side roles hold distinct keys under §5's
+  total rule, so each needs its own custodian answer; reviewer custody
+  is the open question deferred from the rulespec-nz custody ruling.
 - Charter alignment on modes: whether covered executable-mode
   transitions become admissible post-pilot (charter requirement 4
   amendment) or the wall stays permanent.
