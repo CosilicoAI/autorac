@@ -1624,7 +1624,7 @@ jobs:
                [ -n "$REPLACE_RULESPEC_PATH" ] && \
                [ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
               run_signed_encode \
-                "$CITATION" "" false target-preflight \
+                "$CITATION" "$REVIEW_FINDING" false target-preflight \
                 "$REPLACE_RULESPEC_PATH" "" false
               "$workflow_python" "$backfill_helper" \
                 reconcile-retired-manifest-inventory \
