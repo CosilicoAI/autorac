@@ -1,9 +1,9 @@
-# Notary admission: design v9
+# Notary admission: design v10
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 9 folds design-review rounds 1–8
-(sixty-two blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 10 folds design-review rounds 1–9
+(sixty-eight blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -191,14 +191,26 @@ refusal has no unique assignment; a structural refusal has no manifest),
 so the report is **two closed schemas**, not one with impossible fields.
 
 `axiom/notary-report-refusal/v1`: `{schema, lane, epoch_sha256,
-subject_commit_git_oid, stage, refusal}` where `stage` is one of
-`"structural"`, `"preflight"`, `"eligibility"`, `"assignment"`,
-`"gates"`, and `refusal` is the coded object below; plus exactly the
-stage-established optional fields per a fixed table: manifests only from
-`"preflight"` onward, eligible-record lists only from `"eligibility"`
-onward, never an assignment (a refusal that could compute a unique
-assignment would not be a refusal). Refusal reports are diagnostics; no
-downstream artifact ever binds one.
+subject_commit_git_oid, stage, refusal}` plus stage-established fields
+per this normative table (present exactly when the stage is reached,
+null-less and closed at each stage):
+
+| `stage` | additional required fields |
+|---|---|
+| `"structural"` | none |
+| `"preflight"` | both tree manifests, base/chain fields, policy and profile digests |
+| `"eligibility"` | the preflight fields + `eligible_records`, `ineligible_records` |
+| `"assignment"` | the eligibility fields + `unused_eligible_records` |
+| `"gates"` | the assignment fields + `coverage_assignment`, `unprotected_changes`, `gates` |
+
+A `"gates"`-stage refusal does carry its unique assignment — coverage
+succeeded; a gate outcome did not — under refusal codes extended
+accordingly: the closed enum gains `"gate-unacceptable"` and
+`"gate-missing"` beside the coverage codes. `ineligible_records`
+entries carry `reasons`: the **sorted array of every applicable reason
+code**, so a multi-fault record has one deterministic representation.
+Refusal reports are diagnostics; no downstream artifact ever binds
+one.
 
 `axiom/notary-report-pass/v1` — the only variant the trusted side will
 reconcile — content-addressed output of the verification workflow.
@@ -307,7 +319,7 @@ never part of the subject tree.
 
 The policy is a committed file at the base
 (`.axiom/notary/path-policy.json`):
-`{schema: "axiom/notary-path-policy/v1", rules: [{action:
+`{schema: "axiom/notary-path-policy/v1", lane, rules: [{action:
 "include" | "exclude", prefix}]}`. A prefix matches path `p` iff
 `p == prefix` or `p` starts with `prefix + "/"` (component-wise; `rules`
 never matches `rules-evil/x`). Last matching rule wins; a path matching no
@@ -415,17 +427,25 @@ surfaces move only by transition record (§6.4).
 
 ## 5. Execution, trust boundary, and the external signer
 
-**One workflow run, two jobs.** Job 1 and the trusted job are jobs of
-the **same workflow run** — this topology is normative, because it is
-what makes workflow identity derivable: the trusted job's own OIDC token
-carries the `workflow_sha` that governed the entire run, covering Job 1
-without needing any per-job claim GitHub does not issue. The trusted job
-reads Job 1's conclusion through the jobs-for-run endpoint (by job name
-and attempt) rather than any self-asserted value, and its own identity
-is bound the only way OIDC permits: the token's `check_run_id` claim is
-reconciled through jobs-for-run to the expected trusted-job name and
-attempt — GitHub's claims carry no job name — and reusable execution is
-prohibited for the trusted job exactly as for Job 1.
+**One workflow run, four named jobs.** All jobs share the **same
+workflow run** — the topology is normative because it makes workflow
+identity derivable: any job's OIDC `workflow_sha` covers the whole run,
+and no per-job claim GitHub does not issue is ever needed. The jobs,
+each on a fresh ephemeral runner, none reusable:
+
+| Job | Runs candidate code | Token | OIDC use |
+|---|---|---|---|
+| `verify` (Job 1) | yes | `contents: read` only, no secrets, no environment | none |
+| `recompute` | no (pinned code) | `contents: read`, `actions: read` | none |
+| `approve` | no (pinned code) | none beyond `id-token: write` | presents identity to the signer |
+| `publish` | no (pinned code) | the two §9.7b credentials | none |
+
+Job conclusions are read through the jobs-for-run endpoint (by job name
+and attempt), never self-asserted; the `approve` job's identity is
+bound the only way OIDC permits — its token's `check_run_id` claim,
+reconciled through jobs-for-run to the expected job name and attempt
+(GitHub's claims carry no job name). The receipt's `job1.check_run_id`
+is the `verify` job's check run, recorded from that same lookup.
 
 **Job 1 — verify (secretless, candidate-executing).** Runs on a fresh
 ephemeral runner (GitHub-hosted or dedicated ephemeral pool) with no
@@ -472,17 +492,28 @@ trusted flow is therefore three stages: the **recomputation stage**
 (fresh runner, pinned code, unapproved) performs the reconciliation
 above and publishes the immutable, content-addressed **receipt
 candidate** — the completed reconciled body, unsigned; the **approval
-stage** is a separate job in the dedicated `notary-signing` environment
-whose input is the candidate digest, so the deployment review the
-humans approve names the exact bytes (required reviewers, no
-self-approval, an environment holding no generation credentials and no
-write tokens — unlike today's `production-signing`, which provisions
-generation workflows with the apply key, a model credential, and a
-write-capable token, and is structurally disqualified); the **signing
-step** is the external signer, which validates the approved job's OIDC
-identity, re-reads the candidate by digest, verifies the approved input
-digest matches, and signs. Approval is thereby digest-bound to a
-completed receipt; it never releases key material to a runner.
+stage** is the `approve` job in the dedicated `notary-signing`
+environment (required reviewers, no self-approval, **administrator
+bypass disallowed and audited** — GitHub's separate bypass setting must
+be off, and §10 tests the bypassed case; the environment holds no
+generation credentials and no write tokens, unlike today's
+`production-signing`, which provisions generation workflows with the
+apply key, a model credential, and a write-capable token, and is
+structurally disqualified). Platform approval alone cannot bind bytes —
+neither OIDC nor the jobs API authenticates job inputs — so the binding
+is cryptographic: **a protected reviewer signs the candidate digest**
+under its own scope, `axiom/notary-approval/v1` (a detached signature
+by a reviewer key from §8's ceremony, distinct from every automation
+key), and that signature is the durable, signer-verifiable approval
+evidence. The **signing step** is the external signer, which validates
+the `approve` job's OIDC identity, re-reads the candidate by digest,
+**verifies the reviewer approval signature over that exact digest**,
+and signs. An environment-bypassed job carries no reviewer signature
+and refuses. Approval is thereby digest-bound to a completed receipt by
+signature, not by platform semantics; key material never reaches a
+runner. (This resolves the §11 approval-wording decision in the
+stronger form: `authorization.approval_context` is the reviewer
+approval-signature reference.)
 
 Effective-permission constraints, not deployment assumptions (§9): the
 external signer's own deployment holds no model, generation, or
@@ -531,6 +562,10 @@ inventories forming an **exhaustive, disjoint, exactly-once partition of
 the protected paths** at genesis (the typed signer verifies the
 partition property against the manifest before signing):
 
+- `bootstrap_policies`: an object with exactly three members —
+  `{path_policy_sha256, transition_path_policy_sha256, profile_sha256}`
+  — the prospective policy bodies §7 binds (part of the closed genesis
+  schema, so the epoch digest is uniquely constructible);
 - `v5_attested`: sorted `[path, entry_sha256, record_sha256]` — paths
   whose blobs are vouched at genesis by a legacy record that passes the
   **current v5 authentication contract**: schema exactly
@@ -635,9 +670,17 @@ audited rather than claimed as CAS: before genesis signing, the lane's
 protected branch is **locked** (a lock ruleset barring all merges), the
 signer verifies via the API both that the lock is active and that
 `genesis_commit_git_oid` equals the locked tip, and the lock is
-retained until activation finalization — the post-sign pre-publication
-race cannot occur because nothing can merge while locked. A genesis
-attempt observing a moved tip or an absent lock refuses.
+retained until activation finalization. A locked branch is read-only —
+including to the activation merge — so the lock names its **sole,
+audited bypass**: the bootstrap administrative actor, whose one
+permitted action is merging the activation commit, listed in §9 as a
+security-critical authority. The guarantee does not rest on that
+actor's discipline: activation refuses unless the recomputed
+base→subject diff equals exactly the epoch pin plus the three
+genesis-bound policy files, so a bypass misused for any other merge
+produces an activation that cannot finalize and a bootstrap that
+voids. A genesis attempt observing a moved tip or an absent lock
+refuses.
 
 Genesis also **binds its prospective policies**: the body carries
 `bootstrap_policies` — the digests of the exact path-policy,
@@ -886,8 +929,11 @@ subject (voids, permanently); voided digest re-finalization attempt;
 finalization when the artifact's base is not the current finalized tip;
 chain-branch force-push and deletion rejected by ruleset; unauthorized
 chain rollback or void-marker erasure visible to reconstruction;
-`HEAD.json` diverging from chain reconstruction; publisher push outside
-the chain branch rejected; `HEAD.json` naming an unpublished or unsigned
+`HEAD.json` diverging from chain reconstruction; publisher writes outside the chain branch of the notary repository are
+not ruleset-preventable (contents-write is repository-scoped) and are
+harmless by construction — reconstruction reads only the chain branch —
+tested as: a non-chain ref in the notary repository is ignored by
+reconstruction; `HEAD.json` naming an unpublished or unsigned
 artifact; recomputation divergence in `eligible_records`,
 `corpus_release`, `waiver_set_sha256`, `dependency_pins_sha256`, or the
 `verifier` identity; malformed finalization or void marker;
@@ -929,7 +975,16 @@ duplicate-path case; absent, non-regular, or oversized waiver file
 refused; refusal report carrying an assignment or stage-unestablished
 fields refused; approval-stage input digest mismatching the receipt
 candidate refused; signing without a digest-bound approval refused;
-invalid OIDC signature, issuer, audience, or expiry refused.
+invalid OIDC signature, issuer, audience, or expiry refused; unknown
+stage, refusal-code, or ineligible-reason value refused; multi-fault
+ineligible record represented by its full sorted reason array (positive
+control); wrong `baseline_unattested` entry digest refused; genesis
+commit/tree-manifest mismatch refused; wrong or intervening first chain
+commits refused; premature lock removal or an unauthorized bootstrap
+bypass merge producing an activation that cannot finalize (voids);
+environment-admin approval bypass carrying no reviewer signature
+refused; reviewer approval signature over the wrong digest refused;
+`"gates"`-stage refusal carrying its assignment (positive control).
 
 ## 11. Decisions for sign-off
 
