@@ -1,9 +1,9 @@
-# Notary admission: design v14
+# Notary admission: design v15
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 14 folds design-review rounds 1–13
-(eighty-nine blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 15 folds design-review rounds 1–14
+(ninety-five blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -37,11 +37,14 @@ unchanged in kind from today, and the receipt words them as declarations
 facts.
 
 Admission is a statement about the *delta*: the changes since the chain
-predecessor are covered. It never upgrades the provenance of older bytes.
-Pre-epoch content remains exactly what the genesis inventories say —
-v5-attested or unattested baseline — no matter how many receipts later sit
-above it; an empty-delta receipt admits nothing and changes no provenance
-status.
+predecessor are covered. It never upgrades the provenance of older
+bytes. Pre-epoch content remains exactly what the genesis inventories
+say — v5-attested or unattested baseline — no matter how many receipts
+later sit above it. **State-identical chain advances are forbidden**: a
+receipt whose base manifest equals its subject manifest refuses at
+verification — a no-op receipt admits nothing, and permitting one opens
+a stale-green race in which a no-op finalization voids a concurrently
+verified sibling after its merge window.
 
 The notary does not claim content was model-generated, and never will.
 Lineage records say where bytes came from; the notary says the recomputed
@@ -158,10 +161,12 @@ reviewer tooling).
 
 ### 2.2 Generation event — `axiom/lineage-generation/v1`
 
-Signed by the producer key (non-authorizing). Fields: `schema`, `lane`,
-`epoch_sha256`, `runtime_identity`, `model`, `cli_version`, `cli_sha256`,
-`prompt_sha256s`, `emitted_at` (informational, unverified), and
-`transitions`, sorted bytewise by path:
+Signed by the producer key (non-authorizing). Fields: `schema`,
+`lane`, `epoch_sha256`; `runtime_identity`, `model`, `cli_version` —
+non-empty JSON strings; `cli_sha256` — a digest; `prompt_sha256s` — a
+sorted, strictly unique digest array; `emitted_at` — an RFC 3339 UTC
+string, informational and unverified; and `transitions`, sorted
+bytewise by path:
 
 ```
 {path, before_blob_sha256 | null, before_mode | null,
@@ -184,8 +189,9 @@ ground truth.
 
 Signed by the actor (role `actor`) and countersigned by a protected
 reviewer key distinct from the actor's (role `review`, per the §2.1 role
-table). Fields: `schema`, `lane`, `epoch_sha256`, `actor`, `reason`,
-`predecessor_record_sha256 | null`, `transitions` as §2.2. The
+table). Fields: `schema`, `lane`, `epoch_sha256`; `actor` and
+`reason` — non-empty JSON strings; `predecessor_record_sha256 | null`;
+`transitions` as §2.2. The
 countersignature validates lineage; it never authorizes merge. Corrections
 are first-class and loud: the sanctioned response to a wrong encoding
 remains fix-the-encoder-and-re-encode, and a correction event is the
@@ -264,7 +270,10 @@ SHA-256 over the raw bytes of the repository-root
 require to be a present, bounded regular file — an absent or non-regular
 waiver file is a refusal, not an empty hash. The refusal variant's `refusal` member is itself closed:
 `{code, path | null, detail}` with the single code enum of §2.4
-(coverage and gate codes alike) — there is no `diff_coverage` refusal
+(coverage and gate codes alike), `detail` a JSON string — and
+deterministic under simultaneous faults: the reported refusal is the
+first failing rule in §3.3's evaluation order, and within that rule the
+bytewise-least affected path. There is no `diff_coverage` refusal
 object anywhere; the pass variant's `diff_coverage` is the literal
 `"pass"` and nothing else.
 
@@ -328,9 +337,15 @@ referenced by digest, never flattened, and the candidate body and
 approval-signature file **must be published on the chain branch beside
 the receipt** — a receipt whose candidate or approval file is
 unpublished is unverifiable and invalid to reconstruction. The reviewer
-approval signs the candidate digest; the signer assembles and signs the
-wrapper. Genesis and transitions are distinct schemas; a receipt cannot
-claim their role.
+approval signs the candidate digest; the signer assembles the wrapper
+**by derivation, never by input**: wrapper `lane` and `epoch_sha256`
+are copied from the candidate and verified equal to the chain's;
+`authorization.environment` is taken from `approve`'s authenticated
+OIDC claims, not from any caller value. The publisher and
+reconstruction re-verify candidate/wrapper/chain lane and epoch
+equality; a valid candidate for one lane or epoch cannot be wrapped
+into another. Genesis and transitions are distinct schemas; a receipt
+cannot claim their role.
 
 ### 2.6 Storage
 
@@ -429,11 +444,17 @@ do not exist at this level. Over the protected subset:
    the next link's before-state; the final after-state equals the path's
    state in the subject (`(null, null)` for deletions). Mode-only changes
    need a covering transition like any other change.
-3. **Admissible entries and the mode wall.** A protected path whose
-   mode differs between base and subject refuses outright — the charter
-   requirement-4 wall, encoded in the predicate itself, not only at
-   preflight; no lineage record covers a mode change in the pilot.
-   Protected paths are regular blobs (100644 or
+3. **Admissible entries and the mode wall, presence-aware.** For a
+   protected path **present at both endpoints**, differing modes refuse
+   outright; additions and deletions carry their single endpoint's mode
+   and are unaffected (the wall never fires on a null side). And the
+   wall is closed against laundering through intermediates: **every
+   consumed transition must preserve mode** (`before_mode ==
+   after_mode` whenever both are non-null), so a 100644→100755→100644
+   chain refuses at its first link regardless of matching endpoints.
+   This is the charter requirement-4 wall in the predicate itself;
+   relaxing it is the §11 charter-alignment decision. Protected paths
+   are regular blobs (100644 or
    100755) wherever they exist — symlinks are inadmissible in the
    protected domain, and gitlinks are refused tree-wide by §2.1.
    File/directory replacements decompose into entry deletions and
@@ -485,7 +506,7 @@ each on a fresh ephemeral runner, none reusable:
 | Job | Runs candidate code | Token | OIDC use |
 |---|---|---|---|
 | `verify` (Job 1) | yes | `contents: read` only, no secrets, no environment | none |
-| `recompute` | no (pinned code) | `contents: read`, `actions: read` | none |
+| `recompute` | no (pinned code) | `contents: read`, `actions: read` | reads `github.workflow_sha` from the run context — the authorized candidate-time source; the signer later compares it against `approve`'s OIDC `workflow_sha` claim and refuses on mismatch |
 | `approve` | no (pinned code) | `id-token: write` only — the control-plane lookups (`actions: read`) belong to the **signer's own credential**, not to any job | presents identity to the signer |
 | `publish` | no (pinned code) | the two §9.7b credentials, vended by the publisher-token broker against its OIDC | `id-token: write`; presents identity to the publisher-token broker |
 
@@ -609,9 +630,18 @@ on the notary repository alone) and a lane credential (checks-write and
 contents-read on the lane repository alone) — provisioned to it, never
 minted by it; publishes per §7; holds no signing capability.
 
-Trust roots for every step are committed at or digest-pinned to the
-protected base. Runtime organization variables are not trust anchors
-anywhere in the notary path.
+Trust roots for every step resolve through one normative committed
+registry: `.axiom/notary/keys.json` at the base, schema
+`axiom/notary-key-registry/v1` — a closed object mapping each role
+(`producer`, `actor`, `correction-reviewer`, `admin-approver`,
+`approver`) to its sorted, strictly unique array of authorized SPKI
+sha256 values (the notary key's SPKI is additionally pinned in the
+lane's consumer verification spec). Detached signatures validate
+against the registry entry for their role — never against a signature
+file's self-declared fingerprint — and the registry is a §4 trust
+surface: it moves only by transition, which is what key rotation is.
+Runtime organization variables are not trust anchors anywhere in the
+notary path.
 
 ## 6. Admission chain, epoch, genesis, and transitions
 
@@ -1013,8 +1043,10 @@ invalid signature, wrong encoder identity, wrong waiver binding,
 path/blob disagreement); transition whose enumerated delta contains a
 non-trust-surface path; nonexistent
 `record_sha256`; duplicate qualifying v5 records for one path; genesis
-carrying coverage; empty-delta first receipt leaving baseline provenance
-unchanged (positive control); post-epoch change vouched only by v5; v5
+carrying coverage; state-identical receipt (base manifest equals subject manifest)
+refused; mode-preserving transition rule refusing a
+100644→100755→100644 chain at its first link; protected addition and
+deletion unaffected by the mode wall (positive controls); post-epoch change vouched only by v5; v5
 record whose blob differs from its frozen pair; transition whose
 recomputed diff differs from its enumerated delta (smuggled content);
 transition evaluated under successor roots (self-authorizing rotation);
@@ -1103,7 +1135,15 @@ publisher or finalizer credentials requested from the publisher-token
 broker by a wrong workflow, ref, run, or environment vended nothing;
 publisher-token broker asked to sign, or signing broker asked for a
 write token, refused (capability separation of the two brokers);
-publishing-environment administrator bypass tested off; intermediate replay projection with a path both
+publishing-environment administrator bypass tested off; signature
+validated against a self-declared fingerprint instead of the registry
+refused; key absent from the registry role refused; registry change
+riding an ordinary candidate refused (trust surface); candidate
+workflow_sha diverging from approve's OIDC claim refused; wrapper
+lane or epoch diverging from candidate or chain refused;
+authorization.environment not derived from OIDC refused; untyped or
+empty lineage identity fields refused; simultaneous-fault refusal
+reporting the first rule and least path (positive control); intermediate replay projection with a path both
 terminal and directory-prefix refused as no-valid-execution;
 noncanonical JCS bytes or wrong semantic-array order refused; genesis
 inventory containing a path outside the protected domain refused;
@@ -1137,6 +1177,9 @@ control).
 - Custody model for the producer, actor, reviewer, and administrative
   keys (the notary key is fixed by §5/§8); reviewer custody is the open
   question deferred from the rulespec-nz custody ruling.
+- Charter alignment on modes: whether covered executable-mode
+  transitions become admissible post-pilot (charter requirement 4
+  amendment) or the wall stays permanent.
 - Newly protected paths: when a transition expands the path policy, the
   newly covered paths' current entries are inventoried in the transition
   body and carry "transition-initialized" provenance (administrative,
