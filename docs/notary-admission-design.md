@@ -1,9 +1,9 @@
-# Notary admission: design v28
+# Notary admission: design v29
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 28 folds design-review rounds 1–27
-(one hundred thirty-four blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 29 folds design-review rounds 1–28
+(one hundred thirty-five blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -152,7 +152,9 @@ bytes — **the stem is the address; the `.json` suffix is grammar, not
 digest** — and a signature sidecar is named `<digest>.json.<role>.sig`
 with `<role>` one of the store's lineage scopes (`producer`, `actor`,
 `review`; chain artifacts live on the chain branch, never in the
-store). Each sidecar is canonical JSON:
+store, and carry their signatures under §7's chain-bundle grammar —
+the same filename pattern with the chain scopes as tokens). Each
+sidecar is canonical JSON:
 `{schema: "axiom/detached-signature/v1", body_sha256, scope,
 signer_spki_sha256, signature_base64}`. Every cross-scope verification
 must fail, legacy `apply_ed25519`/`eval_ed25519` included (§10 tests the
@@ -454,10 +456,11 @@ milestone one.
 approval_signature_sha256}` — the `approve` job's own OIDC
 `check_run_id`, and the digest of the detached
 `axiom/notary-approval/v1` signature file. Candidate fields are
-referenced by digest, never flattened, and the candidate body and
-approval-signature file **must be published on the chain branch beside
-the receipt** — a receipt whose candidate or approval file is
-unpublished is unverifiable and invalid to reconstruction. The reviewer
+referenced by digest, never flattened, and the receipt's §7 bundle —
+report body, candidate body, the approval sidecar over the candidate,
+and the notary sidecar over the receipt — **must be published on the
+chain branch with it, in one commit**; a receipt any of whose bundle
+files is unpublished is unverifiable and invalid to reconstruction. The reviewer
 approval signs the candidate digest; the signer assembles the wrapper
 **by derivation, never by input**: wrapper `lane` and `epoch_sha256`
 are copied from the candidate and verified equal to the chain's;
@@ -993,7 +996,10 @@ named by the bootstrap ceremony), and the signer signs only after
 verifying that approval signature over the exact digest — environment
 approval alone binds no bytes here either, and a swapped-body
 transition after platform approval refuses on the missing
-matching-digest signature; and transitions are void
+matching-digest signature. Both signatures — the admin-approval and
+the typed signer's own — publish as the artifact's §7 bundle
+sidecars, so authorization evidence is durable on the branch, not an
+ephemeral signing-time check; and transitions are void
 until finalized (§7), exactly like receipts. For merge gating, a pending
 transition plays the pending receipt's role for its own subject (§7): it
 is the merge-authorizing artifact for exactly its enumerated delta.
@@ -1024,7 +1030,26 @@ ruleset in the notary repository: only the chain App may push; no
 force pushes; no deletion; linear history. Its contents: content-addressed artifact files (reports,
 receipts, transitions, genesis, and void markers) plus `HEAD.json`
 (`{schema: "axiom/notary-head/v1", tip_sha256, tip_kind}`) as a
-convenience pointer. Two marker schemas complete the branch's contents:
+convenience pointer. **Chain files follow the §2.1 grammar** — bodies
+`<digest>.json` with the stem the SHA-256 of the raw bytes, detached
+signatures `<digest>.json.<scope>.sig` with the scope name as token —
+and every signed artifact publishes as a **closed bundle in one
+commit**: genesis = body + its `genesis`-scope sidecar (the typed
+signer's) + its `admin-approver` sidecar; transition = body +
+`transition` sidecar + `admin-approver` sidecar; receipt = report
+body + candidate body + the `approver` sidecar over the candidate +
+receipt body + the `notary` sidecar over the receipt. Reports,
+candidates, markers, and `HEAD.json` are exactly the unsigned files —
+reports and candidates are bound by digest from signed bodies, and
+marker authentication is structural (below); a sidecar naming a
+marker, an unknown scope token, or any other file pattern invalidates
+the branch to reconstruction. Exactly one sidecar per (body, scope):
+duplicates cannot coexist in a tree, and a later commit that adds,
+rewrites, or deletes any file of an already published bundle is
+mutation — append-only discipline identical to the lineage store's,
+and reconstruction refuses the branch at that commit. A partial
+bundle is never *pending* (the state machine below reads complete
+bundles), and the publisher refuses to commit one. Two marker schemas complete the branch's contents:
 `axiom/notary-finalization/v1` (`{schema, lane, epoch_sha256,
 target_sha256, target_kind, merged_tip_manifest_sha256, sequence}`) and
 `axiom/notary-void/v1` (`{schema, lane, epoch_sha256, target_sha256,
@@ -1033,8 +1058,9 @@ artifact. Marker authentication is structural: the branch accepts
 commits from the chain App alone, linear history, no force pushes —
 so markers are exactly what the pinned publisher committed, in order.
 
-The chain state machine, exhaustively: an artifact is *pending* when its
-body is on the branch with no marker naming it; *finalized* when exactly
+The chain state machine, exhaustively: an artifact is *pending* when
+its **complete bundle** is on the branch with no marker naming its
+body — an incomplete bundle never enters the state machine; *finalized* when exactly
 one finalization marker names it; *void* when a void marker names it.
 Finalized and void are terminal and mutually exclusive — the first
 marker in branch history wins, and any later marker naming the same
@@ -1510,13 +1536,26 @@ base-present body, a nested store name, and a non-lineage role suffix
 each enumerated unrecognized-store-name; the sidecar of an eligible
 newly-introduced body not separately enumerated (positive control);
 transition-path policy covering .axiom/notary accepted and covering
-.axiom/lineage refused (the opposite obligations); corpus-release root
+.axiom/lineage refused (the opposite obligations); transition-path
+policy omitting required .axiom/notary coverage refused as
+policy-invalid; corpus-release root
 absent from the registry refused; invalid corpus-release signature
 refused; raw_key_id/SPKI pair inconsistent refused for either legacy root;
+the §9.15 witnessed comparison failing — genesis-bound apply root
+differing from the independently frozen production fingerprint — 
+aborting the ceremony (a distinct case per legacy root: apply and
+eval each tested);
 either legacy root equal
 to any registry entry refused (each pairing a distinct test,
 corpus-release and producer included); finalized receipt whose
-referenced report is unpublished invalid to reconstruction;
+referenced report is unpublished invalid to reconstruction; a bundle
+missing its notary, admin-approver, or approver sidecar never pending
+and invalid to reconstruction (a distinct case per artifact kind); a
+later commit rewriting or deleting any published bundle file
+invalidating the branch at that commit (append-only discipline); a
+partial-bundle commit refused by the publisher; an unknown scope
+token, a sidecar naming a marker, or an unclassifiable chain file
+invalidating the branch to reconstruction;
 absent-profile preflight refusal carrying a truthful null digest
 (positive control);
 base-present invalid record inert — successor with an honest diff
