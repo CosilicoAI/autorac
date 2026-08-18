@@ -1,9 +1,9 @@
-# Notary admission: design v8
+# Notary admission: design v9
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 8 folds design-review rounds 1–7
-(fifty-eight blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 9 folds design-review rounds 1–8
+(sixty-two blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -184,9 +184,25 @@ are first-class and loud: the sanctioned response to a wrong encoding
 remains fix-the-encoder-and-re-encode, and a correction event is the
 recorded exception, never the quiet path.
 
-### 2.4 Verification report (Job 1, unsigned) — `axiom/notary-report/v1`
+### 2.4 Verification reports (Job 1, unsigned) — pass and refusal variants
 
-Content-addressed output of the verification workflow. Fields: `schema`,
+Refusals cannot carry fields their stage never established (an ambiguity
+refusal has no unique assignment; a structural refusal has no manifest),
+so the report is **two closed schemas**, not one with impossible fields.
+
+`axiom/notary-report-refusal/v1`: `{schema, lane, epoch_sha256,
+subject_commit_git_oid, stage, refusal}` where `stage` is one of
+`"structural"`, `"preflight"`, `"eligibility"`, `"assignment"`,
+`"gates"`, and `refusal` is the coded object below; plus exactly the
+stage-established optional fields per a fixed table: manifests only from
+`"preflight"` onward, eligible-record lists only from `"eligibility"`
+onward, never an assignment (a refusal that could compute a unique
+assignment would not be a refusal). Refusal reports are diagnostics; no
+downstream artifact ever binds one.
+
+`axiom/notary-report-pass/v1` — the only variant the trusted side will
+reconcile — content-addressed output of the verification workflow.
+Fields: `schema`,
 `lane`, `epoch_sha256`; `subject_commit_git_oid`,
 `subject_tree_manifest_sha256`; `base_commit_git_oid`,
 `base_tree_manifest_sha256`; `chain_predecessor_sha256`,
@@ -200,8 +216,9 @@ digests consumed for its chain, in chain order (the unique assignment of
 by `gate_id`, **one entry per gate id** (duplicates are a parse refusal),
 each `{gate_id, outcome}` — tiers are not report fields at all: a gate's
 tier comes from the digest-bound profile, so a report cannot strengthen a
-classification the profile did not grant; `diff_coverage`: `"pass"` or a typed
-refusal object (never `waived`, never `not-run`); `unprotected_changes`
+classification the profile did not grant; `diff_coverage`: exactly `"pass"` — the pass
+variant carries no refusal shapes, and `waived`/`not-run` exist in
+neither variant; `unprotected_changes`
 (sorted paths); `ineligible_records`: sorted array of `{record_sha256, reason}` with a
 closed reason enum (`"unprotected-path-transition"`,
 `"duplicate-transition-paths"`, `"wrong-lane"`, `"wrong-epoch"`,
@@ -447,14 +464,25 @@ trusted job running only pinned code on a fresh runner:
    exposes no arbitrary-byte operation for the genesis, transition, or
    notary scopes.
 
-**Human authorization** gates the signing step through the dedicated
-`notary-signing` environment (required reviewers, protected refs, no
-self-approval) — an environment that holds no generation credentials and
-no write tokens, unlike today's `production-signing`, which provisions
+**Human authorization approves a completed receipt, not a pipeline.**
+GitHub environment approval gates a job before it starts, so the
+recomputing job cannot be the approved job — reviewers would be
+approving work not yet run, which the charter explicitly forbids. The
+trusted flow is therefore three stages: the **recomputation stage**
+(fresh runner, pinned code, unapproved) performs the reconciliation
+above and publishes the immutable, content-addressed **receipt
+candidate** — the completed reconciled body, unsigned; the **approval
+stage** is a separate job in the dedicated `notary-signing` environment
+whose input is the candidate digest, so the deployment review the
+humans approve names the exact bytes (required reviewers, no
+self-approval, an environment holding no generation credentials and no
+write tokens — unlike today's `production-signing`, which provisions
 generation workflows with the apply key, a model credential, and a
-write-capable token and is structurally disqualified. Environment
-approval releases the *request* to the external signer; it never
-releases key material to a runner.
+write-capable token, and is structurally disqualified); the **signing
+step** is the external signer, which validates the approved job's OIDC
+identity, re-reads the candidate by digest, verifies the approved input
+digest matches, and signs. Approval is thereby digest-bound to a
+completed receipt; it never releases key material to a runner.
 
 Effective-permission constraints, not deployment assumptions (§9): the
 external signer's own deployment holds no model, generation, or
@@ -472,9 +500,11 @@ publisher is pinned candidate-free code that validates the signed
 receipt and the current finalized predecessor before ever emitting the
 required check.
 
-**Publisher — separate job.** Holds only a token whose write capability
-is confined to the notary ref by repository ruleset (App tokens scope to
-repositories, not refs); publishes per §7; holds no signing capability.
+**Publisher — separate job, two-keyed.** Holds two separately
+constrained credentials per §9.7b — a chain credential (contents-write
+on the notary repository alone) and a lane credential (checks-write and
+contents-read on the lane repository alone) — provisioned to it, never
+minted by it; publishes per §7; holds no signing capability.
 
 Trust roots for every step are committed at or digest-pinned to the
 protected base. Runtime organization variables are not trust anchors
@@ -598,21 +628,34 @@ Genesis bootstraps the branch: the branch's first two commits must be
 exactly the genesis body and its finalization marker, published by the
 same CAS branch creation — a competing genesis loses the atomic
 first-push and any later genesis body or marker is invalid by the
-second-genesis rule. **Bootstrap is explicitly acyclic and
-tip-frozen.** At genesis signing, the typed signer verifies by CAS that
-`genesis_commit_git_oid` is the lane's protected-ref tip at that
-moment; a tip that moved voids the genesis attempt and it reruns. The
-lane's epoch pin cannot live inside the genesis tree (that would be
-`epoch → tree → body → epoch`); it lands immediately after, in a
-**bootstrap activation transition** — the chain's second artifact,
-predecessor genesis, whose delta is exactly the consumer-spec epoch pin
-and the three policy files. Enforcement begins at activation
-finalization; between genesis and activation the lane accepts no
-ordinary candidates. The stale-genesis laundering path (genesis frozen
-at an old tip while the branch sits at a newer one, letting a later
-record cover the gap) is closed by the CAS: genesis is void unless it
-froze the actual tip, and the activation transition chains from it
-before anything else may.
+second-genesis rule. **Bootstrap is explicitly acyclic, policy-bound, and freeze-audited.**
+No writer in this design can atomically couple a lane read with a
+notary-repository branch creation, so the freeze is administrative and
+audited rather than claimed as CAS: before genesis signing, the lane's
+protected branch is **locked** (a lock ruleset barring all merges), the
+signer verifies via the API both that the lock is active and that
+`genesis_commit_git_oid` equals the locked tip, and the lock is
+retained until activation finalization — the post-sign pre-publication
+race cannot occur because nothing can merge while locked. A genesis
+attempt observing a moved tip or an absent lock refuses.
+
+Genesis also **binds its prospective policies**: the body carries
+`bootstrap_policies` — the digests of the exact path-policy,
+transition-path-policy, and profile bodies the lane will adopt — and
+the genesis partition of protected paths is computed under that bound
+path policy, so the policy defining genesis provenance is fixed at
+signing and cannot be selected afterward. The lane's epoch pin cannot
+live inside the genesis tree (that would be `epoch → tree → body →
+epoch`); it lands immediately after, in the **bootstrap activation
+transition** — the chain's second artifact, predecessor genesis, whose
+delta is exactly the consumer-spec epoch pin plus those three policy
+files, digest-identical to `bootstrap_policies`; its eligibility oracle
+is the genesis-bound transition-path policy. Enforcement begins at
+activation finalization; the lock spans the whole interval, so no
+ordinary candidate can slip between. The stale-genesis laundering path
+is closed by the audited freeze: genesis is valid only over the locked
+tip, and the activation transition chains from it before anything else
+may.
 
 **Verification does not trust the pointer.** The chain's truth is
 reconstructible by rule from the branch alone: the valid chain is the
@@ -862,18 +905,31 @@ kind, or tip manifest; marker sequence gap or repeat invalidating the
 branch; transition delta path unmatched by the transition-path policy;
 transition validated by the publisher under predecessor-state roots
 (positive control) and rejected when its signature or predecessor
-fails; empty subtree entry refused; genesis signing against a moved
-lane tip voided by CAS (stale-genesis laundering closed); ordinary
-candidate between genesis and activation refused; activation transition
-with any delta beyond the epoch pin and policy files refused; wrong
+fails; empty subtree entry refused; genesis attempt without an active
+lane lock, or against a tip that moved, refused (stale-genesis
+laundering closed); lane movement between genesis signing and
+publication impossible under the audited lock (positive control);
+ordinary candidate between genesis and activation refused; activation
+transition with any delta beyond the epoch pin and the three
+genesis-bound policy files refused; activation omitting the epoch pin
+or any policy file refused; activation installing a policy file whose
+digest differs from bootstrap_policies refused; genesis with absent
+bootstrap_policies refused; wrong
 `check_run_id` or a trusted job in a reusable or separate-run topology
 refused; duplicate profile gate ids and duplicate inventory
 ref_spec/image keys refused; `workflow_ref`/`ref` suffix mismatch
 refused; publisher lane-content write attempt failing (two-credential
 split, positive control); publisher job holding App-minting authority
-forbidden by audit; void marker carrying a sequence refused; genesis
-finalization sequence not "1" refused; fsck-dirty tree refused beyond
-the duplicate-path case; absent or non-regular waiver file refused.
+forbidden by audit; publisher identity attempting the notary signing
+operation refused; a non-publisher updating the chain branch, or
+non-linear history, rejected; void marker carrying a sequence refused;
+genesis finalization sequence not "1" refused; sequence "01" or
+non-decimal text refused; fsck-dirty tree refused beyond the
+duplicate-path case; absent, non-regular, or oversized waiver file
+refused; refusal report carrying an assignment or stage-unestablished
+fields refused; approval-stage input digest mismatching the receipt
+candidate refused; signing without a digest-bound approval refused;
+invalid OIDC signature, issuer, audience, or expiry refused.
 
 ## 11. Decisions for sign-off
 
