@@ -241,10 +241,7 @@ class TestEncodeJobChecker:
 
     def test_real_failures_still_count(self) -> None:
         fetch, _ = self._jobs_fixture(
-            {
-                run_id: [self._encode_job("failure")]
-                for run_id in (1, 2, 3)
-            }
+            {run_id: [self._encode_job("failure")] for run_id in (1, 2, 3)}
         )
         runs = [
             _run(1, "2026-08-12T01:00:00Z", "failure"),
