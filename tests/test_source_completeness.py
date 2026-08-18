@@ -32809,6 +32809,106 @@ rules:
     assert not result.issues
 
 
+ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "source_completeness"
+    / "estg_66_rounding_input_stage"
+)
+
+
+def test_estg_66_rounding_input_stage_specimen_bytes_are_pinned():
+    rejected = ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / "rejected"
+    minimally_fixed = ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / "minimally_fixed"
+    rejected_rules = (rejected / "66.yaml").read_bytes()
+    rejected_tests = (rejected / "66.test.yaml").read_bytes()
+    fixed_rules = (minimally_fixed / "66.yaml").read_bytes()
+    fixed_tests = (minimally_fixed / "66.test.yaml").read_bytes()
+    recorded_issue = yaml.safe_load((rejected / "issues.json").read_text())
+
+    assert hashlib.sha256(rejected_rules).hexdigest() == (
+        "7c1545d20f21bcdaba0abd7b8af324b3747148f84d7593e4f358ec726a57396b"
+    )
+    assert hashlib.sha256(rejected_tests).hexdigest() == (
+        "4198cb7116c0c34717354a29a30da6884cb5e31964911af3a9a68815d003a31b"
+    )
+    assert recorded_issue["rulespec_sha256"] == hashlib.sha256(
+        rejected_rules
+    ).hexdigest()
+    assert recorded_issue["tests_sha256"] == hashlib.sha256(
+        rejected_tests
+    ).hexdigest()
+    assert hashlib.sha256(fixed_rules).hexdigest() == (
+        "6787c5c50520320292b1438ef9d45cf349d4ecbbf981b1c908a11f9278350d5e"
+    )
+    assert hashlib.sha256(fixed_tests).hexdigest() == (
+        "0603e164a4f6eb2c96d57fc78964e98e5e0ff9099289cc5795dafa73bb8b834d"
+    )
+
+    old_name = b"kindergeld_after_child_allowance_increase"
+    new_name = b"kindergeld_after_whole_euro_rounding"
+    assert fixed_rules == rejected_rules.replace(old_name, new_name)
+    assert fixed_tests == rejected_tests.replace(old_name, new_name)
+
+    source = (ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / "source.txt").read_bytes()
+    assert hashlib.sha256(source.removesuffix(b"\n")).hexdigest() == (
+        "2ac3c9ff2d11aa23e6850d0a8e81abd612034582a571c036627c8b689293871e"
+    )
+
+
+@pytest.mark.parametrize("variant", ["rejected", "minimally_fixed"])
+def test_estg_66_accepts_asserted_input_fed_rounding_stage(variant: str):
+    fixture = ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / variant
+    source = (
+        ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE
+        / "source.txt"
+    ).read_text().removesuffix("\n")
+
+    result = _analyze(
+        (fixture / "66.yaml").read_text(),
+        source,
+        corpus_citation_path="de/statute/estg/66",
+        test_cases=yaml.safe_load((fixture / "66.test.yaml").read_text()),
+    )
+
+    assert not result.issues
+
+
+def test_estg_66_input_fed_rounding_stage_must_be_asserted():
+    fixture = ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / "rejected"
+    test_cases = yaml.safe_load((fixture / "66.test.yaml").read_text())
+    intermediate = (
+        "de:statutes/estg/66#kindergeld_before_whole_euro_rounding"
+    )
+    for case in test_cases:
+        case["output"].pop(intermediate, None)
+    source = (
+        ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE
+        / "source.txt"
+    ).read_text().removesuffix("\n")
+
+    result = _analyze(
+        (fixture / "66.yaml").read_text(),
+        source,
+        corpus_citation_path="de/statute/estg/66",
+        test_cases=test_cases,
+    )
+
+    assert _has_issue(result, "rounding", "fractional")
+
+
+@pytest.mark.parametrize(
+    "directive",
+    [
+        "Das Kindergeld ist dabei auf volle Euro kaufmännisch zu runden.",
+        "Der Betrag ist dabei auf volle Euro abzurunden.",
+        "Die Beträge sind dabei auf volle Euro aufzurunden.",
+    ],
+)
+def test_german_dabei_rounding_refers_to_preceding_result(directive: str):
+    assert completeness_module._rounding_text_refers_to_result(directive)
+
+
 def test_estg_66_rounding_retry_shows_and_accepts_paired_half_boundary_shape():
     source = """\
 (3) Werden die Freibeträge für Kinder nach § 31 Satz 1 in Verbindung mit § 32 Absatz 6 Satz 1 angehoben, wird das Kindergeld entsprechend erhöht. Das Kindergeld ist dabei auf volle Euro kaufmännisch zu runden.
