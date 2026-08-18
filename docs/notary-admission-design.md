@@ -1,9 +1,9 @@
-# Notary admission: design v20
+# Notary admission: design v21
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 20 folds design-review rounds 1–19
-(one hundred sixteen blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 21 folds design-review rounds 1–20
+(one hundred eighteen blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -98,7 +98,7 @@ field, missing field, wrong type, or duplicate key is a parse refusal.
 | `workflow_sha_git_oid` | the commit the workflow file was loaded from: **context-derived at candidate time** (`github.workflow_sha` in the `recompute` job), then **authenticated by equality** to `approve`'s OIDC `workflow_sha` claim at signing — one run, one workflow, so the equality is exact; reusable workflows are prohibited; never the run's `head_sha` |
 | Entry modes | six-character octal strings: `"100644"` and `"100755"` (the pilot admits no symlinks anywhere — charter requirement 4 rejects symlink deltas, and refusing the mode tree-wide is the total form) |
 | Paths | UTF-8 strings; sorting is bytewise over the UTF-8 encoding |
-| Semantic arrays | **one comparator everywhere**: elements order bytewise over the UTF-8 encoding of the element's sort key, which each array names — `gates` by `gate_id`, `required_gates` by `gate_id`, `acceptable_outcomes` and `reasons` by their string value, `eligible_records`/`unused_eligible_records` by digest, `ineligible_records` by `record_sha256`, `coverage_assignment` by `path`, dependency `actions` by `ref_spec`, `containers` by `image`, inventories by `path`; set-valued arrays are strictly unique on their key (JCS canonicalizes objects, not arrays — this row is what makes array bytes deterministic) |
+| Semantic arrays | **one comparator everywhere**: elements order bytewise over the UTF-8 encoding of the element's sort key, which each array names — `gates` by `gate_id`, `required_gates` by `gate_id`, `acceptable_outcomes` and `reasons` by their string value, `eligible_records`/`unused_eligible_records` by digest, `ineligible_records` by `store_name`, `coverage_assignment` by `path`, dependency `actions` by `ref_spec`, `containers` by `image`, inventories by `path`; set-valued arrays are strictly unique on their key (JCS canonicalizes objects, not arrays — this row is what makes array bytes deterministic) |
 
 **Tree manifests.** A tree manifest is the recursively flattened list of
 **terminal entries** (blobs and symlinks; directories appear only through
@@ -228,14 +228,15 @@ refusals carry `coverage_assignment`, `unused_eligible_records`,
 
 | `stage` | `established` content |
 |---|---|
-| `"structural"` | the all-null prefix (nothing established) |
+| `"structural"` | the actual completed prefix — a late structural failure (an empty subtree found while building the subject manifest, after resolution and the base manifest succeeded) truthfully carries the resolved predecessor and base fields; manifests establish in fixed order, **base first, then subject**, so identical faults establish identical prefixes |
 | `"preflight"` | whatever prefix the failing check permitted — a `policy-invalid` for an absent profile truthfully carries `profile_sha256: null` |
 | `"eligibility"` | prefix through the record lists |
 | `"assignment"` | prefix through the record lists — **never** an assignment or unused partition (an ambiguity has neither) |
 | `"gates"` | the full prefix, plus the gates-stage extras below |
 
 The prefix property is the single rule; the table describes what it
-yields per stage and never overrides it. Only `"gates"`-stage refusals
+yields per stage and never overrides it — including for structural
+refusals, whose prefixes reflect how far establishment actually got. Only `"gates"`-stage refusals
 additionally carry `coverage_assignment`, `unused_eligible_records`,
 `unprotected_changes`, and `gates` — there coverage succeeded, so all
 four are determinate.
@@ -284,7 +285,13 @@ tier comes from the digest-bound profile, so a report cannot strengthen a
 classification the profile did not grant; `diff_coverage`: exactly `"pass"` — the pass
 variant carries no refusal shapes, and `waived`/`not-run` exist in
 neither variant; `unprotected_changes`
-(sorted paths); `ineligible_records`: sorted array of `{record_sha256, reasons}` —
+(sorted paths); `ineligible_records`: sorted array of
+`{store_name, reasons}` — `store_name` is the literal filename string
+relative to `.axiom/lineage/`, `.json` suffix included, whatever bytes
+it holds within the UTF-8 tree domain; the array sorts bytewise by
+`store_name`. (Eligible records remain digest-keyed — they passed the
+address check, so name and digest coincide; ineligible entries are
+name-keyed precisely because their names may not be digests.)
 `reasons` is the sorted array of every applicable code **whose
 prerequisites are satisfied**, from the closed enum with this
 prerequisite order: `address-mismatch` and `malformed-record` are
@@ -360,10 +367,11 @@ has exactly one preimage. Every committed policy body (`path-policy`,
 any other body.
 
 The report is a *proposal*. Refusal reports are diagnostic artifacts, and
-even a pass report authorizes nothing: every claim-bearing field is
-recomputed by the trusted side (§5) before signing, so a candidate-forged
-report — pass verdict, trimmed unprotected list, invented assignment —
-fails reconciliation rather than getting signed.
+even a pass report authorizes nothing: every **recomputed invariant**
+is re-derived by the trusted side (§5) before signing — gates alone are
+validated declarations, per §1's stated residual — so a
+candidate-forged report (pass verdict, trimmed unprotected list,
+invented assignment) fails reconciliation rather than getting signed.
 
 ### 2.5 Notary receipt (signed) — `axiom/notary-receipt/v1`
 
@@ -394,8 +402,9 @@ The `job1` block is **run-scoped provenance, stated as such**: GitHub
 artifacts carry no producing-job or attempt identity, so it claims only
 that the named artifact with this digest existed in this run, which the
 pilot requires to contain exactly one artifact of that name. The
-narrowing is safe because no claim-bearing field depends on the
-artifact — the trusted side recomputes them all — and gate declarations
+narrowing is safe because no recomputed invariant depends on the
+artifact — the trusted side re-derives them all, and gate declarations
+carry §1's residual by construction — and gate declarations
 attribute to the proposing run as a whole: a different job in the
 candidate's own run forging them is the same trust domain and the same
 accepted residual as the candidate weakening its gates. An OIDC-bound
@@ -1350,6 +1359,10 @@ against a key other than the genesis-bound legacy root refused (root
 substitution); alias occurrence ineligible with address-mismatch while
 the correct-path occurrence stays eligible (positive control);
 malformed body carrying only computable reasons (positive control);
+late structural failure carrying the resolved base prefix (positive
+control); reconciliation rejecting an omitted or spurious
+ineligible_records occurrence, or an omitted or extra applicable
+reason;
 reusable verify job refused; duplicate prompt_sha256s refused; empty
 or wrong pinned artifact_name refused; review/admin-approver SPKI
 collision refused; approver/automation SPKI collision refused; policy
