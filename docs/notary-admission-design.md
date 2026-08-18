@@ -1,9 +1,9 @@
-# Notary admission: design v7
+# Notary admission: design v8
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 7 folds design-review rounds 1–6
-(fifty-one blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 8 folds design-review rounds 1–7
+(fifty-eight blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -17,10 +17,10 @@ The notary signs one narrow claim:
 > `T1`), reached from predecessor state `T0` recorded by chain predecessor
 > `C` (a receipt, a transition record, or genesis): under the verifier
 > profile and protected-path policy committed at the base, every
-> protected-content tree-entry change from `T0` to `T1` is covered by the
-> unique valid assignment over the eligible lineage set; every gate the
-> profile requires is declared with an outcome the profile accepts;
-> unprotected tree-entry changes are enumerated in `R`; and the protected
+> protected-content terminal-entry change from `T0` to `T1` is covered
+> by the unique valid assignment over the eligible lineage set; every
+> gate the profile requires is declared with an outcome the profile
+> accepts; unprotected terminal-entry changes are enumerated in `R`; and the protected
 > signing policy authorized this acceptance.
 
 Two classes of statement inside that claim have different evidentiary
@@ -109,10 +109,14 @@ refusal; terminal modes outside {"100644", "100755", "120000"} are a
 refusal, and "120000" only outside the protected domain. Within these
 rules the manifest function is total and exact: two trees with equal
 manifests are terminal-entry-identical. Structural malformation refuses:
-input trees must be fsck-clean, and a duplicate flattened terminal path
-— which Git itself treats as an fsck error but can technically encode —
+input trees must be fsck-clean; a duplicate flattened terminal path —
+which Git itself treats as an fsck error but can technically encode —
 is a manifest refusal, so per-path endpoints are always singular and
-manifest set-difference is exact.
+manifest set-difference is exact; and **any directory entry resolving to
+the empty tree is a refusal** — an empty subtree is a real tree-entry
+change the terminal manifest cannot see, and refusing it keeps the
+claim's terminal-entry wording and the manifest's blindness aligned
+rather than quietly divergent.
 
 **Signature envelope.** Signing uses the existing broker frame verbatim:
 
@@ -204,15 +208,18 @@ closed reason enum (`"unprotected-path-transition"`,
 `"invalid-signature"`); `dependency_pins_sha256`: the digest of a
 canonical dependency inventory, a body of schema
 `axiom/notary-dependency-inventory/v1` with the closed shape
-`{schema, lane, actions: [[ref_spec, git_oid], …] sorted by ref_spec,
-containers: [[image, digest_sha256], …] sorted by image,
-python_lock_sha256, verifier: {repo, git_oid}}`, where
+`{schema, lane, actions: [[ref_spec, git_oid], …] sorted by ref_spec
+with strictly unique ref_spec keys,
+containers: [[image, digest_sha256], …] sorted by image with strictly
+unique image keys, python_lock_sha256, verifier: {repo, git_oid}}`, where
 `python_lock_sha256` is SHA-256 over the raw bytes of `uv.lock` at
 `verifier.git_oid` in `verifier.repo`; `verifier`: `{repo, git_oid}`,
 the repository-qualified identity of the verifier code that ran.
-`waiver_set_sha256` adopts the existing toolchain contract: SHA-256 over
-the raw bytes of the repository-root `known-validation-gaps.yaml` at the
-base (absent file hashes the empty byte string). The `diff_coverage` refusal object is itself closed:
+`waiver_set_sha256` adopts the existing toolchain contract exactly:
+SHA-256 over the raw bytes of the repository-root
+`known-validation-gaps.yaml` at the base, which current mechanics
+require to be a present, bounded regular file — an absent or non-regular
+waiver file is a refusal, not an empty hash. The `diff_coverage` refusal object is itself closed:
 `{code, path | null, detail}` with a closed code enum
 (`"uncovered-path"`, `"ambiguous-assignment"`, `"inconsistent-chain"`,
 `"record-cycle"`, `"inadmissible-entry"`, `"structural"`).
@@ -220,8 +227,9 @@ base (absent file hashes the empty byte string). The `diff_coverage` refusal obj
 The profile is likewise a closed committed schema at a normative path:
 `.axiom/notary/profile.json`, schema `axiom/notary-profile/v1`, fields
 `{schema, lane, required_gates, oracle_policy}` with `required_gates`
-sorted by `gate_id`, each `{gate_id, acceptable_outcomes, tier}` where
-`acceptable_outcomes` is a sorted string array, and `oracle_policy`
+sorted by `gate_id` and **strictly unique per gate_id**, each
+`{gate_id, acceptable_outcomes, tier}` where `acceptable_outcomes` is a
+sorted string array, and `oracle_policy`
 exactly one of `"fail-closed"` or `"reduced-tier"` — so `profile_sha256`
 has exactly one preimage. Every committed policy body (`path-policy`,
 `transition-path-policy`, `profile`) carries `schema` and `lane` like
@@ -245,8 +253,12 @@ closed schema, enumerated: `schema`, `lane`, `epoch_sha256`;
 `dependency_pins_sha256`, `verifier` — each independently
 recomputed by the trusted side, never copied on trust; `gates` as
 declared (deduplicated, profile-complete, outcomes acceptable); `job1`:
-`{workflow_path, workflow_sha_git_oid, ref, run_id, run_attempt,
-conclusion, artifact_name, artifact_id, artifact_sha256}` — **run-scoped
+`{workflow_ref, workflow_sha_git_oid, ref, run_id, run_attempt,
+check_run_id, conclusion, artifact_name, artifact_id, artifact_sha256}`
+— `workflow_ref` is the OIDC `workflow_ref` claim string verbatim (one
+authoritative source and grammar; its `@`-suffix must equal `ref` or the
+receipt refuses), and `check_run_id` is the trusted job's own OIDC
+`check_run_id` claim — **run-scoped
 provenance, stated as such**: GitHub artifacts carry no producing-job or
 attempt identity, so the receipt claims only that the named artifact
 with this digest existed in this run, which the pilot requires to
@@ -392,7 +404,11 @@ what makes workflow identity derivable: the trusted job's own OIDC token
 carries the `workflow_sha` that governed the entire run, covering Job 1
 without needing any per-job claim GitHub does not issue. The trusted job
 reads Job 1's conclusion through the jobs-for-run endpoint (by job name
-and attempt) rather than any self-asserted value.
+and attempt) rather than any self-asserted value, and its own identity
+is bound the only way OIDC permits: the token's `check_run_id` claim is
+reconciled through jobs-for-run to the expected trusted-job name and
+attempt — GitHub's claims carry no job name — and reusable execution is
+prohibited for the trusted job exactly as for Job 1.
 
 **Job 1 — verify (secretless, candidate-executing).** Runs on a fresh
 ephemeral runner (GitHub-hosted or dedicated ephemeral pool) with no
@@ -582,7 +598,21 @@ Genesis bootstraps the branch: the branch's first two commits must be
 exactly the genesis body and its finalization marker, published by the
 same CAS branch creation — a competing genesis loses the atomic
 first-push and any later genesis body or marker is invalid by the
-second-genesis rule.
+second-genesis rule. **Bootstrap is explicitly acyclic and
+tip-frozen.** At genesis signing, the typed signer verifies by CAS that
+`genesis_commit_git_oid` is the lane's protected-ref tip at that
+moment; a tip that moved voids the genesis attempt and it reruns. The
+lane's epoch pin cannot live inside the genesis tree (that would be
+`epoch → tree → body → epoch`); it lands immediately after, in a
+**bootstrap activation transition** — the chain's second artifact,
+predecessor genesis, whose delta is exactly the consumer-spec epoch pin
+and the three policy files. Enforcement begins at activation
+finalization; between genesis and activation the lane accepts no
+ordinary candidates. The stale-genesis laundering path (genesis frozen
+at an old tip while the branch sits at a newer one, letting a later
+record cover the gap) is closed by the CAS: genesis is void unless it
+froze the actual tip, and the activation transition chains from it
+before anything else may.
 
 **Verification does not trust the pointer.** The chain's truth is
 reconstructible by rule from the branch alone: the valid chain is the
@@ -625,9 +655,12 @@ equal what was verified":
    distinct signed statements and only one may enter the chain; and the
    marker's `lane`, `epoch_sha256`, `target_kind`, and
    `merged_tip_manifest_sha256` validate against the artifact. On
-   success the finalization marker commits with the next `sequence` (a
-   strictly increasing decimal-string counter over all markers on the
-   chain; a gap or repeat invalidates the branch to reconstruction) and
+   success the finalization marker commits with the next `sequence` — a
+   finalization-only counter: canonical decimal string, no leading
+   zeros, genesis's finalization is `"1"`, each subsequent finalization
+   exactly one greater; a gap or repeat invalidates the branch to
+   reconstruction; void markers carry no sequence and order by branch
+   history and
    `HEAD.json` advances — compare-and-swap via the atomic branch
    update. **All other pending artifacts naming the superseded tip as
    predecessor are voided in the same publisher pass** (same-state
@@ -666,9 +699,11 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
    any environment involved in notary authorization (#1194 re-scoped).
 4. **External signer with identity binding**: the notary key held only
    by the external typed signer; OIDC-claim validation of the requesting
-   repository, workflow path and `workflow_sha`, job, run, attempt, ref,
-   and `notary-signing` environment, against an exact allowlist;
-   reusable workflows prohibited for Job 1; `id-token: write` and
+   repository, `workflow_ref` and `workflow_sha`, `check_run_id`
+   (reconciled via jobs-for-run to the expected trusted-job name and
+   attempt), run, attempt, ref, and `notary-signing` environment,
+   against an exact allowlist; reusable workflows prohibited for Job 1
+   and the trusted job; `id-token: write` and
    `actions: read` allocated explicitly and nothing further; no raw
    notary key material on any runner; Job 1's token audited to
    `contents: read` with no secrets and no environment.
@@ -688,11 +723,17 @@ scopes. §10's pairwise cross-scope matrix is part of ceremony acceptance.
 7a. Effective-permission constraints audited per §5: signer deployment
    credentials, exact caller allowlist, Job-1 and trusted-job token
    audits, and publisher signing denial.
-7b. Publisher write confinement is physical: the publisher App's
-   contents-write installation covers only the dedicated notary
-   repository (chain branch ruleset: App-only, no force push, no
-   deletion, linear history); in the lane repository it holds
-   checks-write and contents-read only. The publisher runs pinned
+7b. Publisher write confinement is physical and two-keyed: because App
+   installation permissions span the repositories an installation
+   covers, one App cannot hold contents-write on the notary repository
+   without holding it wherever else it is installed with that
+   permission — so the publisher uses **two separately constrained
+   credentials** (two Apps, or two repository- and
+   permission-downscoped installation tokens): a chain credential with
+   contents-write on the notary repository alone, and a lane credential
+   with checks-write and contents-read on the lane repository alone.
+   The publisher job holds no App-minting authority — tokens are
+   provisioned to it, never minted by it. The publisher runs pinned
    candidate-free code and validates **every merge-authorizing
    artifact** — receipt or transition alike — signature, typed fields,
    and current finalized predecessor under predecessor-state roots,
@@ -821,7 +862,18 @@ kind, or tip manifest; marker sequence gap or repeat invalidating the
 branch; transition delta path unmatched by the transition-path policy;
 transition validated by the publisher under predecessor-state roots
 (positive control) and rejected when its signature or predecessor
-fails.
+fails; empty subtree entry refused; genesis signing against a moved
+lane tip voided by CAS (stale-genesis laundering closed); ordinary
+candidate between genesis and activation refused; activation transition
+with any delta beyond the epoch pin and policy files refused; wrong
+`check_run_id` or a trusted job in a reusable or separate-run topology
+refused; duplicate profile gate ids and duplicate inventory
+ref_spec/image keys refused; `workflow_ref`/`ref` suffix mismatch
+refused; publisher lane-content write attempt failing (two-credential
+split, positive control); publisher job holding App-minting authority
+forbidden by audit; void marker carrying a sequence refused; genesis
+finalization sequence not "1" refused; fsck-dirty tree refused beyond
+the duplicate-path case; absent or non-regular waiver file refused.
 
 ## 11. Decisions for sign-off
 
