@@ -29340,7 +29340,7 @@ rules:
         assert run.outcome["overlay_validation_success"] is True
         assert run.outcome["status"] == "apply_applied"
 
-    def test_encode_apply_auto_repairs_missing_test_input_assignments(
+    def test_encode_apply_auto_repairs_missing_inputs_among_mixed_issues(
         self, capsys, tmp_path
     ):
         args = self._make_args(tmp_path, backend="codex", sync=False)
@@ -29403,7 +29403,9 @@ rules:
                             "#input.tin_included_on_return. Every test for a "
                             "proof-required RuleSpec module must set all local "
                             "factual inputs, including false facts, so tests "
-                            "cannot pass through implicit defaults."
+                            "cannot pass through implicit defaults.",
+                            "statutes/26/151.yaml: ci: A distinct source "
+                            "condition is not encoded.",
                         ],
                         {},
                     ),
@@ -43565,7 +43567,7 @@ rules:
             is False
         )
 
-    def test_complete_missing_local_test_inputs_refuses_mixed_target_issues(
+    def test_complete_missing_local_test_inputs_repairs_assignment_among_mixed_issues(
         self, tmp_path
     ):
         policy_repo = tmp_path / "rulespec-us" / "us"
@@ -43573,8 +43575,7 @@ rules:
         target_test = target.with_name("4.test.yaml")
         target.parent.mkdir(parents=True)
         target.write_text("format: rulespec/v1\nrules: []\n")
-        original_tests = "- name: case_one\n  input: {}\n  output: {}\n"
-        target_test.write_text(original_tests)
+        target_test.write_text("- name: case_one\n  input: {}\n  output: {}\n")
         validation = SimpleNamespace(
             results={
                 "ci": SimpleNamespace(
@@ -43598,8 +43599,11 @@ rules:
             validation=validation,
         )
 
-        assert changed is False
-        assert target_test.read_text() == original_tests
+        assert changed is True
+        [test_case] = yaml.safe_load(target_test.read_text())
+        assert test_case["input"] == {
+            "us:regulations/7-cfr/273/4#input.member_is_refugee": False
+        }
 
     def test_rulespec_base_for_file_uses_country_content_root(self, tmp_path):
         policy_repo = _canonical_rulespec_content_root(tmp_path)
