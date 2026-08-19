@@ -65,6 +65,7 @@ from axiom_encode.cli import (
     _changed_manifest_group_files,
     _closest_exact_source_excerpt,
     _collapse_additive_versioned_derived_formulas,
+    _companion_test_failures_new_since_baseline,
     _complete_missing_dependent_test_inputs,
     _complete_missing_imported_test_inputs,
     _complete_missing_local_test_inputs,
@@ -30631,8 +30632,10 @@ rules:
             )
             checked["test"] = staged_test_file.resolve()
             checked["root"] = root.resolve()
-            [case] = yaml.safe_load(staged_test_file.read_text())
-            assert case["output"] == {target: "holds"}
+            cases = yaml.safe_load(staged_test_file.read_text())
+            if cases:
+                [case] = cases
+                assert case["output"] == {target: "holds"}
             return []
 
         with patch(
@@ -30744,6 +30747,30 @@ rules:
 
         assert repaired == []
         stage.assert_not_called()
+
+    def test_judgment_positive_overlay_ignores_preexisting_companion_failures(self):
+        preexisting = {
+            "file": "/overlay/example.test.yaml",
+            "case": "preexisting_case",
+            "message": "missing input `existing_gate`",
+        }
+        introduced = {
+            "file": "/overlay/example.test.yaml",
+            "case": "auto_positive_target",
+            "message": "expected holds, got not_holds",
+        }
+
+        assert (
+            _companion_test_failures_new_since_baseline(
+                baseline_failures=[preexisting],
+                candidate_failures=[preexisting],
+            )
+            == []
+        )
+        assert _companion_test_failures_new_since_baseline(
+            baseline_failures=[preexisting],
+            candidate_failures=[preexisting, introduced],
+        ) == [introduced]
 
     def test_imported_output_repair_satisfies_positive_judgment_composition(
         self, tmp_path
