@@ -15407,7 +15407,10 @@ def _rounding_text_refers_to_result(text: str) -> bool:
             r"\s*(?:"
             r"das\s+ergebnis|"
             r"the\s+result|"
-            r"der\s+sich\s+ergebende\s+steuerbetrag"
+            r"der\s+sich\s+ergebende\s+steuerbetrag|"
+            # German statutes also repeat the affected noun and use
+            # "dabei" to attach it to the immediately preceding computation.
+            r"d(?:as|er|ie)\s+[\wÄÖÜäöüß-]+\s+(?:ist|sind)\s+dabei"
             r")\b",
             unmarked,
             flags=re.IGNORECASE,

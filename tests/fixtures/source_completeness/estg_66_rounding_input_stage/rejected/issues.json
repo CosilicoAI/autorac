@@ -1,0 +1,12 @@
+{
+  "attempt_count": 6,
+  "citation": "de/statute/estg/66",
+  "encoder_version": "0.2.1694",
+  "issues": [
+    "statutes/estg/66.yaml: ci: [complete-source-unit:tests] Companion tests do not demonstrate every source-stated rounding rule with distinct fractional input evidence on its affected principal output; missing at de/statute/estg/66(3) [Absatz 3]. A satisfying nearest/kaufmännisch shape is same-period paired cases with otherwise-identical inputs that drive the executed pre-rounding derived amount to 100.49 -> 100 and 100.50 -> 101; assert both the reached unrounded intermediate and the affected principal output in each case. Alternative: when the rounded computation depends on outputs that are not yet available (for example a cross-module base this module cannot compute), a PRECISE typed deferral of that branch removes this demand — declare `module.deferred_outputs: [{output: <namespaced branch output>, reason: <names the exact missing dependency citations>}]` instead of encoding a speculative mechanism."
+  ],
+  "path": "statutes/estg/66.yaml",
+  "rulespec_sha256": "7c1545d20f21bcdaba0abd7b8af324b3747148f84d7593e4f358ec726a57396b",
+  "schema": "axiom-encode/failed-encode-candidate/v1",
+  "tests_sha256": "4198cb7116c0c34717354a29a30da6884cb5e31964911af3a9a68815d003a31b"
+}
