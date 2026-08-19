@@ -54928,6 +54928,25 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                 None,
             )
             target_test_path = _rulespec_test_path(overlay_target)
+            if target_validation is not None and _complete_missing_local_test_inputs(
+                rules_file=overlay_target,
+                test_file=target_test_path,
+                repo_path=overlay_content_root,
+                relative_output=relative_output,
+                validation=target_validation,
+            ):
+                supplemental_files[
+                    _relative_to_rulespec_apply_content_root(
+                        target_test_path, overlay_content_root
+                    )
+                ] = target_test_path.read_text()
+                validations = _validate_overlay_files(
+                    pipeline,
+                    dependent_pipeline=dependent_pipeline,
+                    overlay_target=overlay_target,
+                    dependents=dependents,
+                )
+                continue
             if (
                 target_validation is not None
                 and _repair_generated_unused_imports_for_apply(
@@ -57777,6 +57796,48 @@ def _complete_missing_imported_test_inputs(
         return False
     test_file.write_text(updated)
     return True
+
+
+def _complete_missing_local_test_inputs(
+    *,
+    rules_file: Path,
+    test_file: Path,
+    repo_path: Path,
+    relative_output: Path,
+    validation: object,
+) -> bool:
+    """Fill target-local inputs reported by the proof-required test validator."""
+    if not test_file.exists():
+        return False
+    issues: list[str] = []
+    results = getattr(validation, "results", {})
+    if not isinstance(results, dict):
+        return False
+    for validator_result in results.values():
+        raw_issues = getattr(validator_result, "issues", ())
+        finite_issues = (
+            [str(issue) for issue in raw_issues if isinstance(issue, str) and issue]
+            if isinstance(raw_issues, Sequence)
+            and not isinstance(raw_issues, (str, bytes))
+            else []
+        )
+        if finite_issues:
+            issues.extend(finite_issues)
+            continue
+        error = getattr(validator_result, "error", None)
+        if isinstance(error, str) and error:
+            issues.append(error)
+    if not _only_pending_test_input_assignment_issues(issues):
+        return False
+    return bool(
+        _fill_missing_test_input_assignments(
+            rules_file=rules_file,
+            test_file=test_file,
+            policy_repo_path=repo_path,
+            relative_output=relative_output,
+            issues=issues,
+        )
+    )
 
 
 def _missing_input_names_from_validation(validation: object) -> set[str]:
