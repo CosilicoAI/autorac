@@ -2,6 +2,10 @@
 
 All notable changes to Axiom Encode will be documented here.
 
+- Bound proof-owned parent chapeaux at their first structural child so a colon-
+  terminated eligibility list does not make every alternative satisfy the
+  first child branch's factual gates.
+
 - Carry bounded, source-specific review findings through each canonical-refresh
   lane and bind their exact content in signed context evidence. Louisiana
   external-dependency validation now recognizes narrowly scoped executable
