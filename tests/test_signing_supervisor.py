@@ -2337,6 +2337,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert 'test -n "$REPLACE_RULESPEC_PATH"' not in repair_command
     assert "targeted-reencode-failure-${REPAIR_RUN_ID}-1" in repair_command
     assert "extract_repair_candidate.py" in repair_command
+    assert '--atomic-source-json "$ATOMIC_SOURCE_JSON"' in repair_command
     for immutable_argument in (
         "--citation",
         "--country",
@@ -2888,6 +2889,17 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     ("atomic_source_json", "expected_tests_only"),
     [
         ("[]", "false"),
+        (
+            json.dumps(
+                {
+                    "schema": "axiom-encode/atomic-source-transaction/v2",
+                    "source_bundle": ["us/statute/7/2015/f"],
+                    "canonical_refresh_bundle": [],
+                    "primary_required_test_cases": [],
+                }
+            ),
+            "false",
+        ),
         (
             json.dumps(
                 {

@@ -99,6 +99,7 @@ def _args(tmp_path: Path, archive: Path, **overrides) -> Namespace:
         "rules_engine_ref": "c" * 40,
         "rulespec_ref": "d" * 40,
         "allow_rulespec_base_advance": False,
+        "atomic_source_json": "[]",
         "replace_rulespec_path": "us/statutes/42/1437c-1.yaml",
         "workflow_run_id": "1234",
     }
@@ -174,6 +175,110 @@ def test_extracts_new_atomic_source_metadata(tmp_path, atomic_source_input):
     result = extract_candidate(_args(tmp_path, replacement))
 
     assert result["source_rulespec_ref"] == "d" * 40
+
+
+def _rewrite_as_source_preflight(
+    source_archive: Path,
+    destination: Path,
+    metadata: dict,
+    atomic_source_input: str,
+) -> Path:
+    metadata.pop("source_bundle_input")
+    metadata["atomic_source_input"] = atomic_source_input
+    metadata["generated_lanes"] = ["target-preflight"]
+    metadata["files"] = [
+        {**entry, "path": entry["path"].replace("target/", "target-preflight/", 1)}
+        for entry in metadata["files"]
+    ]
+    with (
+        tarfile.open(source_archive, "r") as source,
+        tarfile.open(destination, "w") as target,
+    ):
+        for member in source.getmembers():
+            extracted = source.extractfile(member)
+            assert extracted is not None
+            body = extracted.read()
+            if member.name == "metadata.json":
+                body = json.dumps(metadata).encode()
+            name = member.name.replace(
+                "generated/target/", "generated/target-preflight/", 1
+            )
+            info = tarfile.TarInfo(name)
+            info.size = len(body)
+            target.addfile(info, io.BytesIO(body))
+    return destination
+
+
+def test_extracts_exactly_bound_source_preflight_candidate(tmp_path):
+    atomic_source_input = json.dumps(
+        {
+            "schema": "axiom-encode/atomic-source-transaction/v2",
+            "source_bundle": ["us/statute/7/2015/f"],
+            "canonical_refresh_bundle": [],
+            "primary_required_test_cases": [],
+        }
+    )
+    archive, metadata = _archive(tmp_path)
+    replacement = _rewrite_as_source_preflight(
+        archive, tmp_path / "source-preflight.tar", metadata, atomic_source_input
+    )
+
+    result = extract_candidate(
+        _args(tmp_path, replacement, atomic_source_json=atomic_source_input)
+    )
+
+    assert result["runner"] == "openai-gpt-5.6-sol"
+
+
+def test_rejects_source_preflight_candidate_for_different_bundle(tmp_path):
+    atomic_source_input = json.dumps(
+        {
+            "schema": "axiom-encode/atomic-source-transaction/v2",
+            "source_bundle": ["us/statute/7/2015/f"],
+            "canonical_refresh_bundle": [],
+            "primary_required_test_cases": [],
+        }
+    )
+    archive, metadata = _archive(tmp_path)
+    replacement = _rewrite_as_source_preflight(
+        archive, tmp_path / "source-preflight.tar", metadata, atomic_source_input
+    )
+
+    with pytest.raises(ValueError, match="metadata mismatch: atomic_source_input"):
+        extract_candidate(
+            _args(
+                tmp_path,
+                replacement,
+                atomic_source_json=json.dumps(
+                    {
+                        "schema": "axiom-encode/atomic-source-transaction/v2",
+                        "source_bundle": ["us/guidance/different"],
+                        "canonical_refresh_bundle": [],
+                        "primary_required_test_cases": [],
+                    }
+                ),
+            )
+        )
+
+
+def test_rejects_source_preflight_lane_without_expected_source(tmp_path):
+    archive, metadata = _archive(tmp_path)
+    replacement = _rewrite_as_source_preflight(
+        archive,
+        tmp_path / "source-preflight.tar",
+        metadata,
+        json.dumps(
+            {
+                "schema": "axiom-encode/atomic-source-transaction/v2",
+                "source_bundle": [],
+                "canonical_refresh_bundle": [],
+                "primary_required_test_cases": [],
+            }
+        ),
+    )
+
+    with pytest.raises(ValueError, match="only the target lane"):
+        extract_candidate(_args(tmp_path, replacement))
 
 
 def test_rejects_metadata_identity_mismatch(tmp_path):
@@ -293,14 +398,27 @@ def test_rejects_incompatible_prior_run_mode(tmp_path, field, value):
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
+    ("field", "value", "message"),
     [
-        ("source_bundle_input", '["us/statute/42/source"]'),
-        ("canonical_refresh_bundle_input", '[{"citation":"x"}]'),
-        ("atomic_source_input", '["us/statute/42/source"]'),
+        (
+            "source_bundle_input",
+            '["us/statute/42/source"]',
+            "single-target run: source_bundle_input",
+        ),
+        (
+            "canonical_refresh_bundle_input",
+            '[{"citation":"x"}]',
+            "single-target run: canonical_refresh_bundle_input",
+        ),
+        (
+            "atomic_source_input",
+            '["us/statute/42/source"]',
+            "metadata mismatch: atomic_source_input",
+        ),
         (
             "atomic_source_input",
             '{"canonical_refresh_bundle":[{"citation":"x"}]}',
+            "metadata mismatch: atomic_source_input",
         ),
         (
             "atomic_source_input",
@@ -323,10 +441,13 @@ def test_rejects_incompatible_prior_run_mode(tmp_path, field, value):
                     ],
                 }
             ),
+            "metadata mismatch: atomic_source_input",
         ),
     ],
 )
-def test_rejects_nonempty_atomic_source_metadata(tmp_path, field, value):
+def test_rejects_unbound_nonempty_atomic_source_metadata(
+    tmp_path, field, value, message
+):
     archive, metadata = _archive(tmp_path)
     if field == "atomic_source_input":
         del metadata["source_bundle_input"]
@@ -337,8 +458,59 @@ def test_rejects_nonempty_atomic_source_metadata(tmp_path, field, value):
         metadata,
     )
 
-    with pytest.raises(ValueError, match=f"single-target run: {field}"):
+    with pytest.raises(ValueError, match=message):
         extract_candidate(_args(tmp_path, replacement))
+
+
+def test_rejects_expected_canonical_refresh_bundle(tmp_path):
+    archive, _ = _archive(tmp_path)
+
+    with pytest.raises(ValueError, match="does not support canonical refresh"):
+        extract_candidate(
+            _args(
+                tmp_path,
+                archive,
+                atomic_source_json=json.dumps(
+                    {
+                        "schema": "axiom-encode/atomic-source-transaction/v2",
+                        "source_bundle": [],
+                        "canonical_refresh_bundle": [{"citation": "x"}],
+                        "primary_required_test_cases": [],
+                    }
+                ),
+            )
+        )
+
+
+def test_rejects_expected_source_bundle_mixed_with_required_tests(tmp_path):
+    archive, _ = _archive(tmp_path)
+
+    with pytest.raises(ValueError, match="expected atomic source input is invalid"):
+        extract_candidate(
+            _args(
+                tmp_path,
+                archive,
+                atomic_source_json=json.dumps(
+                    {
+                        "schema": "axiom-encode/atomic-source-transaction/v2",
+                        "source_bundle": ["us/statute/7/2015/f"],
+                        "canonical_refresh_bundle": [],
+                        "primary_required_test_cases": [
+                            {
+                                "name": "control",
+                                "period": {
+                                    "period_kind": "tax_year",
+                                    "start": "2025-01-01",
+                                    "end": "2025-12-31",
+                                },
+                                "input": {"us:test#input": True},
+                                "required_output": {"us:test#output": 1},
+                            }
+                        ],
+                    }
+                ),
+            )
+        )
 
 
 def test_rejects_missing_legacy_and_atomic_source_metadata(tmp_path):

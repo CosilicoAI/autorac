@@ -454,14 +454,15 @@ jobs:
              [ -n "$QUEUE_ID" ] || \
              ! jq -e 'type == "array" and length == 0' \
                <<< "$canonical_refresh_bundle_json" > /dev/null || \
-             ! jq -e 'type == "array" and length == 0' \
-               <<< "$source_bundle_json" > /dev/null || \
+             { jq -e 'length > 0' <<< "$source_bundle_json" > /dev/null && \
+               jq -e 'length > 0' <<< "$primary_required_test_cases_json" \
+                 > /dev/null; } || \
              ! jq -e 'type == "array" and length == 0' \
                <<< "${EXISTING_SIGNED_IMPORTS_JSON:-[]}" > /dev/null || \
              ! jq -e 'type == "array" and length == 0' \
                <<< "${LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON:-[]}" \
                > /dev/null; then
-            echo "repair replay is limited to one non-legacy target without bundles, imports, dependents, or queue authorization" >&2
+            echo "repair replay is limited to one non-legacy target with at most one exact source or test bundle, without refreshes, imports, dependents, or queue authorization" >&2
             exit 1
           fi
 
@@ -532,6 +533,7 @@ jobs:
             --rules-engine-ref "$RULES_ENGINE_REF" \
             --rulespec-ref "$RULESPEC_REF" \
             --allow-rulespec-base-advance \
+            --atomic-source-json "$ATOMIC_SOURCE_JSON" \
             --replace-rulespec-path "$REPLACE_RULESPEC_PATH" \
             --workflow-run-id "$REPAIR_RUN_ID" \
             > "$RUNNER_TEMP/repair-candidate.json"
