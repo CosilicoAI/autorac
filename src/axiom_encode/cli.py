@@ -48225,7 +48225,10 @@ def _try_repair_generated_test_input_assignments_for_apply(
             case_names=set(_indexed_parameter_key_zero_issue_cases(issues)),
         )
 
-    if not _only_pending_test_input_assignment_issues(issues):
+    missing_input_issues = [
+        issue for issue in issues if "Test input assignment missing:" in issue
+    ]
+    if not missing_input_issues:
         return []
 
     try:
@@ -48242,7 +48245,7 @@ def _try_repair_generated_test_input_assignments_for_apply(
         test_file=test_file,
         policy_repo_path=policy_repo_path,
         relative_output=relative_output,
-        issues=issues,
+        issues=missing_input_issues,
     )
 
 
@@ -57827,7 +57830,10 @@ def _complete_missing_local_test_inputs(
         error = getattr(validator_result, "error", None)
         if isinstance(error, str) and error:
             issues.append(error)
-    if not _only_pending_test_input_assignment_issues(issues):
+    missing_input_issues = [
+        issue for issue in issues if "Test input assignment missing:" in issue
+    ]
+    if not missing_input_issues:
         return False
     return bool(
         _fill_missing_test_input_assignments(
@@ -57835,7 +57841,7 @@ def _complete_missing_local_test_inputs(
             test_file=test_file,
             policy_repo_path=repo_path,
             relative_output=relative_output,
-            issues=issues,
+            issues=missing_input_issues,
         )
     )
 
