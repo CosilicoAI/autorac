@@ -14,6 +14,11 @@ attempt_budget job's own condition skips them so the guard can never
 stall a tranche. The ``queue_id`` report-only branch below survives as
 defense in depth for odd dispatch paths and local use.
 
+Repair replays are report-only here. Their prior-run identity and preserved
+candidate are authenticated by the protected resolver before any model call,
+so they must be able to reach that resolver even when fresh attempts are
+exhausted.
+
 The guard is a cost damper, not a security gate: if the GitHub API cannot
 be reached it fails open with a loud warning. Stdlib-only because it runs
 on a bare runner before any toolchain setup.
@@ -291,7 +296,8 @@ def _render_summary(
         )
     elif not enforced:
         lines.append(
-            "- Report-only: queue-driven dispatch, or override was set; not blocking."
+            "- Report-only: queue dispatch, authenticated repair path, or override; "
+            "not blocking."
         )
     return lines
 
@@ -302,6 +308,7 @@ def main() -> int:
     token = os.environ.get("GH_TOKEN", "")
     workflow_file = os.environ.get("WORKFLOW_FILE", "targeted-signed-reencode.yml")
     queue_id = os.environ.get("QUEUE_ID", "").strip()
+    repair_run_id = os.environ.get("REPAIR_RUN_ID", "").strip()
     override = os.environ.get("ATTEMPT_BUDGET_OVERRIDE", "").strip().lower()
     try:
         budget = int(os.environ.get("ATTEMPT_BUDGET", str(DEFAULT_BUDGET)))
@@ -349,7 +356,7 @@ def main() -> int:
             lambda run_id: _fetch_run_jobs(repo=repo, token=token, run_id=run_id)
         ),
     )
-    enforced = queue_id == "" and override != "true"
+    enforced = queue_id == "" and repair_run_id == "" and override != "true"
     blocked = enforced and decision.exhausted
     print(
         f"attempt-budget: citation={citation} streak={decision.streak} "
@@ -363,6 +370,11 @@ def main() -> int:
         )
     if override == "true":
         print("attempt-budget: override set by dispatcher; not blocking.")
+    if repair_run_id:
+        print(
+            "attempt-budget: repair replay is authenticated by the protected "
+            "resolver; not blocking."
+        )
     return 1 if blocked else 0
 
 

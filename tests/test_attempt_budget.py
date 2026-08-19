@@ -396,6 +396,7 @@ class TestMainExitContract:
         monkeypatch: pytest.MonkeyPatch,
         *,
         queue_id: str = "",
+        repair_run_id: str = "",
         override: str = "",
         budget: str = "",
     ) -> None:
@@ -404,6 +405,7 @@ class TestMainExitContract:
         monkeypatch.setenv("GH_TOKEN", "test-token")
         monkeypatch.setenv("GITHUB_RUN_ID", "99")
         monkeypatch.setenv("QUEUE_ID", queue_id)
+        monkeypatch.setenv("REPAIR_RUN_ID", repair_run_id)
         monkeypatch.setenv("ATTEMPT_BUDGET_OVERRIDE", override)
         monkeypatch.setenv("ATTEMPT_BUDGET", budget)
         monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
@@ -432,6 +434,11 @@ class TestMainExitContract:
 
     def test_queue_dispatch_reports_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._set_env(monkeypatch, queue_id="q-123")
+        self._stub_api(monkeypatch, self.FAILING_HISTORY)
+        assert budget_mod.main() == 0
+
+    def test_repair_replay_reports_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._set_env(monkeypatch, repair_run_id="32201076681")
         self._stub_api(monkeypatch, self.FAILING_HISTORY)
         assert budget_mod.main() == 0
 
@@ -465,6 +472,7 @@ class TestMainExitContract:
             "GITHUB_REPOSITORY",
             "GH_TOKEN",
             "QUEUE_ID",
+            "REPAIR_RUN_ID",
             "ATTEMPT_BUDGET",
             "ATTEMPT_BUDGET_OVERRIDE",
         ):

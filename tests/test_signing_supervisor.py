@@ -2163,6 +2163,12 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "github.ref == 'refs/heads/main'" in job["if"]
     assert "github.actor == 'github-actions[bot]'" in job["if"]
     assert "github.run_attempt == 1" in job["if"]
+    attempt_step = next(
+        step
+        for step in workflow["jobs"]["attempt_budget"]["steps"]
+        if step.get("name") == "Enforce failed-attempt budget"
+    )
+    assert attempt_step["env"]["REPAIR_RUN_ID"] == "${{ inputs.repair_run_id }}"
     steps = job["steps"]
     country_step = next(
         step for step in steps if step.get("name") == "Validate country routing input"
