@@ -163,7 +163,15 @@ def _expected_module_path(country: str, replace_rulespec_path: str) -> str:
     return PurePosixPath(*path.parts[1:]).as_posix()
 
 
-def _require_empty_atomic_source(metadata: dict[str, object]) -> None:
+def _repair_lane_for_atomic_source(
+    metadata: dict[str, object], expected_atomic_source: object
+) -> str:
+    try:
+        expected = SPLIT_ATOMIC_SOURCE_INPUT(expected_atomic_source)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("expected atomic source input is invalid") from exc
+    if expected["canonical_refresh_bundle"]:
+        raise ValueError("repair replay does not support canonical refresh bundles")
     has_atomic = "atomic_source_input" in metadata
     has_legacy_source = "source_bundle_input" in metadata
     has_legacy_refresh = "canonical_refresh_bundle_input" in metadata
@@ -181,16 +189,19 @@ def _require_empty_atomic_source(metadata: dict[str, object]) -> None:
                 "repair artifact is not a compatible single-target run: "
                 "atomic_source_input"
             ) from exc
-        if split != {
-            "canonical_refresh_bundle": [],
-            "primary_required_test_cases": [],
-            "source_bundle": [],
-        }:
+        if split != expected:
             raise ValueError(
-                "repair artifact is not a compatible single-target run: "
-                "atomic_source_input"
+                "repair artifact metadata mismatch: atomic_source_input"
             )
-        return
+        return "target-preflight" if expected["source_bundle"] else "target"
+    if expected != {
+        "canonical_refresh_bundle": [],
+        "primary_required_test_cases": [],
+        "source_bundle": [],
+    }:
+        raise ValueError(
+            "legacy repair metadata cannot bind a nonempty atomic source input"
+        )
     if not has_legacy_source or metadata["source_bundle_input"] != "[]":
         raise ValueError(
             "repair artifact is not a compatible single-target run: source_bundle_input"
@@ -200,6 +211,7 @@ def _require_empty_atomic_source(metadata: dict[str, object]) -> None:
             "repair artifact is not a compatible single-target run: "
             "canonical_refresh_bundle_input"
         )
+    return "target"
 
 
 def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
@@ -250,19 +262,24 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
                 raise ValueError(
                     f"repair artifact is not a compatible single-target run: {field}"
                 )
-        _require_empty_atomic_source(metadata)
+        repair_lane = _repair_lane_for_atomic_source(
+            metadata, args.atomic_source_json
+        )
         if metadata.get("workflow_run_attempt") != 1:
             raise ValueError("repair artifact must come from workflow attempt 1")
         if metadata.get("failed_steps") != ["encode_apply"]:
             raise ValueError(
                 "repair artifact is not an encode/apply validation failure"
             )
-        if metadata.get("generated_lanes") != ["target"]:
-            raise ValueError("repair artifact must contain only the target lane")
+        if metadata.get("generated_lanes") != [repair_lane]:
+            raise ValueError(
+                f"repair artifact must contain only the {repair_lane} lane"
+            )
 
         files = _metadata_file_map(metadata)
         repair_pattern = re.compile(
-            rf"target/({RUNNER_PATTERN.pattern})/{re.escape(expected_module[:-5])}\.repair\.json"
+            rf"{re.escape(repair_lane)}/({RUNNER_PATTERN.pattern})/"
+            rf"{re.escape(expected_module[:-5])}\.repair\.json"
         )
         repair_matches = [
             (path, repair_pattern.fullmatch(path))
@@ -287,7 +304,7 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
         ):
             raise ValueError("final repair manifest identity is invalid")
 
-        candidate_path = f"target/{runner}/{expected_module}"
+        candidate_path = f"{repair_lane}/{runner}/{expected_module}"
         test_path = candidate_path.removesuffix(".yaml") + ".test.yaml"
         candidate = _verified_generated_file(bundle, members, files, candidate_path)
         tests = _verified_generated_file(bundle, members, files, test_path)
@@ -329,6 +346,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--rules-engine-ref", required=True)
     parser.add_argument("--rulespec-ref", required=True)
     parser.add_argument("--allow-rulespec-base-advance", action="store_true")
+    parser.add_argument("--atomic-source-json", required=True)
     parser.add_argument("--replace-rulespec-path", required=True)
     parser.add_argument("--workflow-run-id", required=True)
     return parser
