@@ -32832,12 +32832,10 @@ def test_estg_66_rounding_input_stage_specimen_bytes_are_pinned():
     assert hashlib.sha256(rejected_tests).hexdigest() == (
         "4198cb7116c0c34717354a29a30da6884cb5e31964911af3a9a68815d003a31b"
     )
-    assert recorded_issue["rulespec_sha256"] == hashlib.sha256(
-        rejected_rules
-    ).hexdigest()
-    assert recorded_issue["tests_sha256"] == hashlib.sha256(
-        rejected_tests
-    ).hexdigest()
+    assert (
+        recorded_issue["rulespec_sha256"] == hashlib.sha256(rejected_rules).hexdigest()
+    )
+    assert recorded_issue["tests_sha256"] == hashlib.sha256(rejected_tests).hexdigest()
     assert hashlib.sha256(fixed_rules).hexdigest() == (
         "6787c5c50520320292b1438ef9d45cf349d4ecbbf981b1c908a11f9278350d5e"
     )
@@ -32860,9 +32858,10 @@ def test_estg_66_rounding_input_stage_specimen_bytes_are_pinned():
 def test_estg_66_accepts_asserted_input_fed_rounding_stage(variant: str):
     fixture = ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / variant
     source = (
-        ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE
-        / "source.txt"
-    ).read_text().removesuffix("\n")
+        (ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / "source.txt")
+        .read_text()
+        .removesuffix("\n")
+    )
 
     result = _analyze(
         (fixture / "66.yaml").read_text(),
@@ -32877,15 +32876,14 @@ def test_estg_66_accepts_asserted_input_fed_rounding_stage(variant: str):
 def test_estg_66_input_fed_rounding_stage_must_be_asserted():
     fixture = ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / "rejected"
     test_cases = yaml.safe_load((fixture / "66.test.yaml").read_text())
-    intermediate = (
-        "de:statutes/estg/66#kindergeld_before_whole_euro_rounding"
-    )
+    intermediate = "de:statutes/estg/66#kindergeld_before_whole_euro_rounding"
     for case in test_cases:
         case["output"].pop(intermediate, None)
     source = (
-        ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE
-        / "source.txt"
-    ).read_text().removesuffix("\n")
+        (ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / "source.txt")
+        .read_text()
+        .removesuffix("\n")
+    )
 
     result = _analyze(
         (fixture / "66.yaml").read_text(),
