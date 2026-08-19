@@ -12762,6 +12762,27 @@ def _source_conjunctive_fact_gates(
     if conditional is None:
         return ()
     body = conditional.group("body")
+    # A parenthetical condition modifies only the text inside its parentheses.
+    # Do not let later sentence-level conjunctions (for example "earned and
+    # unearned income") masquerade as additional factual gates.
+    open_parentheses: list[int] = []
+    for index, character in enumerate(text[: conditional.start()]):
+        if character == "(":
+            open_parentheses.append(index)
+        elif character == ")" and open_parentheses:
+            open_parentheses.pop()
+    if open_parentheses:
+        depth = 1
+        body_start = conditional.start("body")
+        for index in range(body_start, len(text)):
+            character = text[index]
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0:
+                    body = text[body_start:index]
+                    break
     segments = _source_gate_split_conjunctive_conditions(body)
     if len(segments) < 2:
         return ()

@@ -2,6 +2,10 @@
 
 All notable changes to Axiom Encode will be documented here.
 
+- Keep parenthetical source conditions bounded to their closing parenthesis so
+  later descriptive conjunctions cannot be misclassified as additional legal
+  eligibility gates.
+
 - Bound proof-owned parent chapeaux at their first structural child so a colon-
   terminated eligibility list does not make every alternative satisfy the
   first child branch's factual gates.
