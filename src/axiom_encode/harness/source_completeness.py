@@ -13124,7 +13124,24 @@ def _source_condition_clauses_owned_by_excerpt(
     for match, branch in selected:
         branch_path = branch.path if branch is not None else ()
         container_start = branch.start if branch is not None else 0
-        container_text = branch.text if branch is not None else source_text
+        container_end = branch.end if branch is not None else len(source_text)
+        if branch is not None:
+            # A parent chapeau commonly ends with a colon rather than sentence
+            # punctuation.  Keep its proposition local to the parent instead
+            # of absorbing the first structural child into the same condition.
+            # A proof excerpt located inside a child already resolves to that
+            # more-specific branch above, so this only bounds true chapeaux.
+            container_end = min(
+                (
+                    candidate.start
+                    for candidate in ownership_branches
+                    if len(candidate.path) == len(branch.path) + 1
+                    and candidate.path[: len(branch.path)] == branch.path
+                    and match.end() <= candidate.start < branch.end
+                ),
+                default=container_end,
+            )
+        container_text = source_text[container_start:container_end]
         local_start = match.start() - container_start
         local_end = match.end() - container_start
         proposition_start, proposition_end = _source_proposition_bounds(

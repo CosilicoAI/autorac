@@ -485,6 +485,58 @@ def test_flattened_inline_dotted_items_disambiguate_spouse_credit_proof():
     assert [clause.branch_path for clause in blindness_clauses] == [("3", "a", "7")]
 
 
+def test_parent_chapeau_proof_does_not_absorb_first_structural_child():
+    source = """(ii) A qualified alien is immediately eligible if the individual meets at least one criterion:
+(A) An adult lawful permanent resident has forty qualifying quarters based on the sum of quarters the alien worked and quarters credited from a parent.
+(B) An alien admitted as a refugee.
+"""
+    child_a_start = source.index("(A)")
+    child_b_start = source.index("(B)")
+    branches = (
+        completeness_module.SourceStructureBranch(
+            ("a", "6", "ii"), "number", "(ii)", source, 0, len(source)
+        ),
+        completeness_module.SourceStructureBranch(
+            ("a", "6", "ii", "a"),
+            "letter",
+            "(A)",
+            source[child_a_start:child_b_start],
+            child_a_start,
+            child_b_start,
+        ),
+        completeness_module.SourceStructureBranch(
+            ("a", "6", "ii", "b"),
+            "letter",
+            "(B)",
+            source[child_b_start:],
+            child_b_start,
+            len(source),
+        ),
+    )
+    excerpt = "meets at least one criterion"
+    rule = _ky_derived_rule(
+        "qualified_alien_immediately_eligible",
+        source="7 CFR 273.4(a)(6)(ii)",
+        dtype="Judgment",
+        formula="qualified_alien and (forty_quarters_path or refugee_status)",
+        excerpt=excerpt,
+    )
+
+    clauses, ambiguous = completeness_module._source_condition_clauses_owned_by_excerpt(
+        excerpt,
+        rule=rule,
+        source_text=source,
+        branches=branches,
+        corpus_citation_path="us/regulation/7/273/4",
+    )
+
+    assert not ambiguous
+    assert [clause.branch_path for clause in clauses] == [("a", "6", "ii")]
+    assert clauses[0].text.rstrip().endswith("criterion:")
+    assert "forty qualifying quarters" not in clauses[0].text
+    assert not completeness_module._source_conjunctive_fact_gates(clauses[0].text)
+
+
 def test_flattened_inline_dotted_items_keep_wrong_leaf_gate_fail_closed():
     payload = _ky_spouse_credit_payload(decomposed=True)
     age_rule = next(
