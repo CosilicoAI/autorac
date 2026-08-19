@@ -45884,6 +45884,13 @@ def _append_generated_judgment_positive_tests_in_overlay(
         overlay_rules_file.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(rules_file, overlay_rules_file)
         overlay_test_file = _rulespec_test_path(overlay_rules_file)
+        shutil.copy2(test_file, overlay_test_file)
+        baseline_failures = _rulespec_companion_test_failures(
+            overlay_test_file,
+            root=overlay_content_root,
+            axiom_rules_path=axiom_rules_path,
+            rulespec_dependency_roots=staged_dependency_roots,
+        )
 
         def check_generated_test(
             generated_test_file: Path,
@@ -45896,11 +45903,14 @@ def _append_generated_judgment_positive_tests_in_overlay(
                     "Judgment test repair checker received an unexpected policy root"
                 )
             shutil.copy2(generated_test_file, overlay_test_file)
-            return _rulespec_companion_test_failures(
-                overlay_test_file,
-                root=overlay_content_root,
-                axiom_rules_path=axiom_rules_path,
-                rulespec_dependency_roots=staged_dependency_roots,
+            return _companion_test_failures_new_since_baseline(
+                baseline_failures=baseline_failures,
+                candidate_failures=_rulespec_companion_test_failures(
+                    overlay_test_file,
+                    root=overlay_content_root,
+                    axiom_rules_path=axiom_rules_path,
+                    rulespec_dependency_roots=staged_dependency_roots,
+                ),
             )
 
         return _append_generated_judgment_positive_tests_if_missing(
@@ -45912,6 +45922,25 @@ def _append_generated_judgment_positive_tests_in_overlay(
             issues=issues,
             test_failure_checker=check_generated_test,
         )
+
+
+def _companion_test_failures_new_since_baseline(
+    *,
+    baseline_failures: list[dict[str, str | None]],
+    candidate_failures: list[dict[str, str | None]],
+) -> list[dict[str, str | None]]:
+    """Return failures introduced by an appended companion test candidate."""
+    remaining_baseline = Counter(
+        json.dumps(failure, sort_keys=True) for failure in baseline_failures
+    )
+    introduced: list[dict[str, str | None]] = []
+    for failure in candidate_failures:
+        identity = json.dumps(failure, sort_keys=True)
+        if remaining_baseline[identity]:
+            remaining_baseline[identity] -= 1
+            continue
+        introduced.append(failure)
+    return introduced
 
 
 def _try_repair_generated_import_output_inputs_for_apply(
