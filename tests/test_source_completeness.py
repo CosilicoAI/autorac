@@ -537,6 +537,27 @@ def test_parent_chapeau_proof_does_not_absorb_first_structural_child():
     assert not completeness_module._source_conjunctive_fact_gates(clauses[0].text)
 
 
+def test_parenthetical_condition_does_not_absorb_later_conjunctions():
+    text = (
+        "The monthly income of the sponsor and sponsor's spouse (if he or she has "
+        "executed USCIS Form I-864 or I-864A) deemed as that of the eligible "
+        "sponsored alien must be the total monthly earned and unearned income, "
+        "with the exclusions of the sponsor and sponsor's spouse at the time the "
+        "household applies or is recertified for participation, reduced by:"
+    )
+
+    assert not completeness_module._source_conjunctive_fact_gates(text)
+
+
+def test_parenthetical_conjunctive_condition_retains_its_own_gates():
+    text = (
+        "The credit applies (if the spouse is eligible and the spouse has filed "
+        "the required form) and is included in the final calculation."
+    )
+
+    assert len(completeness_module._source_conjunctive_fact_gates(text)) == 2
+
+
 def test_flattened_inline_dotted_items_keep_wrong_leaf_gate_fail_closed():
     payload = _ky_spouse_credit_payload(decomposed=True)
     age_rule = next(
