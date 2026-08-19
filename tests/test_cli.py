@@ -67,6 +67,7 @@ from axiom_encode.cli import (
     _collapse_additive_versioned_derived_formulas,
     _complete_missing_dependent_test_inputs,
     _complete_missing_imported_test_inputs,
+    _complete_missing_local_test_inputs,
     _convert_indexed_parameter_values_to_derived_formulas,
     _convert_versioned_boolean_parameters_to_indicators,
     _current_guard_encoder_execution_identity,
@@ -43501,6 +43502,104 @@ rules:
             "us:statutes/26/24/d#input.earned_income_before_section_112_election: 0"
             in target_test.read_text()
         )
+
+    def test_complete_missing_local_test_inputs_uses_finite_ci_issues(self, tmp_path):
+        policy_repo = tmp_path / "rulespec-us" / "us"
+        target = policy_repo / "regulations/7-cfr/273/4.yaml"
+        target_test = target.with_name("4.test.yaml")
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            """format: rulespec/v1
+rules:
+  - name: hmong_or_highland_laotian_status_eligible
+    kind: derived
+    dtype: Judgment
+    period: Month
+    versions:
+      - effective_from: '2025-10-01'
+        formula: |-
+          member_is_hmong_or_highland_laotian_qualifying_person
+          or member_is_qualifying_hmong_or_highland_laotian_child
+"""
+        )
+        target_test.write_text(
+            """- name: auto_positive_hmong_or_highland_laotian_status_eligible
+  period: 2025-10
+  input:
+    us:regulations/7-cfr/273/4#input.member_is_hmong_or_highland_laotian_qualifying_person: true
+  output:
+    us:regulations/7-cfr/273/4#hmong_or_highland_laotian_status_eligible: holds
+"""
+        )
+        validation = SimpleNamespace(
+            results={
+                "ci": SimpleNamespace(
+                    error="Generated RuleSpec failed CI validation",
+                    issues=[
+                        "Test input assignment missing: "
+                        "`auto_positive_hmong_or_highland_laotian_status_eligible` "
+                        "does not assign "
+                        "#input.member_is_qualifying_hmong_or_highland_laotian_child. "
+                        "Every test for a proof-required RuleSpec module must set "
+                        "all local factual inputs, including false facts, so tests "
+                        "cannot pass through implicit defaults."
+                    ],
+                )
+            }
+        )
+
+        changed = _complete_missing_local_test_inputs(
+            rules_file=target,
+            test_file=target_test,
+            repo_path=policy_repo,
+            relative_output=Path("regulations/7-cfr/273/4.yaml"),
+            validation=validation,
+        )
+
+        assert changed is True
+        [test_case] = yaml.safe_load(target_test.read_text())
+        assert (
+            test_case["input"][
+                "us:regulations/7-cfr/273/4#input.member_is_qualifying_hmong_or_highland_laotian_child"
+            ]
+            is False
+        )
+
+    def test_complete_missing_local_test_inputs_refuses_mixed_target_issues(
+        self, tmp_path
+    ):
+        policy_repo = tmp_path / "rulespec-us" / "us"
+        target = policy_repo / "regulations/7-cfr/273/4.yaml"
+        target_test = target.with_name("4.test.yaml")
+        target.parent.mkdir(parents=True)
+        target.write_text("format: rulespec/v1\nrules: []\n")
+        original_tests = "- name: case_one\n  input: {}\n  output: {}\n"
+        target_test.write_text(original_tests)
+        validation = SimpleNamespace(
+            results={
+                "ci": SimpleNamespace(
+                    error=None,
+                    issues=[
+                        "Test input assignment missing: `case_one` does not assign "
+                        "#input.member_is_refugee. Every test for a proof-required "
+                        "RuleSpec module must set all local factual inputs, including "
+                        "false facts, so tests cannot pass through implicit defaults.",
+                        "A distinct source condition is not encoded.",
+                    ],
+                )
+            }
+        )
+
+        changed = _complete_missing_local_test_inputs(
+            rules_file=target,
+            test_file=target_test,
+            repo_path=policy_repo,
+            relative_output=Path("regulations/7-cfr/273/4.yaml"),
+            validation=validation,
+        )
+
+        assert changed is False
+        assert target_test.read_text() == original_tests
 
     def test_rulespec_base_for_file_uses_country_content_root(self, tmp_path):
         policy_repo = _canonical_rulespec_content_root(tmp_path)
