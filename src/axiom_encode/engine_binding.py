@@ -188,12 +188,13 @@ def read_engine_binding_receipt(binary: Path) -> dict[str, Any] | None:
 
     receipt_path = engine_binding_receipt_path(binary)
     try:
-        if receipt_path.is_symlink() or not receipt_path.is_file():
-            return None
-        if receipt_path.stat().st_size > MAX_ENGINE_BINDING_RECEIPT_BYTES:
-            return None
-        raw = receipt_path.read_bytes()
-    except OSError:
+        raw = read_bounded_regular_file(
+            receipt_path.parent,
+            receipt_path,
+            label="engine binding receipt",
+            max_bytes=MAX_ENGINE_BINDING_RECEIPT_BYTES,
+        )
+    except (UnsafeCorpusPathError, OSError):
         return None
     try:
         payload = json.loads(raw.decode("utf-8"))
@@ -341,6 +342,11 @@ def _build_pinned_release_binary(
     statuses: Sequence[tuple[Path, str]],
 ) -> Path:
     rendered = " ".join(ENGINE_RELEASE_BUILD_COMMAND)
+    # Pin the build output location: an ambient CARGO_TARGET_DIR would send
+    # the build elsewhere and this function would then receipt whatever stale
+    # bytes already sat at the expected path.
+    build_env = _binding_subprocess_env()
+    build_env["CARGO_TARGET_DIR"] = str(engine_checkout / "target")
     try:
         result = subprocess.run(
             list(ENGINE_RELEASE_BUILD_COMMAND),
@@ -348,7 +354,7 @@ def _build_pinned_release_binary(
             text=True,
             timeout=_ENGINE_BUILD_TIMEOUT_SECONDS,
             cwd=str(engine_checkout),
-            env=_binding_subprocess_env(),
+            env=build_env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise EngineBindingError(
@@ -366,6 +372,23 @@ def _build_pinned_release_binary(
         raise EngineBindingError(
             f"`{rendered}` succeeded but produced no {release_binary}"
             + _binding_context(pin, engine_checkout, head=head, statuses=statuses)
+        )
+    # The pre-build HEAD/cleanliness checks only prove what the checkout held
+    # when the build started; another writer can move it mid-build. Re-prove
+    # both before attesting the bytes.
+    rebuilt_head = _git_output(
+        engine_checkout, "rev-parse", "HEAD", pin=pin, statuses=statuses
+    )
+    rebuilt_porcelain = _git_output(
+        engine_checkout, "status", "--porcelain", pin=pin, statuses=statuses
+    )
+    if rebuilt_head != pin.sha or rebuilt_porcelain:
+        raise EngineBindingError(
+            "Engine checkout changed during the pinned build; refusing to "
+            "receipt the produced binary"
+            + _binding_context(
+                pin, engine_checkout, head=rebuilt_head, statuses=statuses
+            )
         )
     write_engine_binding_receipt(release_binary, pin.sha, "release")
     return release_binary
@@ -393,7 +416,13 @@ def resolve_pinned_engine_binary(
         if status == _RECEIPT_VERIFIED:
             return candidate
         statuses.append((candidate, status))
-    if not (engine_checkout / ".git").exists():
+    git_marker = engine_checkout / ".git"
+    if git_marker.is_symlink():
+        raise EngineBindingError(
+            f"Engine checkout .git marker must not be a symlink: {git_marker}"
+            + _binding_context(pin, engine_checkout, head=None, statuses=statuses)
+        )
+    if not git_marker.exists():
         raise EngineBindingError(
             "Engine checkout is not a git repository and no candidate binary "
             "carries a verified receipt for the pinned commit; use a git "

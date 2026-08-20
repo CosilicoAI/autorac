@@ -437,3 +437,105 @@ def test_cli_compile_threads_engine_ref_override(tmp_path, monkeypatch, capsys):
 
     assert exit_info.value.code == 0
     assert captured["axiom_rules_engine_ref"] == "e" * 40
+
+
+def test_ambient_cargo_target_dir_is_pinned_to_the_checkout(tmp_path, monkeypatch):
+    checkout, pin_sha = _engine_checkout(tmp_path)
+    stale_release = checkout / "target" / "release" / "axiom-rules-engine"
+    stale_release.parent.mkdir(parents=True)
+    stale_release.write_bytes(b"stale release build")
+    elsewhere = tmp_path / "ambient-target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(elsewhere))
+    shim_dir = tmp_path / "cargo-shim"
+    shim_dir.mkdir()
+    shim = shim_dir / "cargo"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'mkdir -p "$CARGO_TARGET_DIR/release"\n'
+        'printf "release-built-from-pin" '
+        '> "$CARGO_TARGET_DIR/release/axiom-rules-engine"\n'
+        'chmod +x "$CARGO_TARGET_DIR/release/axiom-rules-engine"\n'
+        "exit 0\n"
+    )
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shim_dir}{os.pathsep}{os.environ['PATH']}")
+    pin = EnginePin(sha=pin_sha, source=tmp_path / "toolchain.toml")
+
+    binary = resolve_pinned_engine_binary(checkout, pin)
+
+    assert binary == stale_release
+    assert binary.read_bytes() == b"release-built-from-pin"
+    assert not elsewhere.exists()
+    receipt = read_engine_binding_receipt(binary)
+    assert receipt is not None
+    assert (
+        receipt["binary_sha256"]
+        == hashlib.sha256(b"release-built-from-pin").hexdigest()
+    )
+
+
+def test_checkout_mutation_during_build_refuses_receipt(tmp_path, monkeypatch):
+    checkout, pin_sha = _engine_checkout(tmp_path)
+    shim_dir = tmp_path / "cargo-shim"
+    shim_dir.mkdir()
+    shim = shim_dir / "cargo"
+    shim.write_text(
+        "#!/bin/sh\n"
+        "mkdir -p target/release\n"
+        'printf "release-built-mid-mutation" > target/release/axiom-rules-engine\n'
+        "chmod +x target/release/axiom-rules-engine\n"
+        'printf "// mutated during build\\n" >> src.rs\n'
+        "exit 0\n"
+    )
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shim_dir}{os.pathsep}{os.environ['PATH']}")
+    pin = EnginePin(sha=pin_sha, source=tmp_path / "toolchain.toml")
+
+    with pytest.raises(EngineBindingError, match="changed during the pinned build"):
+        resolve_pinned_engine_binary(checkout, pin)
+
+    release = checkout / "target" / "release" / "axiom-rules-engine"
+    assert not engine_binding_receipt_path(release).exists()
+
+
+def test_symlinked_receipt_is_ignored(tmp_path):
+    checkout, pin_sha = _engine_checkout(tmp_path)
+    stale = _stale_debug_binary(checkout)
+    pin = EnginePin(sha=pin_sha, source=tmp_path / "toolchain.toml")
+    aside = tmp_path / "receipt-content.json"
+    aside.write_text(
+        json.dumps(
+            {
+                "engine_commit": pin_sha,
+                "binary_sha256": hashlib.sha256(stale.read_bytes()).hexdigest(),
+            }
+        )
+    )
+    engine_binding_receipt_path(stale).symlink_to(aside)
+
+    assert read_engine_binding_receipt(stale) is None
+    with pytest.raises(EngineBindingError, match="no receipt"):
+        resolve_pinned_engine_binary(checkout, pin, allow_build=False)
+
+
+def test_oversized_receipt_is_ignored(tmp_path):
+    checkout, pin_sha = _engine_checkout(tmp_path)
+    stale = _stale_debug_binary(checkout)
+    padding = json.dumps({"engine_commit": pin_sha, "pad": "x" * 70_000})
+    engine_binding_receipt_path(stale).write_text(padding)
+
+    assert read_engine_binding_receipt(stale) is None
+    pin = EnginePin(sha=pin_sha, source=tmp_path / "toolchain.toml")
+    with pytest.raises(EngineBindingError, match="no receipt"):
+        resolve_pinned_engine_binary(checkout, pin, allow_build=False)
+
+
+def test_git_marker_symlink_is_rejected(tmp_path):
+    real_checkout, pin_sha = _engine_checkout(tmp_path)
+    shim = tmp_path / "shim-checkout"
+    shim.mkdir()
+    (shim / ".git").symlink_to(real_checkout / ".git")
+    pin = EnginePin(sha=pin_sha, source=tmp_path / "toolchain.toml")
+
+    with pytest.raises(EngineBindingError, match=r"\.git marker must not be a symlink"):
+        resolve_pinned_engine_binary(shim, pin, allow_build=False)

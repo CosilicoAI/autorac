@@ -26664,6 +26664,7 @@ class ValidatorPipeline:
         self._axiom_rules_engine_pin_loaded = False
         self._axiom_rules_engine_pin: EnginePin | None = None
         self._axiom_rules_binary_path: Path | None = None
+        self._axiom_rules_binary_stat: tuple[int, int, int, int] | None = None
         self.validation_staging_root = (
             Path(validation_staging_root).resolve()
             if validation_staging_root is not None
@@ -27359,16 +27360,34 @@ class ValidatorPipeline:
         A declared axiom_rules_engine_ref pin binds deterministically (receipt
         or clean pinned checkout plus build-on-demand); unpinned checkouts fall
         back to a release-first candidate scan with an unverified-binding event.
+        The memoized binding holds only while the binary's bytes are unchanged
+        on disk (stat identity); a swapped or rebuilt binary re-resolves.
         """
         if self._axiom_rules_binary_path is not None:
-            return self._axiom_rules_binary_path
+            if self._axiom_rules_binary_stat is not None and (
+                self._binary_stat_signature(self._axiom_rules_binary_path)
+                == self._axiom_rules_binary_stat
+            ):
+                return self._axiom_rules_binary_path
+            self._axiom_rules_binary_path = None
+            self._axiom_rules_binary_stat = None
         pin = self._declared_engine_pin()
         if pin is not None:
             binary = resolve_pinned_engine_binary(self.axiom_rules_path, pin)
         else:
             binary = self._unverified_axiom_rules_binary()
         self._axiom_rules_binary_path = binary
+        self._axiom_rules_binary_stat = self._binary_stat_signature(binary)
         return binary
+
+    @staticmethod
+    def _binary_stat_signature(binary: Path) -> tuple[int, int, int, int] | None:
+        """Return a cheap on-disk identity for the bound engine binary."""
+        try:
+            stat = os.stat(binary)
+        except OSError:
+            return None
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
     def _unverified_axiom_rules_binary(self) -> Path:
         """Resolve without a declared pin: prefer release, then debug, then bare."""

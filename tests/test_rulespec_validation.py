@@ -1321,6 +1321,9 @@ def test_rulespec_engine_binary_resolution_is_memoized_per_pipeline(
     engine_root = tmp_path / "axiom-rules-engine"
     engine_root.mkdir()
     resolved = engine_root / "target" / "release" / "axiom-rules-engine"
+    # Memoization is stat-guarded: it only holds for a real, unchanged binary.
+    resolved.parent.mkdir(parents=True)
+    resolved.write_bytes(b"pinned release")
     calls = {"load": 0, "resolve": 0}
 
     def fake_load(path):
@@ -1415,6 +1418,32 @@ def test_rulespec_compile_uses_pinned_receipted_binary(monkeypatch, tmp_path):
     assert result.returncode == 0
     assert payload == {"program": {"derived": []}}
     assert captured["command"][0] == str(release)
+
+
+def test_rulespec_engine_binary_swap_after_binding_is_rebound_not_reused(tmp_path):
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "us")
+    pin_sha = "f" * 40
+    _write_engine_pinned_toolchain(policy_repo.parent, pin_sha)
+    engine_root = tmp_path / "axiom-rules-engine"
+    release = engine_root / "target" / "release" / "axiom-rules-engine"
+    release.parent.mkdir(parents=True)
+    release.write_bytes(b"pinned release")
+    write_engine_binding_receipt(release, pin_sha, "release")
+    pipeline = ValidatorPipeline(
+        policy_repo_path=policy_repo,
+        axiom_rules_path=engine_root,
+        local_corpus_release=None,
+        enable_oracles=False,
+    )
+
+    assert pipeline._axiom_rules_binary() == release
+
+    release.write_bytes(b"swapped bytes that no receipt attests")
+    with pytest.raises(EngineBindingError):
+        pipeline._axiom_rules_binary()
+
+    write_engine_binding_receipt(release, pin_sha, "release")
+    assert pipeline._axiom_rules_binary() == release
 
 
 def test_rulespec_target_resolution_uses_explicit_dependency_root(
