@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "axiom-encode"
-version = "0.2.1703"
+version = "0.2.1704"
 description = "AI-assisted RuleSpec encoding infrastructure - fully self-contained"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -31,6 +31,7 @@ dependencies = [
     "pyyaml>=6.0",
     "receipt==0.5.1",
     "requests>=2.28",
+    "rfc8785>=0.1.4",
     "sqlite-utils>=3.30",
     "supabase>=2.0.0",
 ]
