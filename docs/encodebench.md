@@ -49,7 +49,10 @@ Prerequisites (all local):
   `releases/uk-rulespec-2026-07-14` (`scripts/materialize_corpus_release.py`
   against the rulespec-uk toolchain pin).
 - `rulespec-uk` checkout on the commit whose toolchain pins that release.
-- `axiom-rules-engine` checkout with a debug build.
+- `axiom-rules-engine` checkout with a release build (`cargo build --release
+  --locked`) or an `axiom-encode engine-bind` receipt. When no engine pin is
+  declared, resolution prefers release over debug; a debug-only build still
+  binds, with an unverified-binding warning.
 - A trusted supervisor attaching the signing broker (release verification
   reads the corpus-release public key from the broker; nothing here signs).
 - Backend CLIs logged in: `codex` (ChatGPT subscription) and `claude`

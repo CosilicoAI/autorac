@@ -139,6 +139,15 @@ from .corpus_resolver import (
     split_proof_evidence_text,
     validate_corpus_release_name,
 )
+from .engine_binding import (
+    ENGINE_PIN_FIELD,
+    EngineBindingError,
+    EnginePin,
+    engine_binding_receipt_path,
+    load_declared_engine_pin,
+    require_engine_ref_sha,
+    resolve_pinned_engine_binary,
+)
 from .harness.dependency_stubs import (
     UnsafeRulespecContextPath,
     validate_rulespec_context_file,
@@ -1600,6 +1609,15 @@ def main():
         help="Exact axiom-rules-engine checkout (no workspace discovery)",
     )
     validate_parser.add_argument(
+        "--axiom-rules-engine-ref",
+        dest="axiom_rules_engine_ref",
+        default=None,
+        help=(
+            "Full 40-hex axiom-rules-engine commit that overrides the "
+            "toolchain-declared engine pin"
+        ),
+    )
+    validate_parser.add_argument(
         "--oracle",
         choices=["policyengine"],
         help="Run external validation against oracles",
@@ -2624,7 +2642,53 @@ def main():
         required=True,
         help="Exact axiom-rules-engine checkout (no sibling discovery)",
     )
+    compile_parser.add_argument(
+        "--axiom-rules-engine-ref",
+        dest="axiom_rules_engine_ref",
+        default=None,
+        help=(
+            "Full 40-hex axiom-rules-engine commit that overrides the "
+            "toolchain-declared engine pin"
+        ),
+    )
     _add_rulespec_dependency_root_argument(compile_parser)
+
+    # engine-bind command
+    engine_bind_parser = subparsers.add_parser(
+        "engine-bind",
+        help=(
+            "Verify (and build on demand) an axiom-rules-engine binary "
+            "against a declared engine pin, writing a binding receipt"
+        ),
+    )
+    engine_bind_parser.add_argument(
+        "--axiom-rules-engine-path",
+        dest="axiom_rules_path",
+        metavar="AXIOM_RULES_ENGINE_PATH",
+        type=Path,
+        required=True,
+        help="Exact axiom-rules-engine checkout (no sibling discovery)",
+    )
+    engine_bind_pin_source = engine_bind_parser.add_mutually_exclusive_group(
+        required=True
+    )
+    engine_bind_pin_source.add_argument(
+        "--policy-repo",
+        type=Path,
+        help=(
+            "Policy repo whose .axiom/toolchain.toml declares the "
+            f"{ENGINE_PIN_FIELD} engine pin"
+        ),
+    )
+    engine_bind_pin_source.add_argument(
+        "--pin",
+        help="Full 40-hex axiom-rules-engine commit SHA to bind against",
+    )
+    engine_bind_parser.add_argument(
+        "--no-build",
+        action="store_true",
+        help="Fail instead of building when no receipted binary matches the pin",
+    )
 
     # encode command - run the current RuleSpec generation path
     encode_parser = subparsers.add_parser(
@@ -3422,6 +3486,8 @@ def main():
         cmd_proof_validate(args)
     elif args.command == "compile":
         cmd_compile(args)
+    elif args.command == "engine-bind":
+        cmd_engine_bind(args)
     elif args.command == "test":
         cmd_test(args)
     elif args.command == "log":
@@ -3592,6 +3658,7 @@ def _cmd_validate_with_resolution_cache(args):
                 require_complete_source_unit=(
                     getattr(args, "require_complete_source_unit", False) is True
                 ),
+                axiom_rules_engine_ref=getattr(args, "axiom_rules_engine_ref", None),
             )
             pipelines[roots] = pipeline
             policyengine_runtimes[roots] = policyengine_runtime
@@ -5766,6 +5833,7 @@ def cmd_compile(args):
             local_corpus_release=None,
             enable_oracles=False,
             rulespec_dependency_roots=_rulespec_dependency_roots_from_args(args),
+            axiom_rules_engine_ref=getattr(args, "axiom_rules_engine_ref", None),
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -5820,6 +5888,50 @@ def cmd_compile(args):
             print(f"Compilation failed: {e}")
 
         sys.exit(1)
+
+
+def cmd_engine_bind(args):
+    """Bind an engine binary to a declared pin and write its binding receipt."""
+    try:
+        engine_root = _resolve_explicit_existing_directory(
+            args.axiom_rules_path,
+            label="Axiom rules engine",
+        )
+        if args.pin is not None:
+            pin = EnginePin(
+                sha=require_engine_ref_sha(args.pin, description="--pin"),
+                source=Path("<cli>"),
+            )
+        else:
+            policy_repo = _resolve_explicit_existing_directory(
+                args.policy_repo,
+                label="RuleSpec checkout",
+            )
+            pin = load_declared_engine_pin(policy_repo)
+            if pin is None:
+                raise EngineBindingError(
+                    f"No [toolchain].{ENGINE_PIN_FIELD} engine pin is declared "
+                    f"at or above: {policy_repo}"
+                )
+        binary = resolve_pinned_engine_binary(
+            engine_root,
+            pin,
+            allow_build=not args.no_build,
+        )
+    except (ValueError, OSError) as e:
+        print(f"Engine binding failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(
+        json.dumps(
+            {
+                "binary": str(binary),
+                "engine_commit": pin.sha,
+                "receipt": str(engine_binding_receipt_path(binary)),
+            },
+            indent=2,
+        )
+    )
+    sys.exit(0)
 
 
 def cmd_log(args):

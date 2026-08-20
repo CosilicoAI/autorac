@@ -6815,6 +6815,7 @@ rules:
         args.json = json_output
         args.as_of = None
         args.axiom_rules_path = self._require_axiom_rules_path()
+        args.axiom_rules_engine_ref = None
         args.rulespec_dependency_root = []
         return args
 

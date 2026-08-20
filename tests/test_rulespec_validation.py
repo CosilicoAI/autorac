@@ -28,6 +28,10 @@ from axiom_encode.corpus_resolver import (
     AmbiguousCorpusSourceError,
     LocalCorpusRelease,
 )
+from axiom_encode.engine_binding import (
+    EngineBindingError,
+    write_engine_binding_receipt,
+)
 from axiom_encode.harness import validator_pipeline
 from axiom_encode.harness.evals import _rulespec_validation_target
 from axiom_encode.harness.policyengine_runtime import (
@@ -1235,6 +1239,182 @@ def test_rulespec_validation_run_compiled_scrubs_ambient_root_env(
     assert "AXIOM_RULESPEC_REPO_ROOTS" not in captured_env
     assert "AXIOM_RULESPEC_REPO_ROOTS_EXCLUSIVE" not in captured_env
     assert str(stale_root) not in captured_env.values()
+
+
+def _write_engine_pinned_toolchain(checkout_root: Path, engine_ref: str) -> Path:
+    """Write a legacy multi-key toolchain.toml declaring an engine pin."""
+
+    config_dir = checkout_root / ".axiom"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "toolchain.toml"
+    config_path.write_text(
+        "[toolchain]\n"
+        'axiom_corpus_release = "test-release"\n'
+        f'axiom_corpus_release_content_sha256 = "{"0" * 64}"\n'
+        f'validation_waiver_set_sha256 = "{"0" * 64}"\n'
+        f'axiom_rules_engine_ref = "{engine_ref}"\n'
+    )
+    return config_path
+
+
+def test_rulespec_engine_binary_prefers_release_and_warns_once_when_unpinned(
+    tmp_path,
+):
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "us")
+    engine_root = tmp_path / "axiom-rules-engine"
+    release = engine_root / "target" / "release" / "axiom-rules-engine"
+    debug = engine_root / "target" / "debug" / "axiom-rules-engine"
+    for candidate in (release, debug):
+        candidate.parent.mkdir(parents=True)
+        candidate.write_bytes(b"bin")
+    events: list[dict] = []
+
+    class _RecordingDB:
+        def log_event(self, **kwargs):
+            events.append(kwargs)
+
+    pipeline = _ValidatorPipeline(
+        policy_repo_path=policy_repo,
+        axiom_rules_path=engine_root,
+        local_corpus_release=None,
+        enable_oracles=False,
+        encoding_db=_RecordingDB(),
+        session_id="engine-binding-test",
+    )
+
+    assert pipeline._axiom_rules_binary() == release
+    assert pipeline._axiom_rules_binary() == release
+
+    unverified = [
+        event for event in events if event["event_type"] == "engine_binding_unverified"
+    ]
+    assert len(unverified) == 1
+    metadata = unverified[0]["metadata"]
+    assert metadata["binary"] == str(release)
+    assert str(debug) in metadata["other_existing_candidates"]
+    assert metadata["declared_engine_pin"] is None
+
+
+def test_rulespec_engine_binary_nonexistent_policy_repo_raises(tmp_path):
+    # A typo'd policy repo path must fail loudly, not downgrade to unpinned
+    # binding of whatever stale binary exists.
+    engine_root = tmp_path / "axiom-rules-engine"
+    debug = engine_root / "target" / "debug" / "axiom-rules-engine"
+    debug.parent.mkdir(parents=True)
+    debug.write_bytes(b"stale debug")
+
+    pipeline = _ValidatorPipeline(
+        policy_repo_path=tmp_path / "missing" / "us",
+        axiom_rules_path=engine_root,
+        local_corpus_release=None,
+        enable_oracles=False,
+    )
+
+    with pytest.raises(EngineBindingError, match="does not exist"):
+        pipeline._axiom_rules_binary()
+
+
+def test_rulespec_engine_binary_resolution_is_memoized_per_pipeline(
+    monkeypatch, tmp_path
+):
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "us")
+    engine_root = tmp_path / "axiom-rules-engine"
+    engine_root.mkdir()
+    resolved = engine_root / "target" / "release" / "axiom-rules-engine"
+    calls = {"load": 0, "resolve": 0}
+
+    def fake_load(path):
+        calls["load"] += 1
+        return validator_pipeline.EnginePin(
+            sha="a" * 40,
+            source=tmp_path / "toolchain.toml",
+        )
+
+    def fake_resolve(checkout, pin, *, allow_build=True):
+        calls["resolve"] += 1
+        return resolved
+
+    monkeypatch.setattr(validator_pipeline, "load_declared_engine_pin", fake_load)
+    monkeypatch.setattr(
+        validator_pipeline, "resolve_pinned_engine_binary", fake_resolve
+    )
+    pipeline = _ValidatorPipeline(
+        policy_repo_path=policy_repo,
+        axiom_rules_path=engine_root,
+        local_corpus_release=None,
+        enable_oracles=False,
+    )
+
+    assert pipeline._axiom_rules_binary() == resolved
+    assert pipeline._axiom_rules_binary() == resolved
+    assert calls == {"load": 1, "resolve": 1}
+
+
+def test_rulespec_engine_ref_override_wins_over_toolchain_pin(monkeypatch, tmp_path):
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "us")
+    _write_engine_pinned_toolchain(policy_repo.parent, "c" * 40)
+    captured: dict[str, object] = {}
+
+    def fake_resolve(checkout, pin, *, allow_build=True):
+        captured["pin"] = pin
+        return checkout / "target" / "release" / "axiom-rules-engine"
+
+    monkeypatch.setattr(
+        validator_pipeline, "resolve_pinned_engine_binary", fake_resolve
+    )
+    pipeline = _ValidatorPipeline(
+        policy_repo_path=policy_repo,
+        axiom_rules_path=tmp_path / "axiom-rules-engine",
+        local_corpus_release=None,
+        enable_oracles=False,
+        axiom_rules_engine_ref="d" * 40,
+    )
+
+    pipeline._axiom_rules_binary()
+
+    pin = captured["pin"]
+    assert pin.sha == "d" * 40
+    assert str(pin.source) == "<constructor>"
+
+
+def test_rulespec_compile_uses_pinned_receipted_binary(monkeypatch, tmp_path):
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "us")
+    rules_file = policy_repo / "statutes" / "1" / "1.yaml"
+    rules_file.parent.mkdir(parents=True)
+    rules_file.write_text("format: rulespec/v1\nrules: []\n")
+    pin_sha = "f" * 40
+    _write_engine_pinned_toolchain(policy_repo.parent, pin_sha)
+    engine_root = tmp_path / "axiom-rules-engine"
+    release = engine_root / "target" / "release" / "axiom-rules-engine"
+    debug = engine_root / "target" / "debug" / "axiom-rules-engine"
+    for candidate, payload in ((release, b"pinned release"), (debug, b"stale debug")):
+        candidate.parent.mkdir(parents=True)
+        candidate.write_bytes(payload)
+    write_engine_binding_receipt(release, pin_sha, "release")
+
+    pipeline = ValidatorPipeline(
+        policy_repo_path=policy_repo,
+        axiom_rules_path=engine_root,
+        enable_oracles=False,
+    )
+    output_path = tmp_path / "compiled.json"
+    captured: dict[str, object] = {}
+    original_run = validator_pipeline.subprocess.run
+
+    def fake_run(command, **kwargs):
+        if command[0] == "git":
+            return original_run(command, **kwargs)
+        captured["command"] = command
+        output_path.write_text('{"program": {"derived": []}}')
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(validator_pipeline.subprocess, "run", fake_run)
+
+    result, payload = pipeline._compile_rulespec_to_artifact(rules_file, output_path)
+
+    assert result.returncode == 0
+    assert payload == {"program": {"derived": []}}
+    assert captured["command"][0] == str(release)
 
 
 def test_rulespec_target_resolution_uses_explicit_dependency_root(
