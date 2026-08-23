@@ -2,6 +2,10 @@
 
 All notable changes to Axiom Encode will be documented here.
 
+- Create each targeted output lane before validating its durable rejected-
+  candidate destination, so signed re-encodes reach generation while retaining
+  the destination's fresh-directory safety contract.
+
 - Export the strongest validator-rejected candidate from targeted signed
   re-encodes and prefer its integrity-bound three-file artifact during repair
   replay, while retaining compatibility with older failure artifacts.

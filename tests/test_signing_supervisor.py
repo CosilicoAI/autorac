@@ -2461,6 +2461,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "--require-complete-source-unit" in command
     assert "--emit-final-rejected-candidate" in command
     assert '"$RUNNER_TEMP/generated/$output_lane/final-rejected-candidate"' in command
+    assert 'mkdir -p "$RUNNER_TEMP/generated/$output_lane"' in command
+    assert command.index(
+        'mkdir -p "$RUNNER_TEMP/generated/$output_lane"'
+    ) < command.index("local -a args=(")
     assert "--skip-reviewers" not in command
     assert 'mktemp -d "$RUNNER_TEMP/axiom-targeted-review-finding.XXXXXX"' in command
     assert 'review_finding_path="$review_finding_dir/review-finding.txt"' in command
