@@ -2,6 +2,10 @@
 
 All notable changes to Axiom Encode will be documented here.
 
+- Export the strongest validator-rejected candidate from targeted signed
+  re-encodes and prefer its integrity-bound three-file artifact during repair
+  replay, while retaining compatibility with older failure artifacts.
+
 - Retain the validator-rejected RuleSpec candidate with the fewest full
   validation findings across model retries, keep its bounded feedback attached
   to that exact candidate, and emit the same best candidate for cross-run

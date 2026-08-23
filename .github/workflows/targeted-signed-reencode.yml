@@ -1152,6 +1152,8 @@ jobs:
               --axiom-rules-engine-path "$GITHUB_WORKSPACE/axiom-rules-engine"
               --policy-repo-path "$RULESPEC_CHECKOUT"
               --output "$RUNNER_TEMP/generated/$output_lane"
+              --emit-final-rejected-candidate \
+                "$RUNNER_TEMP/generated/$output_lane/final-rejected-candidate"
               --mode repo-augmented
               --require-complete-source-unit
               --db "$RUNNER_TEMP/encodings.db"
