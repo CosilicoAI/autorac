@@ -2,6 +2,11 @@
 
 All notable changes to Axiom Encode will be documented here.
 
+- Retain the validator-rejected RuleSpec candidate with the fewest full
+  validation findings across model retries, keep its bounded feedback attached
+  to that exact candidate, and emit the same best candidate for cross-run
+  repair instead of allowing a later regression to overwrite stronger work.
+
 - Keep parenthetical source conditions bounded to their closing parenthesis so
   later descriptive conjunctions cannot be misclassified as additional legal
   eligibility gates.

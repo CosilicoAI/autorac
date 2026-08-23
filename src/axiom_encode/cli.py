@@ -26240,6 +26240,8 @@ class _FailedEncodeAttempt(NamedTuple):
     error: str
     candidate: ValidationRetryCandidate | None = None
     validation_issues: Sequence[str] = ()
+    validation_issue_count: int | None = None
+    full_validation_issues: Sequence[str] = ()
 
 
 _FAILED_ENCODE_CANDIDATE_SCHEMA = "axiom-encode/failed-encode-candidate/v1"
@@ -26380,14 +26382,19 @@ def _emit_final_rejected_candidate(
     citation: str,
     validation_issues: Sequence[str],
     attempt_count: int,
+    candidate_override: ValidationRetryCandidate | None = None,
 ) -> Path:
-    """Materialize exactly one final rejected pair and its bounded issue metadata."""
+    """Materialize exactly one selected rejected pair and its issue metadata."""
 
     resolved_destination = _resolve_final_rejected_candidate_destination(destination)
     _generated_root, _output_file, relative_output = (
         _validation_retry_candidate_location(result, output_root=output_root)
     )
-    candidate = _capture_validation_retry_candidate(result, output_root=output_root)
+    candidate = (
+        candidate_override
+        if candidate_override is not None
+        else _capture_validation_retry_candidate(result, output_root=output_root)
+    )
     if (
         not isinstance(attempt_count, int)
         or isinstance(attempt_count, bool)
@@ -26664,12 +26671,34 @@ def _validate_tests_only_repair_contract(
         raise ValueError("tests-only repair replacement path mismatch")
 
 
-def _latest_validation_retry_candidate(
+def _best_validation_retry_attempt(
     prior_attempts: Sequence[_FailedEncodeAttempt],
-) -> ValidationRetryCandidate | None:
-    """Return only the immediately preceding candidate, when safely captured."""
+) -> _FailedEncodeAttempt | None:
+    """Return the least-regressed candidate with its matching feedback."""
 
-    return prior_attempts[-1].candidate if prior_attempts else None
+    if not prior_attempts:
+        return None
+    if any(attempt.validation_issue_count is None for attempt in prior_attempts):
+        # Historical and unit-test callers without comparable full counts retain
+        # the original immediately-preceding-candidate behavior.
+        return prior_attempts[-1]
+
+    def score(indexed: tuple[int, _FailedEncodeAttempt]) -> tuple[int, int, int]:
+        index, attempt = indexed
+        unsafe_candidate = (
+            any(
+                "[generated-yaml:" in issue or "compile validation" in issue.casefold()
+                for issue in attempt.validation_issues
+                if isinstance(issue, str)
+            )
+            or "compile validation" in attempt.error.casefold()
+        )
+        assert attempt.validation_issue_count is not None
+        # Parser/compile failures cannot outrank a source-complete candidate.
+        # On an exact deterministic tie, keep forward progress by using newer.
+        return (int(unsafe_candidate), attempt.validation_issue_count, -index)
+
+    return min(enumerate(prior_attempts), key=score)[1]
 
 
 def _full_validation_issue_list(*issue_groups: object) -> tuple[str, ...]:
@@ -26865,7 +26894,8 @@ def _encode_validation_retry_feedback(
         feedback.append(item)
         feedback_chars += len(item)
 
-    failed_attempt = prior_attempts[-1]
+    failed_attempt = _best_validation_retry_attempt(prior_attempts)
+    assert failed_attempt is not None
     add(failed_attempt.error)
     issues = failed_attempt.validation_issues
     if isinstance(issues, Sequence) and not isinstance(issues, (str, bytes)):
@@ -26898,7 +26928,8 @@ def _encode_validation_retry_context(
         return _encode_validation_retry_feedback(
             prior_attempts
         ), initial_retry_candidate
-    candidate = _latest_validation_retry_candidate(prior_attempts)
+    selected_attempt = _best_validation_retry_attempt(prior_attempts)
+    candidate = selected_attempt.candidate if selected_attempt is not None else None
     if candidate is None:
         raise RuntimeError(
             "Immediately preceding validator-rejected candidate is unavailable"
@@ -29285,6 +29316,8 @@ def _run_encode_attempts_with_retries(
                     error=retry_error,
                     candidate=candidate,
                     validation_issues=execution.validation_retry_issues,
+                    validation_issue_count=len(execution.validation_issues),
+                    full_validation_issues=execution.validation_issues,
                 )
         if next_model is not None:
             action = "retrying" if next_model == current_model else "escalating"
@@ -29320,13 +29353,35 @@ def _run_encode_attempts_with_retries(
             final_issues = execution.validation_issues or (
                 _encode_outcome_issue(execution.result, outcome),
             )
+            terminal_candidate = _capture_validation_retry_candidate(
+                execution.result,
+                output_root=args.output,
+            )
+            terminal_failure = _FailedEncodeAttempt(
+                result=execution.result,
+                error=_encode_outcome_issue(execution.result, outcome),
+                candidate=terminal_candidate,
+                validation_issues=execution.validation_retry_issues,
+                validation_issue_count=len(final_issues),
+                full_validation_issues=final_issues,
+            )
+            selected_failure = _best_validation_retry_attempt(
+                (*failed_attempts, terminal_failure)
+            )
+            assert selected_failure is not None
+            selected_issues = (
+                selected_failure.full_validation_issues
+                or selected_failure.validation_issues
+                or (selected_failure.error,)
+            )
             emitted_candidate = _emit_final_rejected_candidate(
                 execution.result,
                 output_root=args.output,
                 destination=emit_destination,
                 citation=str(args.citation),
-                validation_issues=final_issues,
+                validation_issues=selected_issues,
                 attempt_count=len(failed_attempts) + 1,
+                candidate_override=selected_failure.candidate,
             )
             print(f"  final_rejected_candidate={emitted_candidate}")
         escalated = (
