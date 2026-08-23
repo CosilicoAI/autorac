@@ -68,6 +68,61 @@ def _archive(tmp_path: Path, *, candidate: bytes | None = None) -> tuple[Path, d
     return archive, metadata
 
 
+def _add_retained_candidate(
+    source_archive: Path,
+    destination: Path,
+    metadata: dict,
+    *,
+    candidate: bytes,
+    tests: bytes = b"[]\n",
+) -> Path:
+    module = "statutes/42/1437c-1.yaml"
+    root = "target/final-rejected-candidate"
+    issues = json.dumps(
+        {
+            "schema": "axiom-encode/failed-encode-candidate/v1",
+            "citation": "us/statute/42/1437c\u20131",
+            "path": module,
+            "issues": ["best candidate still needs one repair"],
+            "rulespec_sha256": hashlib.sha256(candidate).hexdigest(),
+            "tests_sha256": hashlib.sha256(tests).hexdigest(),
+            "encoder_version": "0.2.1707",
+            "attempt_count": 4,
+        }
+    ).encode()
+    payloads = {
+        f"{root}/issues.json": issues,
+        f"{root}/{module}": candidate,
+        f"{root}/{module.removesuffix('.yaml')}.test.yaml": tests,
+    }
+    metadata["files"].extend(
+        {
+            "path": path,
+            "size": len(body),
+            "sha256": hashlib.sha256(body).hexdigest(),
+        }
+        for path, body in sorted(payloads.items())
+    )
+    metadata["files"].sort(key=lambda entry: entry["path"])
+    with (
+        tarfile.open(source_archive, "r") as source,
+        tarfile.open(destination, "w") as target,
+    ):
+        for member in source.getmembers():
+            extracted = source.extractfile(member)
+            assert extracted is not None
+            body = extracted.read()
+            if member.name == "metadata.json":
+                body = json.dumps(metadata).encode()
+                member.size = len(body)
+            target.addfile(member, io.BytesIO(body))
+        for path, body in payloads.items():
+            info = tarfile.TarInfo(f"generated/{path}")
+            info.size = len(body)
+            target.addfile(info, io.BytesIO(body))
+    return destination
+
+
 def _rewrite_metadata(
     source_archive: Path,
     destination: Path,
@@ -117,6 +172,47 @@ def test_extracts_checksum_bound_final_candidate(tmp_path):
     assert result["source_rulespec_ref"] == "d" * 40
     assert (root / result["path"]).read_text() == "format: rulespec/v1\nrules: []\n"
     assert (root / "statutes/42/1437c-1.test.yaml").read_text() == "[]\n"
+
+
+def test_prefers_integrity_bound_retained_best_candidate(tmp_path):
+    archive, metadata = _archive(tmp_path, candidate=b"final regression\n")
+    retained = b"strongest retained candidate\n"
+    replacement = _add_retained_candidate(
+        archive,
+        tmp_path / "retained.tar",
+        metadata,
+        candidate=retained,
+    )
+
+    result = extract_candidate(_args(tmp_path, replacement))
+
+    root = Path(result["root"])
+    assert result["runner"] == "retained-best"
+    assert (root / result["path"]).read_bytes() == retained
+
+
+def test_rejects_tampered_retained_best_candidate(tmp_path):
+    archive, metadata = _archive(tmp_path)
+    replacement = _add_retained_candidate(
+        archive,
+        tmp_path / "retained.tar",
+        metadata,
+        candidate=b"strongest retained candidate\n",
+    )
+    candidate_entry = next(
+        entry
+        for entry in metadata["files"]
+        if entry["path"].endswith("final-rejected-candidate/statutes/42/1437c-1.yaml")
+    )
+    candidate_entry["sha256"] = "0" * 64
+    tampered = _rewrite_metadata(
+        replacement,
+        tmp_path / "tampered-retained.tar",
+        metadata,
+    )
+
+    with pytest.raises(ValueError, match="digest mismatch"):
+        extract_candidate(_args(tmp_path, tampered))
 
 
 def test_state_rulespec_path_maps_to_lane_relative_candidate_path():
