@@ -34,7 +34,7 @@ from base64 import b64decode, b64encode
 from binascii import Error as BinasciiError
 from calendar import monthrange
 from collections import Counter, defaultdict
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
@@ -99,6 +99,7 @@ from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 
 from axiom_encode import __version__
 
+from . import manifest_audit
 from . import validation_waivers as _validation_waivers
 from .codex_cli import codex_auth_error
 from .concepts import (
@@ -2443,6 +2444,32 @@ def main():
         help="Write the JSON/badge output to this path (durable badge file)",
     )
 
+    manifest_audit_parser = subparsers.add_parser(
+        "manifest-audit",
+        help=(
+            "Assert that EVERY committed encoding manifest matches its file, and "
+            "that no file carries more than one live manifest (the check an "
+            "outside auditor would run)"
+        ),
+    )
+    manifest_audit_parser.add_argument(
+        "--repo",
+        type=Path,
+        default=Path.cwd(),
+        help="Rules repository to audit",
+    )
+    manifest_audit_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the full audit result as JSON instead of a report",
+    )
+    manifest_audit_parser.add_argument(
+        "--limit",
+        type=int,
+        default=25,
+        help="Maximum findings to print per kind (0 for no limit)",
+    )
+
     run_log_export_parser = subparsers.add_parser(
         "run-log-export",
         help=(
@@ -3550,6 +3577,8 @@ def main():
         cmd_signed_import_inventory(args)
     elif args.command == "manifest-census":
         cmd_manifest_census(args)
+    elif args.command == "manifest-audit":
+        cmd_manifest_audit(args)
     elif args.command == "encode":
         cmd_encode(args)
     elif args.command == "eval":
@@ -9351,6 +9380,29 @@ def cmd_manifest_census(args):
         print(f"wrote {out_path}")
     else:
         print(output, end="")
+
+
+def cmd_manifest_audit(args):
+    """Assert every committed manifest matches the file it attests.
+
+    Distinct from ``guard-generated``: that guard asks whether a *changed* file
+    has *a* matching attestation, so one good record satisfies it and any other
+    record committed alongside goes unread.  This audit reads every committed
+    record in every manifest tree — including the jurisdiction trees the guard
+    does not enumerate — and requires all of them to be true.
+    """
+    repo_path = Path(args.repo).resolve()
+    try:
+        result = manifest_audit.audit_repository(repo_path)
+    except manifest_audit.ManifestAuditError as error:
+        print(f"manifest-audit: {error}", file=sys.stderr)
+        sys.exit(2)
+    if getattr(args, "json", False):
+        print(json.dumps(result.as_dict(), indent=2))
+    else:
+        limit = getattr(args, "limit", 25) or None
+        print(manifest_audit.format_report(result, limit=limit))
+    sys.exit(0 if result.passed else 1)
 
 
 def _run_log_repo_paths(repos_arg):
@@ -52665,11 +52717,48 @@ def _apply_transaction_relative_path(checkout_root: Path, target: Path) -> str:
     return relative.as_posix()
 
 
+def _is_retirable_manifest_target(checkout_root: Path, relative: Path) -> bool:
+    """Return whether ``relative`` is an apply manifest in any recognized tree.
+
+    Deletion-only surface for prune-on-supersede (axiom-encode#1282): a
+    re-encode must be able to retire the record it supersedes even when that
+    record lives in a layout the transaction no longer writes — the
+    checkout-root legacy tree or a ``<jurisdiction>/.axiom/...`` tree, where
+    most of rulespec-us's existing records still are.  Writes to those
+    layouts stay forbidden.
+    """
+    parts = relative.parts
+    if relative.suffix != ".json" or relative.name.endswith(".test.json"):
+        return False
+    manifest_prefix = APPLIED_ENCODING_MANIFEST_DIR.parts
+    if parts[: len(manifest_prefix)] == manifest_prefix:
+        return len(parts) > len(manifest_prefix)
+    if (
+        len(parts) > len(manifest_prefix) + 1
+        and re.fullmatch(r"[a-z]{2}(?:-[a-z0-9_]+)*", parts[0]) is not None
+        and monorepo_checkout_name(parts[0]) == checkout_root.name
+        and parts[1 : 1 + len(manifest_prefix)] == manifest_prefix
+    ):
+        return True
+    return False
+
+
 def _is_canonical_apply_transaction_target(
     checkout_root: Path,
     relative: Path,
+    *,
+    delete: bool = False,
 ) -> bool:
-    """Return whether a journal path is one sanctioned live mutation target."""
+    """Return whether a journal path is one sanctioned live mutation target.
+
+    ``delete`` widens the surface to superseded-manifest retirement only; the
+    retired-claims file is writable either way because it is the apply
+    transaction's own artifact.
+    """
+    if relative == Path(manifest_audit.RATCHET_RELATIVE_PATH):
+        return True
+    if delete and _is_retirable_manifest_target(checkout_root, relative):
+        return True
 
     def canonical_tail(path: Path, *, suffix: str) -> bool:
         parts = path.parts
@@ -52713,11 +52802,14 @@ def _is_canonical_apply_transaction_target(
 def _apply_transaction_target_relative_path(
     checkout_root: Path,
     target: Path,
+    *,
+    delete: bool = False,
 ) -> str:
     relative_value = _apply_transaction_relative_path(checkout_root, target)
     if not _is_canonical_apply_transaction_target(
         checkout_root,
         Path(relative_value),
+        delete=delete,
     ):
         raise RuntimeError(
             "Apply transaction target is outside the canonical RuleSpec/manifest "
@@ -52888,7 +52980,9 @@ def _load_apply_transaction_journal(
         ):
             raise RuntimeError("Apply transaction journal path is unsafe")
         relative = Path(path_value)
-        if not _is_canonical_apply_transaction_target(checkout_root, relative):
+        if not _is_canonical_apply_transaction_target(
+            checkout_root, relative, delete=entry.get("delete") is True
+        ):
             raise RuntimeError("Apply transaction journal target is not canonical")
         if path_value in seen_paths:
             raise RuntimeError("Apply transaction journal lists a duplicate target")
@@ -53170,8 +53264,10 @@ def _install_apply_transaction(
         for target, digest in (expected_originals or {}).items()
     }
     relative_targets = {
-        target: _apply_transaction_target_relative_path(checkout_root, target)
-        for target, _raw in normalized_files
+        target: _apply_transaction_target_relative_path(
+            checkout_root, target, delete=raw is None
+        )
+        for target, raw in normalized_files
     }
 
     with _exclusive_apply_transaction_lock(checkout_root):
@@ -53306,6 +53402,42 @@ def _install_apply_transaction(
             ) from exc
 
 
+def _model_prune_in_expected_post_files(
+    expected_post_files: dict[str, str],
+    *,
+    content_root: Path,
+    pruned_paths: Sequence[Path],
+    ratchet_write: tuple[Path, bytes | None] | None,
+) -> None:
+    """Fold prune-on-supersede effects into the expected post-install walk.
+
+    ``_apply_policy_content_files`` hashes everything under the content root,
+    including that root's own ``.axiom/encoding-manifests`` tree, so a retired
+    jurisdiction-tree record (or, in a flat checkout, the retired-claims file)
+    must be modeled or the closure check rolls the whole apply back.
+    """
+    root = Path(content_root).resolve()
+
+    def under_root(path: Path) -> str | None:
+        try:
+            return path.resolve().relative_to(root).as_posix()
+        except ValueError:
+            return None
+
+    for pruned in pruned_paths:
+        relative = under_root(Path(pruned))
+        if relative is not None:
+            expected_post_files.pop(relative, None)
+    if ratchet_write is not None:
+        target, raw = ratchet_write
+        relative = under_root(Path(target))
+        if relative is not None:
+            if raw is None:
+                expected_post_files.pop(relative, None)
+            else:
+                expected_post_files[relative] = hashlib.sha256(raw).hexdigest()
+
+
 def _require_apply_post_install_closure(
     result,
     *,
@@ -53322,6 +53454,8 @@ def _require_apply_post_install_closure(
     receipt_bytes: bytes | None = None,
     exact_dependent_manifest_bytes: Mapping[Path, bytes] | None = None,
     signing_broker: SigningBroker | None = None,
+    pruned_paths: Sequence[Path] = (),
+    ratchet_write: tuple[Path, bytes | None] | None = None,
 ) -> None:
     """Recheck the execution closure while rollback is still possible."""
 
@@ -53475,6 +53609,12 @@ def _require_apply_post_install_closure(
         expected_post_files[_canonical_apply_relative_path(relative).as_posix()] = (
             hashlib.sha256(raw).hexdigest()
         )
+    _model_prune_in_expected_post_files(
+        expected_post_files,
+        content_root=content_root,
+        pruned_paths=pruned_paths,
+        ratchet_write=ratchet_write,
+    )
     if current_execution.get("policy_content_files") != expected_post_files:
         raise RuntimeError(
             "Cannot keep applied RuleSpec: live RuleSpec bytes changed during "
@@ -53818,6 +53958,40 @@ def _apply_generated_encoding_result(
             if checkout_root / successor.legacy_manifest.path not in written_targets
         )
         transaction_files.append((checkout_root / receipt_relative, receipt_bytes))
+    # What the transaction actually deletes is read off the transaction, not
+    # off the contract: an in-place replacement writes its source rather than
+    # deleting it, and must not be treated as a deletion.
+    resolved_checkout_root = checkout_root.resolve()
+    transaction_deleted_paths: set[str] = set()
+    transaction_deleted_manifests: set[str] = set()
+    for target, raw in transaction_files:
+        if raw is not None:
+            continue
+        try:
+            relative = Path(target).resolve().relative_to(resolved_checkout_root)
+        except ValueError:
+            continue
+        if relative.suffix == ".json":
+            transaction_deleted_manifests.add(relative.as_posix())
+        else:
+            transaction_deleted_paths.add(relative.as_posix())
+    prune_kwargs = dict(
+        checkout_root=checkout_root,
+        content_root=content_root,
+        manifest_relative=manifest_relative,
+        planned=planned,
+        manifest_bytes=manifest_bytes,
+        written_targets=[
+            target for target, raw in transaction_files if raw is not None
+        ],
+        deleted_paths=transaction_deleted_paths,
+        deleted_manifests=transaction_deleted_manifests,
+    )
+    prune = _plan_apply_prune_transaction(**prune_kwargs)
+    scheduled_targets = {target for target, _raw in transaction_files}
+    transaction_files.extend(
+        (target, raw) for target, raw in prune.files if target not in scheduled_targets
+    )
     for target, _raw in transaction_files:
         _ensure_safe_apply_target(checkout_root, target)
 
@@ -53870,6 +54044,8 @@ def _apply_generated_encoding_result(
             )
         assert receipt_relative is not None
         expected_originals[checkout_root / receipt_relative] = None
+    for target, digest in prune.expected.items():
+        expected_originals.setdefault(target, digest)
     new_manifest_applied_files = {
         (Path(content_root.name) / relative_path).as_posix()
         for relative_path in planned
@@ -53889,6 +54065,22 @@ def _apply_generated_encoding_result(
                 new_applied_files=new_manifest_applied_files,
                 allow_shrink=allow_shrink,
             )
+        # Re-plan the supersession under the lock.  Pinning the records the
+        # plan read is necessary but not sufficient: another sanctioned apply
+        # may have added a record, or a retired-claim row, that changes what
+        # this one should retire without touching any pinned file.  The
+        # plan computed outside the lock is provisional; it installs only if
+        # the locked tree yields the identical plan.
+        locked = _plan_apply_prune_transaction(**prune_kwargs)
+        if not locked.same_as(prune):
+            raise RuntimeError(
+                "Superseded-manifest plan changed before the install lock was "
+                "taken (a concurrent apply altered the manifest inventory or "
+                "retired-claims file); retry the apply"
+            )
+        # Baseline for the post-install invariant below, taken under the lock
+        # so it describes exactly the tree the transaction starts from.
+        audit_baseline["keys"] = _audit_finding_keys(checkout_root)
         locked_release = load_rulespec_local_corpus_release(
             content_root,
             corpus_path,
@@ -53913,7 +54105,29 @@ def _apply_generated_encoding_result(
             local_corpus_release=locked_release,
         )
 
+    audit_baseline: dict[
+        str, dict[tuple[str, str | None, str | None], frozenset[str]]
+    ] = {}
+
     def post_install_check() -> None:
+        # An apply may leave the committed-manifest audit exactly as red as it
+        # found it (a repo with a backlog still applies) but must never make
+        # it worse: any finding that was not present before the install rolls
+        # the whole transaction back.  This is the generic backstop for every
+        # way a write path can strand a record or a retired-claim row.
+        introduced = _audit_findings_introduced(
+            audit_baseline.get("keys", {}), _audit_finding_keys(checkout_root)
+        )
+        if introduced:
+            sample = ", ".join(
+                f"{kind}:{manifest or ''}->{path or ''}"
+                for kind, manifest, path in introduced[:5]
+            )
+            raise RuntimeError(
+                "Cannot keep applied RuleSpec: the install would add "
+                f"{len(introduced)} committed-manifest audit finding(s) "
+                f"({sample}); see `axiom-encode manifest-audit`"
+            )
         _require_apply_post_install_closure(
             result,
             output_root=output_root,
@@ -53933,6 +54147,12 @@ def _apply_generated_encoding_result(
             receipt_bytes=receipt_bytes,
             exact_dependent_manifest_bytes=exact_dependent_manifest_bytes,
             signing_broker=signing_broker,
+            pruned_paths=prune.deleted_targets,
+            ratchet_write=(
+                (prune.ratchet_target, prune.ratchet_raw)
+                if prune.ratchet_target is not None
+                else None
+            ),
         )
 
     _install_apply_transaction(
@@ -53942,6 +54162,7 @@ def _apply_generated_encoding_result(
         pre_install_check=pre_install_check,
         post_install_check=post_install_check,
     )
+    prune.report()
     applied.append(manifest_path)
     if receipt_relative is not None:
         applied.append(checkout_root / receipt_relative)
@@ -54157,6 +54378,225 @@ def _resolver_owned_manifest_source_attestation(
         "Cannot sign one source_attestation that binds every covered protected "
         f"RuleSpec{': ' + detail if detail else ''}"
     )
+
+
+def _staged_manifest_attested_paths(
+    checkout_root: Path, manifest_relative: Path, manifest_bytes: bytes
+) -> list[str]:
+    """Repo-relative paths a staged manifest attests, resolved like the audit.
+
+    Paths that do not exist yet (the apply creates them) are keyed the way
+    the audit will key them once written.
+    """
+    try:
+        payload = json.loads(manifest_bytes.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        return []
+    entries = payload.get("applied_files") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return []
+    jurisdictions = manifest_audit.jurisdiction_roots(checkout_root)
+    manifest_posix = manifest_relative.as_posix()
+    paths: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            continue
+        if entry.get("deleted") is True:
+            continue
+        for candidate in manifest_audit.deletion_candidates(
+            manifest_posix, entry["path"], jurisdictions=jurisdictions
+        ):
+            paths.append(candidate)
+    return paths
+
+
+def _same_file_as_any(target: Path, others: Sequence[Path]) -> bool:
+    """True when ``target`` names the same filesystem object as any of ``others``."""
+    for other in others:
+        try:
+            if os.path.samefile(target, other):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _audit_finding_keys(
+    checkout_root: Path,
+) -> dict[tuple[str, str | None, str | None], frozenset[str]]:
+    """The audit's findings as ``(kind, manifest, path) -> members``.
+
+    Detail text is ignored (it re-renders as digests move) but set-valued
+    content is kept, so a duplicate that gains a manifest or an ambiguity that
+    gains a jurisdiction counts as growth, not as the same finding.
+    """
+    keys: dict[tuple[str, str | None, str | None], frozenset[str]] = {}
+    for finding in manifest_audit.audit_repository(checkout_root).findings:
+        key = (finding.kind, finding.manifest, finding.path)
+        keys[key] = keys.get(key, frozenset()) | finding.members
+    return keys
+
+
+def _audit_findings_introduced(
+    before: Mapping[tuple[str, str | None, str | None], frozenset[str]],
+    after: Mapping[tuple[str, str | None, str | None], frozenset[str]],
+) -> list[tuple[str, str | None, str | None]]:
+    """Findings present after that were absent before, or grew."""
+    introduced = []
+    for key, members in after.items():
+        previous = before.get(key)
+        if previous is None or members - previous:
+            introduced.append(key)
+    return sorted(introduced, key=str)
+
+
+class _ApplyPrune:
+    """Prune-on-supersede staged for one apply transaction."""
+
+    def __init__(self) -> None:
+        self.files: list[tuple[Path, bytes | None]] = []
+        self.expected: dict[Path, str | None] = {}
+        self.retired: list[str] = []
+        self.retired_claims: list[str] = []
+        self.ratchet_target: Path | None = None
+        self.ratchet_raw: bytes | None = None
+
+    @property
+    def deleted_targets(self) -> list[Path]:
+        return [target for target, raw in self.files if raw is None]
+
+    def report(self) -> None:
+        for manifest in self.retired:
+            print(f"Retired superseded apply manifest {manifest}")
+        for claim in self.retired_claims:
+            print(f"Retired superseded claim in place: {claim}")
+
+    def same_as(self, other: "_ApplyPrune") -> bool:
+        """Byte-for-byte the same staged effect (targets, bytes, preconditions)."""
+        return (
+            sorted(self.files, key=lambda item: str(item[0]))
+            == sorted(other.files, key=lambda item: str(item[0]))
+            and self.expected == other.expected
+        )
+
+
+def _plan_apply_prune_transaction(
+    *,
+    checkout_root: Path,
+    content_root: Path,
+    manifest_relative: Path,
+    planned,
+    manifest_bytes: bytes | None = None,
+    written_targets: Collection[Path] = (),
+    deleted_paths: Collection[str] = (),
+    deleted_manifests: Collection[str] = (),
+) -> _ApplyPrune:
+    """Stage the retirement of records superseded by this apply.
+
+    Runs against the LIVE checkout — not the isolated staging copy that builds
+    and signs the manifest, which contains no predecessor records and would
+    make the plan vacuously empty (the shape of the original #1282 defect:
+    every re-generation left its previous manifest behind asserting a hash the
+    file no longer had, and nothing read it).  Every file the plan touches is
+    pinned to the digest of the bytes the plan was computed FROM — not
+    re-sampled afterwards — so a record that changes between planning and the
+    locked install fails the transaction's compare-and-swap instead of being
+    deleted under a stale decision.
+    """
+    prune = _ApplyPrune()
+    try:
+        prefix = content_root.resolve().relative_to(checkout_root.resolve())
+    except ValueError:
+        return prune
+    prefix_posix = prefix.as_posix()
+    attested = [
+        Path(relative_path).as_posix()
+        if prefix_posix in ("", ".")
+        else f"{prefix_posix}/{Path(relative_path).as_posix()}"
+        for relative_path in planned
+    ]
+    # The staged manifest attests more than the planned rule files — a legacy
+    # replacement also records the rewrites and metadata reconciliations it
+    # made.  Every path it claims supersedes prior claims on that path, so
+    # the plan covers the record's own applied_files when they are available.
+    if manifest_bytes is not None:
+        attested = sorted(
+            set(attested)
+            | set(
+                _staged_manifest_attested_paths(
+                    checkout_root, Path(manifest_relative), manifest_bytes
+                )
+            )
+        )
+    plan = manifest_audit.plan_prune(
+        checkout_root,
+        new_manifest=Path(manifest_relative).as_posix(),
+        attested_paths=attested,
+        retirable=lambda relative: _is_retirable_manifest_target(
+            checkout_root, Path(relative)
+        ),
+    )
+    # Rows the transaction itself invalidates: records it deletes vanish with
+    # their rows, and a row whose file it deletes can no longer have a live
+    # match — the declared gap opens by the transaction's own hand.
+    existing = manifest_audit.load_ratchet(checkout_root)
+    drop_keys = list(plan.drop_keys)
+    drop_keys.extend(key for key in existing if key[0] in set(deleted_manifests))
+    replacements: list[manifest_audit.RatchetEntry] = []
+    if deleted_paths:
+        claims_by_key = {
+            (claim.manifest, claim.entry_path): claim
+            for claim in manifest_audit.collect_claims(checkout_root)[0]
+        }
+        for key, entry in existing.items():
+            claim = claims_by_key.get(key)
+            if (
+                claim is not None
+                and not entry.deletion
+                and not entry.unattested
+                and claim.resolved_path in set(deleted_paths)
+            ):
+                replacements.append(
+                    manifest_audit.RatchetEntry(
+                        manifest=entry.manifest,
+                        attested_path=entry.attested_path,
+                        attested_sha256=entry.attested_sha256,
+                        note=entry.note,
+                        unattested=True,
+                        issue=entry.issue,
+                    )
+                )
+    if plan.empty and not drop_keys and not replacements:
+        return prune
+    written = [Path(target) for target in written_targets]
+    for retired, digest in sorted(plan.retire.items()):
+        target = checkout_root / retired
+        if _same_file_as_any(target, written):
+            # On a case-insensitive filesystem a record whose name differs
+            # from a scheduled write only by case IS that file: the write
+            # replaces it, and a separate deletion would race the write's
+            # compare-and-swap.  The written record supersedes it by
+            # overwrite; nothing is lost.
+            continue
+        prune.files.append((target, None))
+        prune.expected[target] = digest
+        prune.retired.append(retired)
+    update = manifest_audit.ratchet_update(
+        checkout_root,
+        additions=plan.disclose,
+        drop_keys=drop_keys,
+        replacements=replacements,
+    )
+    if update is not None:
+        target = checkout_root / manifest_audit.RATCHET_RELATIVE_PATH
+        prune.files.append((target, None if update.delete else update.raw))
+        prune.expected[target] = update.expected_sha256
+        prune.ratchet_target = target
+        prune.ratchet_raw = update.raw
+        prune.retired_claims.extend(
+            f"{entry.manifest} -> {entry.attested_path}" for entry in plan.disclose
+        )
+    return prune
 
 
 def _write_applied_encoding_manifest(
