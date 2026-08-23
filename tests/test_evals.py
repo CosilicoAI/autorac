@@ -846,7 +846,84 @@ def test_retry_candidate_formatter_explicitly_handles_missing_tests():
     )
 
     assert "No companion test file was present" in section
-    assert "complete replacement RuleSpec and companion test files" in section
+    assert "you may omit unchanged named rules" in section
+
+
+def test_repair_candidate_overlay_restores_omitted_named_items(tmp_path):
+    artifact_root = tmp_path / "generated"
+    rulespec_file = artifact_root / "regulations" / "section.yaml"
+    rulespec_file.parent.mkdir(parents=True)
+    rulespec_file.write_text(
+        "format: rulespec/v1\n"
+        "module:\n"
+        "  deferred_outputs:\n"
+        "    - output: us:section#new_deferred\n"
+        "      reason: new\n"
+        "imports:\n"
+        "  - us:source#new\n"
+        "rules:\n"
+        "  - name: existing_changed\n"
+        "    kind: parameter\n"
+        "    dtype: Count\n"
+        "    versions: [{effective_from: '2026-01-01', formula: 2}]\n"
+        "  - name: added\n"
+        "    kind: parameter\n"
+        "    dtype: Count\n"
+        "    versions: [{effective_from: '2026-01-01', formula: 3}]\n",
+        encoding="utf-8",
+    )
+    rulespec_file.with_suffix(".test.yaml").write_text(
+        "- name: added_case\n  period: 2026-01\n  input: {}\n  output: {}\n",
+        encoding="utf-8",
+    )
+    candidate = ValidationRetryCandidate(
+        rulespec=(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  deferred_outputs:\n"
+            "    - output: us:section#preserved_deferred\n"
+            "      reason: preserved\n"
+            "    - output: us:section#added\n"
+            "      reason: replaced by the generated rule\n"
+            "imports:\n"
+            "  - us:source#preserved\n"
+            "rules:\n"
+            "  - name: existing_changed\n"
+            "    kind: parameter\n"
+            "    dtype: Count\n"
+            "    versions: [{effective_from: '2026-01-01', formula: 1}]\n"
+            "  - name: omitted\n"
+            "    kind: parameter\n"
+            "    dtype: Count\n"
+            "    versions: [{effective_from: '2026-01-01', formula: 4}]\n"
+        ),
+        tests=(
+            "- name: preserved_case\n  period: 2026-01\n  input: {}\n  output: {}\n"
+        ),
+    )
+
+    repairs = evals_module._overlay_validation_retry_candidate(
+        rulespec_file,
+        artifact_root=artifact_root,
+        candidate=candidate,
+    )
+
+    payload = yaml.safe_load(rulespec_file.read_text(encoding="utf-8"))
+    rules = {rule["name"]: rule for rule in payload["rules"]}
+    assert rules["existing_changed"]["versions"][0]["formula"] == 2
+    assert set(rules) == {"existing_changed", "added", "omitted"}
+    assert payload["imports"] == ["us:source#new", "us:source#preserved"]
+    assert {item["output"] for item in payload["module"]["deferred_outputs"]} == {
+        "us:section#new_deferred",
+        "us:section#preserved_deferred",
+    }
+    tests = yaml.safe_load(
+        rulespec_file.with_suffix(".test.yaml").read_text(encoding="utf-8")
+    )
+    assert {case["name"] for case in tests} == {"added_case", "preserved_case"}
+    assert "rule:omitted" in repairs
+    assert "test:preserved_case" in repairs
+    assert "resolved_deferred_output:us:section#added" in repairs
 
 
 def test_run_model_eval_appends_repair_parameters_after_existing_public_parameters():
