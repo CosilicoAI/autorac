@@ -1145,6 +1145,7 @@ jobs:
             local required_test_cases_json="${9:-[]}"
             local review_finding_path=""
             local review_contract_json=""
+            mkdir -p "$RUNNER_TEMP/generated/$output_lane"
             local -a args=(
               /opt/axiom-verification/axiom-encode encode
               --backend openai
