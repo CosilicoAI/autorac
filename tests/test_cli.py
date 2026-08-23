@@ -13857,6 +13857,74 @@ class TestCmdEncode:
             "escalation_model": DEFAULT_OPENAI_ESCALATION_MODEL,
         }
 
+    def test_encode_retries_from_best_candidate_when_later_attempt_regresses(
+        self, tmp_path
+    ):
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+        )
+
+        _exit_code, _generated, _validated, mock_run, _validate, _apply = (
+            self._run_validator_escalation_case(
+                args,
+                [
+                    (False, ["best issue 1", "best issue 2"]),
+                    (False, [f"regression issue {index}" for index in range(9)]),
+                    (False, [f"later issue {index}" for index in range(6)]),
+                    (True, []),
+                ],
+            )
+        )
+
+        retry_candidates = [
+            call.kwargs["validation_retry_candidate"]
+            for call in mock_run.call_args_list
+        ]
+        assert retry_candidates[0] is None
+        for candidate in retry_candidates[1:]:
+            assert "rejected-attempt-1" in candidate.rulespec
+        assert mock_run.call_args_list[2].kwargs["validation_retry_feedback"] == (
+            "best issue 1",
+            "best issue 2",
+        )
+
+    def test_best_retry_candidate_penalizes_generated_yaml_failure(self):
+        import axiom_encode.cli as cli_module
+
+        source_candidate = cli_module._FailedEncodeAttempt(
+            result=SimpleNamespace(),
+            error="Generated RuleSpec failed CI validation",
+            candidate=cli_module.ValidationRetryCandidate(
+                rulespec="format: rulespec/v1\n# source-candidate\nrules: []\n",
+                tests="[]\n",
+            ),
+            validation_issues=tuple(f"source issue {index}" for index in range(8)),
+            validation_issue_count=8,
+        )
+        malformed_candidate = cli_module._FailedEncodeAttempt(
+            result=SimpleNamespace(),
+            error="Generated RuleSpec failed compile validation",
+            candidate=cli_module.ValidationRetryCandidate(
+                rulespec="malformed: [\n",
+                tests="[]\n",
+            ),
+            validation_issues=("[generated-yaml:parser] invalid YAML",),
+            validation_issue_count=1,
+        )
+
+        feedback, candidate = cli_module._encode_validation_retry_context(
+            [source_candidate, malformed_candidate],
+            initial_retry_candidate=None,
+        )
+
+        assert candidate is source_candidate.candidate
+        assert feedback[0] == source_candidate.error
+        assert "source issue 0" in feedback
+
     def test_encode_retry_scans_full_overlay_issue_list_for_actionable_feedback(
         self, tmp_path
     ):
@@ -14686,7 +14754,7 @@ rules:
         assert len(feedback) == 12
         assert all(issue in feedback for issue in actionable_seeded_issues)
 
-    def test_encode_emits_only_final_validator_rejected_candidate(self, tmp_path):
+    def test_encode_emits_best_validator_rejected_candidate(self, tmp_path):
         failed_candidate_root = tmp_path / "failed-encode"
         args = self._make_args(
             tmp_path,
@@ -14705,9 +14773,9 @@ rules:
             self._run_validator_escalation_case(
                 args,
                 [
-                    (False, ["terra attempt one"]),
-                    (False, ["terra attempt two"]),
-                    (False, ["sol attempt one"]),
+                    (False, ["best issue one", "best issue two"]),
+                    (False, [f"terra regression {index}" for index in range(9)]),
+                    (False, [f"sol regression {index}" for index in range(6)]),
                     (False, final_issues),
                 ],
             )
@@ -14728,19 +14796,19 @@ rules:
             relative_tests.as_posix(),
         }
         assert (
-            "rejected-attempt-4"
+            "rejected-attempt-1"
             in (failed_candidate_root / relative_rulespec).read_text()
         )
         assert (
-            "deterministic-post-repair-4"
+            "deterministic-post-repair-1"
             in (failed_candidate_root / relative_rulespec).read_text()
         )
         assert (
-            "historical-and-current-cases-4"
+            "historical-and-current-cases-1"
             in (failed_candidate_root / relative_tests).read_text()
         )
         assert (
-            "deterministic-post-repair-tests-4"
+            "deterministic-post-repair-tests-1"
             in (failed_candidate_root / relative_tests).read_text()
         )
         issues = json.loads((failed_candidate_root / "issues.json").read_text())
@@ -14748,7 +14816,7 @@ rules:
             "schema": "axiom-encode/failed-encode-candidate/v1",
             "citation": "26 USC 1(j)(2)",
             "path": relative_rulespec.as_posix(),
-            "issues": final_issues,
+            "issues": ["best issue one", "best issue two"],
             "rulespec_sha256": hashlib.sha256(
                 (failed_candidate_root / relative_rulespec).read_bytes()
             ).hexdigest(),
