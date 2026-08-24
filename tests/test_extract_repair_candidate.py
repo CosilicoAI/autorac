@@ -86,7 +86,7 @@ def _add_retained_candidate(
             "issues": ["best candidate still needs one repair"],
             "rulespec_sha256": hashlib.sha256(candidate).hexdigest(),
             "tests_sha256": hashlib.sha256(tests).hexdigest(),
-            "encoder_version": "0.2.1710",
+            "encoder_version": "0.2.1712",
             "attempt_count": 4,
         }
     ).encode()

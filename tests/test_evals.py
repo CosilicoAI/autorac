@@ -926,6 +926,64 @@ def test_repair_candidate_overlay_restores_omitted_named_items(tmp_path):
     assert "resolved_deferred_output:us:section#added" in repairs
 
 
+def test_repair_candidate_overlay_normalizes_destination_root_deferrals(tmp_path):
+    artifact_root = tmp_path / "generated"
+    rulespec_file = artifact_root / "regulations" / "7-cfr" / "273" / "4.yaml"
+    rulespec_file.parent.mkdir(parents=True)
+    rulespec_file.write_text(
+        "format: rulespec/v1\n"
+        "module:\n"
+        "  source_verification:\n"
+        "    corpus_citation_path: us/regulation/7/273/4\n"
+        "  deferred_outputs:\n"
+        "    - output: us:regulations/7-cfr/273/4/a/6/ii/h#generated\n"
+        "      reason: generated\n"
+        "rules: []\n",
+        encoding="utf-8",
+    )
+    candidate = ValidationRetryCandidate(
+        rulespec=(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  source_verification:\n"
+            "    corpus_citation_path: us/regulation/7/273/4\n"
+            "  deferred_outputs:\n"
+            "    - output: us:regulations/7-cfr/273/4/a/6/ii/h#generated\n"
+            "      reason: preserved duplicate\n"
+            "    - output: us:regulations/7-cfr/273/4/c/1#preserved\n"
+            "      reason: preserved\n"
+            "    - output: us:statutes/8/1641/b#external_dependency\n"
+            "      reason: external\n"
+            "rules: []\n"
+        ),
+    )
+
+    repairs = evals_module._overlay_validation_retry_candidate(
+        rulespec_file,
+        artifact_root=artifact_root,
+        candidate=candidate,
+    )
+
+    payload = yaml.safe_load(rulespec_file.read_text(encoding="utf-8"))
+    deferred = payload["module"]["deferred_outputs"]
+    assert deferred == [
+        {
+            "output": "us:regulations/7/273/4/a/6/ii/h#generated",
+            "reason": "generated",
+        },
+        {
+            "output": "us:regulations/7/273/4/c/1#preserved",
+            "reason": "preserved",
+        },
+        {
+            "output": "us:statutes/8/1641/b#external_dependency",
+            "reason": "external",
+        },
+    ]
+    assert not any("7-cfr" in item["output"] for item in deferred)
+    assert any(repair.startswith("deferred_output_source_root:") for repair in repairs)
+
+
 def test_run_model_eval_appends_repair_parameters_after_existing_public_parameters():
     parameters = list(inspect.signature(run_model_eval).parameters)
 
