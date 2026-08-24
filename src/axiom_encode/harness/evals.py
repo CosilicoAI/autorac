@@ -116,6 +116,7 @@ from .policyengine_runtime import (
 )
 from .pricing import estimate_usage_cost_usd
 from .source_completeness import (
+    _rulespec_target_base,
     collect_artifact_numeric_values,
 )
 from .validator_pipeline import (
@@ -16812,6 +16813,45 @@ def _merge_named_yaml_items(
     return generated_items, restored
 
 
+def _normalize_repair_deferred_source_roots(
+    deferred_outputs: object,
+    *,
+    rulespec_file: Path,
+    artifact_root: Path,
+    corpus_citation_path: str,
+) -> tuple[list[object], list[str]]:
+    """Map destination-root deferrals onto the integrity-bound source root."""
+
+    if not isinstance(deferred_outputs, list):
+        raise ValueError("repair overlay deferred outputs must be lists")
+    try:
+        relative_target = rulespec_file.relative_to(artifact_root).with_suffix("")
+    except ValueError as exc:
+        raise ValueError("repair overlay RuleSpec must be inside artifact root") from exc
+    source_root = _rulespec_target_base(corpus_citation_path)
+    jurisdiction = source_root.partition(":")[0]
+    destination_root = f"{jurisdiction}:{relative_target.as_posix()}"
+    normalized: list[object] = []
+    repairs: list[str] = []
+    for item in deferred_outputs:
+        if not isinstance(item, dict) or not isinstance(item.get("output"), str):
+            raise ValueError("repair overlay deferred outputs must name an output")
+        output = item["output"]
+        output_path, separator, fragment = output.partition("#")
+        if output_path == destination_root or output_path.startswith(
+            f"{destination_root}/"
+        ):
+            suffix = output_path[len(destination_root) :]
+            corrected = f"{source_root}{suffix}"
+            if separator:
+                corrected = f"{corrected}#{fragment}"
+            if corrected != output:
+                item = {**item, "output": corrected}
+                repairs.append(f"deferred_output_source_root:{output}->{corrected}")
+        normalized.append(item)
+    return normalized, repairs
+
+
 def _overlay_validation_retry_candidate(
     rulespec_file: Path,
     *,
@@ -16860,9 +16900,34 @@ def _overlay_validation_retry_candidate(
     generated_module = generated.get("module")
     preserved_module = preserved.get("module")
     if isinstance(generated_module, dict) and isinstance(preserved_module, dict):
+        preserved_source_verification = preserved_module.get("source_verification")
+        corpus_citation_path = (
+            preserved_source_verification.get("corpus_citation_path")
+            if isinstance(preserved_source_verification, dict)
+            else None
+        )
         generated_deferred = generated_module.get("deferred_outputs", [])
         preserved_deferred = preserved_module.get("deferred_outputs", [])
-        if not isinstance(generated_deferred, list) or not isinstance(
+        if isinstance(corpus_citation_path, str) and corpus_citation_path:
+            generated_deferred, generated_root_repairs = (
+                _normalize_repair_deferred_source_roots(
+                    generated_deferred,
+                    rulespec_file=rulespec_file,
+                    artifact_root=artifact_root,
+                    corpus_citation_path=corpus_citation_path,
+                )
+            )
+            preserved_deferred, preserved_root_repairs = (
+                _normalize_repair_deferred_source_roots(
+                    preserved_deferred,
+                    rulespec_file=rulespec_file,
+                    artifact_root=artifact_root,
+                    corpus_citation_path=corpus_citation_path,
+                )
+            )
+            repairs.extend(generated_root_repairs)
+            repairs.extend(preserved_root_repairs)
+        elif not isinstance(generated_deferred, list) or not isinstance(
             preserved_deferred, list
         ):
             raise ValueError("repair overlay deferred outputs must be lists")
