@@ -485,6 +485,79 @@ def test_flattened_inline_dotted_items_disambiguate_spouse_credit_proof():
     assert [clause.branch_path for clause in blindness_clauses] == [("3", "a", "7")]
 
 
+def test_parent_chapeau_proof_does_not_absorb_first_structural_child():
+    source = """(ii) A qualified alien is immediately eligible if the individual meets at least one criterion:
+(A) An adult lawful permanent resident has forty qualifying quarters based on the sum of quarters the alien worked and quarters credited from a parent.
+(B) An alien admitted as a refugee.
+"""
+    child_a_start = source.index("(A)")
+    child_b_start = source.index("(B)")
+    branches = (
+        completeness_module.SourceStructureBranch(
+            ("a", "6", "ii"), "number", "(ii)", source, 0, len(source)
+        ),
+        completeness_module.SourceStructureBranch(
+            ("a", "6", "ii", "a"),
+            "letter",
+            "(A)",
+            source[child_a_start:child_b_start],
+            child_a_start,
+            child_b_start,
+        ),
+        completeness_module.SourceStructureBranch(
+            ("a", "6", "ii", "b"),
+            "letter",
+            "(B)",
+            source[child_b_start:],
+            child_b_start,
+            len(source),
+        ),
+    )
+    excerpt = "meets at least one criterion"
+    rule = _ky_derived_rule(
+        "qualified_alien_immediately_eligible",
+        source="7 CFR 273.4(a)(6)(ii)",
+        dtype="Judgment",
+        formula="qualified_alien and (forty_quarters_path or refugee_status)",
+        excerpt=excerpt,
+    )
+
+    clauses, ambiguous = completeness_module._source_condition_clauses_owned_by_excerpt(
+        excerpt,
+        rule=rule,
+        source_text=source,
+        branches=branches,
+        corpus_citation_path="us/regulation/7/273/4",
+    )
+
+    assert not ambiguous
+    assert [clause.branch_path for clause in clauses] == [("a", "6", "ii")]
+    assert clauses[0].text.rstrip().endswith("criterion:")
+    assert "forty qualifying quarters" not in clauses[0].text
+    assert not completeness_module._source_conjunctive_fact_gates(clauses[0].text)
+
+
+def test_parenthetical_condition_does_not_absorb_later_conjunctions():
+    text = (
+        "The monthly income of the sponsor and sponsor's spouse (if he or she has "
+        "executed USCIS Form I-864 or I-864A) deemed as that of the eligible "
+        "sponsored alien must be the total monthly earned and unearned income, "
+        "with the exclusions of the sponsor and sponsor's spouse at the time the "
+        "household applies or is recertified for participation, reduced by:"
+    )
+
+    assert not completeness_module._source_conjunctive_fact_gates(text)
+
+
+def test_parenthetical_conjunctive_condition_retains_its_own_gates():
+    text = (
+        "The credit applies (if the spouse is eligible and the spouse has filed "
+        "the required form) and is included in the final calculation."
+    )
+
+    assert len(completeness_module._source_conjunctive_fact_gates(text)) == 2
+
+
 def test_flattened_inline_dotted_items_keep_wrong_leaf_gate_fail_closed():
     payload = _ky_spouse_credit_payload(decomposed=True)
     age_rule = next(
@@ -32755,6 +32828,104 @@ rules:
     )
 
     assert not result.issues
+
+
+ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "source_completeness"
+    / "estg_66_rounding_input_stage"
+)
+
+
+def test_estg_66_rounding_input_stage_specimen_bytes_are_pinned():
+    rejected = ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / "rejected"
+    minimally_fixed = ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / "minimally_fixed"
+    rejected_rules = (rejected / "66.yaml").read_bytes()
+    rejected_tests = (rejected / "66.test.yaml").read_bytes()
+    fixed_rules = (minimally_fixed / "66.yaml").read_bytes()
+    fixed_tests = (minimally_fixed / "66.test.yaml").read_bytes()
+    recorded_issue = yaml.safe_load((rejected / "issues.json").read_text())
+
+    assert hashlib.sha256(rejected_rules).hexdigest() == (
+        "7c1545d20f21bcdaba0abd7b8af324b3747148f84d7593e4f358ec726a57396b"
+    )
+    assert hashlib.sha256(rejected_tests).hexdigest() == (
+        "4198cb7116c0c34717354a29a30da6884cb5e31964911af3a9a68815d003a31b"
+    )
+    assert (
+        recorded_issue["rulespec_sha256"] == hashlib.sha256(rejected_rules).hexdigest()
+    )
+    assert recorded_issue["tests_sha256"] == hashlib.sha256(rejected_tests).hexdigest()
+    assert hashlib.sha256(fixed_rules).hexdigest() == (
+        "6787c5c50520320292b1438ef9d45cf349d4ecbbf981b1c908a11f9278350d5e"
+    )
+    assert hashlib.sha256(fixed_tests).hexdigest() == (
+        "0603e164a4f6eb2c96d57fc78964e98e5e0ff9099289cc5795dafa73bb8b834d"
+    )
+
+    old_name = b"kindergeld_after_child_allowance_increase"
+    new_name = b"kindergeld_after_whole_euro_rounding"
+    assert fixed_rules == rejected_rules.replace(old_name, new_name)
+    assert fixed_tests == rejected_tests.replace(old_name, new_name)
+
+    source = (ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / "source.txt").read_bytes()
+    assert hashlib.sha256(source.removesuffix(b"\n")).hexdigest() == (
+        "2ac3c9ff2d11aa23e6850d0a8e81abd612034582a571c036627c8b689293871e"
+    )
+
+
+@pytest.mark.parametrize("variant", ["rejected", "minimally_fixed"])
+def test_estg_66_accepts_asserted_input_fed_rounding_stage(variant: str):
+    fixture = ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / variant
+    source = (
+        (ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / "source.txt")
+        .read_text()
+        .removesuffix("\n")
+    )
+
+    result = _analyze(
+        (fixture / "66.yaml").read_text(),
+        source,
+        corpus_citation_path="de/statute/estg/66",
+        test_cases=yaml.safe_load((fixture / "66.test.yaml").read_text()),
+    )
+
+    assert not result.issues
+
+
+def test_estg_66_input_fed_rounding_stage_must_be_asserted():
+    fixture = ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / "rejected"
+    test_cases = yaml.safe_load((fixture / "66.test.yaml").read_text())
+    intermediate = "de:statutes/estg/66#kindergeld_before_whole_euro_rounding"
+    for case in test_cases:
+        case["output"].pop(intermediate, None)
+    source = (
+        (ESTG_66_ROUNDING_INPUT_STAGE_FIXTURE / "source.txt")
+        .read_text()
+        .removesuffix("\n")
+    )
+
+    result = _analyze(
+        (fixture / "66.yaml").read_text(),
+        source,
+        corpus_citation_path="de/statute/estg/66",
+        test_cases=test_cases,
+    )
+
+    assert _has_issue(result, "rounding", "fractional")
+
+
+@pytest.mark.parametrize(
+    "directive",
+    [
+        "Das Kindergeld ist dabei auf volle Euro kaufmännisch zu runden.",
+        "Der Betrag ist dabei auf volle Euro abzurunden.",
+        "Die Beträge sind dabei auf volle Euro aufzurunden.",
+    ],
+)
+def test_german_dabei_rounding_refers_to_preceding_result(directive: str):
+    assert completeness_module._rounding_text_refers_to_result(directive)
 
 
 def test_estg_66_rounding_retry_shows_and_accepts_paired_half_boundary_shape():

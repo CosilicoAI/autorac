@@ -13,6 +13,17 @@ import tarfile
 from pathlib import Path, PurePosixPath
 
 SCHEMA = "axiom-encode/failed-reencode-diagnostics/v1"
+FAILED_CANDIDATE_SCHEMA = "axiom-encode/failed-encode-candidate/v1"
+FAILED_CANDIDATE_KEYS = {
+    "attempt_count",
+    "citation",
+    "encoder_version",
+    "issues",
+    "path",
+    "rulespec_sha256",
+    "schema",
+    "tests_sha256",
+}
 ATOMIC_ROOTS = frozenset(
     {"guidance", "manuals", "policies", "programs", "regulations", "statutes"}
 )
@@ -22,6 +33,8 @@ SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 RUNNER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 JURISDICTION_PATTERN = re.compile(r"[a-z]{2,3}(?:-[a-z0-9]+)*")
+VERSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}")
+MAX_RETAINED_ISSUES = 4096
 CONTRACT = runpy.run_path(
     Path(__file__).parents[1] / "src/axiom_encode/repair_candidate_contract.py"
 )
@@ -143,6 +156,73 @@ def _verified_generated_file(
     ):
         raise ValueError(f"repair candidate digest mismatch: {relative_path}")
     return data
+
+
+def _retained_candidate(
+    bundle: tarfile.TarFile,
+    members: dict[str, tarfile.TarInfo],
+    files: dict[str, dict[str, object]],
+    *,
+    repair_lane: str,
+    expected_module: str,
+    citation: str,
+) -> tuple[bytes, bytes] | None:
+    root = f"{repair_lane}/final-rejected-candidate"
+    issues_path = f"{root}/issues.json"
+    candidate_path = f"{root}/{expected_module}"
+    tests_path = f"{root}/{expected_module.removesuffix('.yaml')}.test.yaml"
+    retained_paths = {path for path in files if path.startswith(f"{root}/")}
+    expected_paths = {issues_path, candidate_path, tests_path}
+    if retained_paths and retained_paths != expected_paths:
+        raise ValueError(
+            "retained repair candidate must bind exactly three files"
+        )
+    if issues_path not in files:
+        return None
+    try:
+        metadata = json.loads(
+            _verified_generated_file(bundle, members, files, issues_path).decode(
+                "utf-8", errors="strict"
+            )
+        )
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError("retained repair candidate metadata is invalid") from exc
+    if (
+        not isinstance(metadata, dict)
+        or set(metadata) != FAILED_CANDIDATE_KEYS
+        or metadata.get("schema") != FAILED_CANDIDATE_SCHEMA
+        or metadata.get("citation") != citation
+        or metadata.get("path") != expected_module
+        or not isinstance(metadata.get("encoder_version"), str)
+        or VERSION_PATTERN.fullmatch(metadata["encoder_version"]) is None
+        or not isinstance(metadata.get("attempt_count"), int)
+        or isinstance(metadata["attempt_count"], bool)
+        or metadata["attempt_count"] < 1
+        or not isinstance(metadata.get("issues"), list)
+        or not metadata["issues"]
+        or len(metadata["issues"]) > MAX_RETAINED_ISSUES
+        or any(not isinstance(issue, str) or not issue for issue in metadata["issues"])
+        or not isinstance(metadata.get("rulespec_sha256"), str)
+        or SHA256_PATTERN.fullmatch(metadata["rulespec_sha256"]) is None
+        or not isinstance(metadata.get("tests_sha256"), str)
+        or SHA256_PATTERN.fullmatch(metadata["tests_sha256"]) is None
+    ):
+        raise ValueError("retained repair candidate metadata is invalid")
+    candidate = _verified_generated_file(
+        bundle, members, files, candidate_path
+    )
+    tests = _verified_generated_file(
+        bundle,
+        members,
+        files,
+        tests_path,
+    )
+    if (
+        hashlib.sha256(candidate).hexdigest() != metadata["rulespec_sha256"]
+        or hashlib.sha256(tests).hexdigest() != metadata["tests_sha256"]
+    ):
+        raise ValueError("retained repair candidate digest mismatch")
+    return candidate, tests
 
 
 def _expected_module_path(country: str, replace_rulespec_path: str) -> str:
@@ -304,10 +384,24 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
         ):
             raise ValueError("final repair manifest identity is invalid")
 
-        candidate_path = f"{repair_lane}/{runner}/{expected_module}"
-        test_path = candidate_path.removesuffix(".yaml") + ".test.yaml"
-        candidate = _verified_generated_file(bundle, members, files, candidate_path)
-        tests = _verified_generated_file(bundle, members, files, test_path)
+        retained = _retained_candidate(
+            bundle,
+            members,
+            files,
+            repair_lane=repair_lane,
+            expected_module=expected_module,
+            citation=args.citation,
+        )
+        if retained is None:
+            candidate_path = f"{repair_lane}/{runner}/{expected_module}"
+            test_path = candidate_path.removesuffix(".yaml") + ".test.yaml"
+            candidate = _verified_generated_file(
+                bundle, members, files, candidate_path
+            )
+            tests = _verified_generated_file(bundle, members, files, test_path)
+        else:
+            candidate, tests = retained
+            runner = "retained-best"
 
     root = destination / runner
     output = root / expected_module

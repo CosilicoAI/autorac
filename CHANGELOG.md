@@ -2,6 +2,27 @@
 
 All notable changes to Axiom Encode will be documented here.
 
+- Create each targeted output lane before validating its durable rejected-
+  candidate destination, so signed re-encodes reach generation while retaining
+  the destination's fresh-directory safety contract.
+
+- Export the strongest validator-rejected candidate from targeted signed
+  re-encodes and prefer its integrity-bound three-file artifact during repair
+  replay, while retaining compatibility with older failure artifacts.
+
+- Retain the validator-rejected RuleSpec candidate with the fewest full
+  validation findings across model retries, keep its bounded feedback attached
+  to that exact candidate, and emit the same best candidate for cross-run
+  repair instead of allowing a later regression to overwrite stronger work.
+
+- Keep parenthetical source conditions bounded to their closing parenthesis so
+  later descriptive conjunctions cannot be misclassified as additional legal
+  eligibility gates.
+
+- Bound proof-owned parent chapeaux at their first structural child so a colon-
+  terminated eligibility list does not make every alternative satisfy the
+  first child branch's factual gates.
+
 - Carry bounded, source-specific review findings through each canonical-refresh
   lane and bind their exact content in signed context evidence. Louisiana
   external-dependency validation now recognizes narrowly scoped executable

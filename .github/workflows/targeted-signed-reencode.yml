@@ -742,14 +742,12 @@ jobs:
       - name: Fetch pinned signed corpus release object
         shell: bash
         env:
-          SUPABASE_URL: https://swocpijqqahhuwtuahwc.supabase.co
-          SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          RELEASE_BASE_URL: https://pub-a8952f8657fc49fda358146ac001366c.r2.dev
           RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
           QUEUE_ID: ${{ inputs.queue_id }}
           QUEUE_MANIFEST_SHA256: ${{ inputs.queue_manifest_sha256 }}
         run: |
           set -euo pipefail
-          test -n "$SUPABASE_ANON_KEY"
           materializer=axiom-encode/scripts/materialize_corpus_release.py
           toolchain="$RULESPEC_CHECKOUT/.axiom/toolchain.toml"
           mapfile -t release_pin < <(
@@ -770,19 +768,18 @@ jobs:
               --manifest-sha256 "$QUEUE_MANIFEST_SHA256"
           fi
           response="$(mktemp "$RUNNER_TEMP/corpus-release-response.XXXXXX")"
-          trap 'rm -f "$response"' EXIT
-          url="${SUPABASE_URL%/}/rest/v1/release_objects?select=release_object&release_name=eq.${release_name}&content_sha256=eq.${release_sha}&limit=2"
+          public_object="$(mktemp "$RUNNER_TEMP/corpus-release-object.XXXXXX")"
+          trap 'rm -f "$response" "$public_object"' EXIT
+          url="${RELEASE_BASE_URL%/}/releases/${release_name}/${release_sha}.json"
           curl --fail --silent --show-error --location \
             --proto '=https' --proto-redir '=https' --tlsv1.2 \
             --max-filesize 16777216 \
-            --header "apikey: $SUPABASE_ANON_KEY" \
-            --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
-            --header "Accept-Profile: corpus" \
-            --output "$response" "$url"
+            --output "$public_object" "$url"
+          jq -ce '[{"release_object": .}]' "$public_object" > "$response"
           release_commit="$(axiom-encode/.venv/bin/python "$materializer" \
             materialize --toolchain "$toolchain" --response "$response" \
             --corpus-root axiom-corpus)"
-          rm -f "$response"
+          rm -f "$response" "$public_object"
           trap - EXIT
           if [[ ! "$release_commit" =~ ^[0-9a-f]{40}$ ]]; then
             echo "Signed release provenance is not a full lowercase commit SHA" >&2
@@ -1145,6 +1142,7 @@ jobs:
             local required_test_cases_json="${9:-[]}"
             local review_finding_path=""
             local review_contract_json=""
+            mkdir -p "$RUNNER_TEMP/generated/$output_lane"
             local -a args=(
               /opt/axiom-verification/axiom-encode encode
               --backend openai
@@ -1152,6 +1150,8 @@ jobs:
               --axiom-rules-engine-path "$GITHUB_WORKSPACE/axiom-rules-engine"
               --policy-repo-path "$RULESPEC_CHECKOUT"
               --output "$RUNNER_TEMP/generated/$output_lane"
+              --emit-final-rejected-candidate \
+                "$RUNNER_TEMP/generated/$output_lane/final-rejected-candidate"
               --mode repo-augmented
               --require-complete-source-unit
               --db "$RUNNER_TEMP/encodings.db"

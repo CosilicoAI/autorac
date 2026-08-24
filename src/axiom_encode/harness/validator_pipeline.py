@@ -75,6 +75,13 @@ from axiom_encode.corpus_resolver import (
     require_canonical_corpus_citation_path,
     resolve_local_corpus_source,
 )
+from axiom_encode.engine_binding import (
+    ENGINE_PIN_FIELD,
+    EnginePin,
+    load_declared_engine_pin,
+    require_engine_ref_sha,
+    resolve_pinned_engine_binary,
+)
 from axiom_encode.repo_routing import (
     _path_identity_fingerprint,
     _path_mutation_stamp,
@@ -26639,9 +26646,25 @@ class ValidatorPipeline:
         rulespec_dependency_roots: Iterable[Path] = (),
         validation_staging_root: Path | None = None,
         existing_target_oracle_contract: ExistingTargetOracleContract | None = None,
+        axiom_rules_engine_ref: str | None = None,
     ):
         self.policy_repo_path = Path(policy_repo_path)
         self.axiom_rules_path = Path(axiom_rules_path)
+        self._axiom_rules_engine_pin_override = (
+            EnginePin(
+                sha=require_engine_ref_sha(
+                    axiom_rules_engine_ref,
+                    description="axiom_rules_engine_ref",
+                ),
+                source=Path("<constructor>"),
+            )
+            if axiom_rules_engine_ref is not None
+            else None
+        )
+        self._axiom_rules_engine_pin_loaded = False
+        self._axiom_rules_engine_pin: EnginePin | None = None
+        self._axiom_rules_binary_path: Path | None = None
+        self._axiom_rules_binary_stat: tuple[int, int, int, int] | None = None
         self.validation_staging_root = (
             Path(validation_staging_root).resolve()
             if validation_staging_root is not None
@@ -27320,20 +27343,89 @@ class ValidatorPipeline:
         """Return the companion RuleSpec test file path."""
         return rules_file.with_name(f"{rules_file.stem}.test.yaml")
 
+    def _declared_engine_pin(self) -> EnginePin | None:
+        """Load the declared engine pin once per pipeline instance."""
+        if not self._axiom_rules_engine_pin_loaded:
+            if self._axiom_rules_engine_pin_override is not None:
+                pin = self._axiom_rules_engine_pin_override
+            else:
+                pin = load_declared_engine_pin(self.policy_repo_path)
+            self._axiom_rules_engine_pin = pin
+            self._axiom_rules_engine_pin_loaded = True
+        return self._axiom_rules_engine_pin
+
     def _axiom_rules_binary(self) -> Path:
-        """Resolve the local Axiom rules engine CLI binary."""
+        """Resolve the local Axiom rules engine CLI binary.
+
+        A declared axiom_rules_engine_ref pin binds deterministically (receipt
+        or clean pinned checkout plus build-on-demand); unpinned checkouts fall
+        back to a release-first candidate scan with an unverified-binding event.
+        The memoized binding holds only while the binary's bytes are unchanged
+        on disk (stat identity); a swapped or rebuilt binary re-resolves.
+        """
+        if self._axiom_rules_binary_path is not None:
+            if self._axiom_rules_binary_stat is not None and (
+                self._binary_stat_signature(self._axiom_rules_binary_path)
+                == self._axiom_rules_binary_stat
+            ):
+                return self._axiom_rules_binary_path
+            self._axiom_rules_binary_path = None
+            self._axiom_rules_binary_stat = None
+        pin = self._declared_engine_pin()
+        if pin is not None:
+            binary = resolve_pinned_engine_binary(self.axiom_rules_path, pin)
+        else:
+            binary = self._unverified_axiom_rules_binary()
+        self._axiom_rules_binary_path = binary
+        self._axiom_rules_binary_stat = self._binary_stat_signature(binary)
+        return binary
+
+    @staticmethod
+    def _binary_stat_signature(binary: Path) -> tuple[int, int, int, int] | None:
+        """Return a cheap on-disk identity for the bound engine binary."""
+        try:
+            stat = os.stat(binary)
+        except OSError:
+            return None
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+    def _unverified_axiom_rules_binary(self) -> Path:
+        """Resolve without a declared pin: prefer release, then debug, then bare."""
         candidates = [
-            self.axiom_rules_path / "target" / "debug" / "axiom-rules-engine",
             self.axiom_rules_path / "target" / "release" / "axiom-rules-engine",
+            self.axiom_rules_path / "target" / "debug" / "axiom-rules-engine",
             self.axiom_rules_path / "axiom-rules-engine",
         ]
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-        raise FileNotFoundError(
-            "axiom-rules-engine binary not found in the explicitly declared "
-            f"checkout: {self.axiom_rules_path}"
+        existing = [candidate for candidate in candidates if candidate.exists()]
+        if not existing:
+            raise FileNotFoundError(
+                "axiom-rules-engine binary not found in the explicitly declared "
+                f"checkout: {self.axiom_rules_path}"
+            )
+        binary = existing[0]
+        # _log_event is a no-op without an encoding_db session, so also warn
+        # through the module logger for plain CLI invocations.
+        logger.warning(
+            "Bound %s without a declared %s engine pin; binary provenance is "
+            "unverified (other existing candidates: %s)",
+            binary,
+            ENGINE_PIN_FIELD,
+            ", ".join(str(candidate) for candidate in existing[1:]) or "none",
         )
+        self._log_event(
+            "engine_binding_unverified",
+            f"Bound {binary} without a declared {ENGINE_PIN_FIELD} engine pin; "
+            "binary provenance is unverified",
+            {
+                "binary": str(binary),
+                "other_existing_candidates": [
+                    str(candidate) for candidate in existing[1:]
+                ],
+                "engine_checkout": str(self.axiom_rules_path),
+                "declared_engine_pin": None,
+            },
+        )
+        return binary
 
     def _compile_rulespec_to_artifact(
         self,

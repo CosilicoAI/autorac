@@ -2291,8 +2291,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         if step.get("name") == "Fetch pinned signed corpus release object"
     )
     assert release_step["env"] == {
-        "SUPABASE_URL": "https://swocpijqqahhuwtuahwc.supabase.co",
-        "SUPABASE_ANON_KEY": "${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}",
+        "RELEASE_BASE_URL": ("https://pub-a8952f8657fc49fda358146ac001366c.r2.dev"),
         "RULESPEC_CHECKOUT": "rulespec-${{ inputs.country }}",
         "QUEUE_ID": "${{ inputs.queue_id }}",
         "QUEUE_MANIFEST_SHA256": "${{ inputs.queue_manifest_sha256 }}",
@@ -2304,11 +2303,13 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "validate-release-pin" in release_command
     assert '--manifest-sha256 "$QUEUE_MANIFEST_SHA256"' in release_command
     assert 'mktemp "$RUNNER_TEMP/' in release_command
-    assert "/rest/v1/release_objects?select=release_object" in release_command
-    assert "content_sha256=eq.${release_sha}&limit=2" in release_command
+    assert "/releases/${release_name}/${release_sha}.json" in release_command
     assert "--proto '=https' --proto-redir '=https' --tlsv1.2" in release_command
     assert "--max-filesize 16777216" in release_command
-    assert "Accept-Profile: corpus" in release_command
+    assert "NEXT_PUBLIC_SUPABASE_ANON_KEY" not in release_command
+    assert "SUPABASE" not in release_command
+    assert "jq -ce" in release_command
+    assert "release_object" in release_command
     assert (
         'materialize --toolchain "$toolchain" --response "$response"' in release_command
     )
@@ -2459,6 +2460,12 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "--allowed-event-name workflow_dispatch" in command
     assert "--apply" in command
     assert "--require-complete-source-unit" in command
+    assert "--emit-final-rejected-candidate" in command
+    assert '"$RUNNER_TEMP/generated/$output_lane/final-rejected-candidate"' in command
+    assert 'mkdir -p "$RUNNER_TEMP/generated/$output_lane"' in command
+    assert command.index(
+        'mkdir -p "$RUNNER_TEMP/generated/$output_lane"'
+    ) < command.index("local -a args=(")
     assert "--skip-reviewers" not in command
     assert 'mktemp -d "$RUNNER_TEMP/axiom-targeted-review-finding.XXXXXX"' in command
     assert 'review_finding_path="$review_finding_dir/review-finding.txt"' in command

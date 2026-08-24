@@ -8816,6 +8816,29 @@ def _run_single_eval(
             required_test_case_contracts=required_test_case_contracts,
         )
     )
+    if (
+        wrote_artifact
+        and validation_retry_candidate is not None
+        and not repair_candidate_tests_only
+    ):
+        overlay_repairs = _overlay_validation_retry_candidate(
+            output_file,
+            artifact_root=artifact_root,
+            candidate=validation_retry_candidate,
+        )
+        if overlay_repairs:
+            print("  repair_candidate_overlay:" + ",".join(overlay_repairs))
+        materialized_paths = frozenset(
+            set(materialized_paths)
+            | {
+                output_file,
+                *(
+                    {_rulespec_test_path(output_file)}
+                    if validation_retry_candidate.tests is not None
+                    else set()
+                ),
+            }
+        )
     wrote_artifact = wrote_artifact and output_file in materialized_paths
     if wrote_artifact:
         eval_root = Path(output_root) / runner.name
@@ -9826,9 +9849,11 @@ companion test file required by the task and deterministic validation.
         "and add the exact required witnesses.\n"
         if tests_only
         else (
-            "- Return complete replacement RuleSpec and companion test files, "
-            "including all preserved historical and current cases, not a patch "
-            "or partial fragment.\n"
+            "- Return syntactically complete RuleSpec and companion test YAML, but "
+            "you may omit unchanged named rules, imports, deferred outputs, and "
+            "named companion cases. The encoder overlays those omitted items from "
+            "the hash-bound candidate before validation. Re-emit the complete item "
+            "only when changing or replacing it; never emit prose or patch syntax.\n"
         )
     )
     return f"""
@@ -16751,6 +16776,168 @@ def _materialize_eval_artifact(
     if materialized_paths is not None:
         materialized_paths.add(expected_path)
     return True
+
+
+def _merge_named_yaml_items(
+    generated: object,
+    preserved: object,
+    *,
+    label: str,
+) -> tuple[list[object], list[str]]:
+    """Restore omitted hash-bound items while allowing explicit replacements."""
+
+    generated_items = list(generated) if isinstance(generated, list) else []
+    preserved_items = list(preserved) if isinstance(preserved, list) else []
+    generated_names: set[str] = set()
+    for item in generated_items:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+            raise ValueError(f"generated {label} items must have string names")
+        name = item["name"]
+        if name in generated_names:
+            raise ValueError(f"generated {label} contains duplicate name `{name}`")
+        generated_names.add(name)
+    preserved_names: set[str] = set()
+    restored: list[str] = []
+    for item in preserved_items:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+            raise ValueError(f"preserved {label} items must have string names")
+        name = item["name"]
+        if name in preserved_names:
+            raise ValueError(f"preserved {label} contains duplicate name `{name}`")
+        preserved_names.add(name)
+        if name not in generated_names:
+            generated_items.append(item)
+            generated_names.add(name)
+            restored.append(name)
+    return generated_items, restored
+
+
+def _overlay_validation_retry_candidate(
+    rulespec_file: Path,
+    *,
+    artifact_root: Path,
+    candidate: ValidationRetryCandidate,
+) -> tuple[str, ...]:
+    """Overlay partial repair output onto its integrity-bound prior candidate."""
+
+    try:
+        generated = yaml.safe_load(rulespec_file.read_text(encoding="utf-8"))
+        preserved = yaml.safe_load(candidate.rulespec)
+    except (OSError, UnicodeError, yaml.YAMLError, RecursionError) as exc:
+        raise ValueError("repair overlay RuleSpec must be valid UTF-8 YAML") from exc
+    if not isinstance(generated, dict) or not isinstance(preserved, dict):
+        raise ValueError("repair overlay RuleSpec must be a YAML mapping")
+
+    repairs: list[str] = []
+    generated_imports = generated.get("imports", [])
+    preserved_imports = preserved.get("imports", [])
+    if not isinstance(generated_imports, list) or not isinstance(
+        preserved_imports, list
+    ):
+        raise ValueError("repair overlay imports must be lists")
+    imports = list(generated_imports)
+    for import_target in preserved_imports:
+        if not isinstance(import_target, str):
+            raise ValueError("preserved repair imports must be strings")
+        if import_target not in imports:
+            imports.append(import_target)
+            repairs.append(f"import:{import_target}")
+    if imports:
+        generated["imports"] = imports
+
+    generated_rules = generated.get("rules")
+    generated_rule_names = (
+        {item.get("name") for item in generated_rules if isinstance(item, dict)}
+        if isinstance(generated_rules, list)
+        else set()
+    )
+    rules, restored_rules = _merge_named_yaml_items(
+        generated_rules, preserved.get("rules"), label="rules"
+    )
+    generated["rules"] = rules
+    repairs.extend(f"rule:{name}" for name in restored_rules)
+
+    generated_module = generated.get("module")
+    preserved_module = preserved.get("module")
+    if isinstance(generated_module, dict) and isinstance(preserved_module, dict):
+        generated_deferred = generated_module.get("deferred_outputs", [])
+        preserved_deferred = preserved_module.get("deferred_outputs", [])
+        if not isinstance(generated_deferred, list) or not isinstance(
+            preserved_deferred, list
+        ):
+            raise ValueError("repair overlay deferred outputs must be lists")
+        generated_outputs: set[str] = set()
+        for item in generated_deferred:
+            if not isinstance(item, dict) or not isinstance(item.get("output"), str):
+                raise ValueError("generated deferred outputs must name an output")
+            output = item["output"]
+            if output in generated_outputs:
+                raise ValueError(
+                    f"generated deferred outputs contains duplicate output `{output}`"
+                )
+            generated_outputs.add(output)
+        deferred = list(generated_deferred)
+        for item in preserved_deferred:
+            if not isinstance(item, dict) or not isinstance(item.get("output"), str):
+                raise ValueError("preserved deferred outputs must name an output")
+            output = item["output"]
+            output_name = output.rsplit("#", 1)[-1]
+            if output_name in generated_rule_names:
+                repairs.append(f"resolved_deferred_output:{output}")
+                continue
+            if output not in generated_outputs:
+                deferred.append(item)
+                generated_outputs.add(output)
+                repairs.append(f"deferred_output:{output}")
+        if deferred:
+            generated_module["deferred_outputs"] = deferred
+
+    test_file = _rulespec_test_path(rulespec_file)
+    if candidate.tests is not None:
+        try:
+            generated_tests = (
+                yaml.safe_load(test_file.read_text(encoding="utf-8"))
+                if test_file.exists()
+                else []
+            )
+            preserved_tests = yaml.safe_load(candidate.tests)
+        except (OSError, UnicodeError, yaml.YAMLError, RecursionError) as exc:
+            raise ValueError("repair overlay tests must be valid UTF-8 YAML") from exc
+        generated_wrapper = isinstance(generated_tests, dict)
+        preserved_wrapper = isinstance(preserved_tests, dict)
+        if generated_wrapper:
+            if set(generated_tests) != {"cases"}:
+                raise ValueError("generated companion test mapping must contain cases")
+            generated_cases = generated_tests["cases"]
+        else:
+            generated_cases = generated_tests
+        if preserved_wrapper:
+            if set(preserved_tests) != {"cases"}:
+                raise ValueError("preserved companion test mapping must contain cases")
+            preserved_cases = preserved_tests["cases"]
+        else:
+            preserved_cases = preserved_tests
+        if generated_wrapper != preserved_wrapper and test_file.exists():
+            raise ValueError("repair overlay cannot change companion test container")
+        merged_tests, restored_tests = _merge_named_yaml_items(
+            generated_cases, preserved_cases, label="companion tests"
+        )
+        merged_test_payload: object = (
+            {"cases": merged_tests} if preserved_wrapper else merged_tests
+        )
+        _write_eval_artifact_text(
+            test_file,
+            yaml.safe_dump(merged_test_payload, sort_keys=False, allow_unicode=True),
+            artifact_root,
+        )
+        repairs.extend(f"test:{name}" for name in restored_tests)
+
+    _write_eval_artifact_text(
+        rulespec_file,
+        yaml.safe_dump(generated, sort_keys=False, allow_unicode=True),
+        artifact_root,
+    )
+    return tuple(repairs)
 
 
 def _preserves_companion_test_cases(

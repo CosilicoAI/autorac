@@ -139,6 +139,15 @@ from .corpus_resolver import (
     split_proof_evidence_text,
     validate_corpus_release_name,
 )
+from .engine_binding import (
+    ENGINE_PIN_FIELD,
+    EngineBindingError,
+    EnginePin,
+    engine_binding_receipt_path,
+    load_declared_engine_pin,
+    require_engine_ref_sha,
+    resolve_pinned_engine_binary,
+)
 from .harness.dependency_stubs import (
     UnsafeRulespecContextPath,
     validate_rulespec_context_file,
@@ -1600,6 +1609,15 @@ def main():
         help="Exact axiom-rules-engine checkout (no workspace discovery)",
     )
     validate_parser.add_argument(
+        "--axiom-rules-engine-ref",
+        dest="axiom_rules_engine_ref",
+        default=None,
+        help=(
+            "Full 40-hex axiom-rules-engine commit that overrides the "
+            "toolchain-declared engine pin"
+        ),
+    )
+    validate_parser.add_argument(
         "--oracle",
         choices=["policyengine"],
         help="Run external validation against oracles",
@@ -2624,7 +2642,53 @@ def main():
         required=True,
         help="Exact axiom-rules-engine checkout (no sibling discovery)",
     )
+    compile_parser.add_argument(
+        "--axiom-rules-engine-ref",
+        dest="axiom_rules_engine_ref",
+        default=None,
+        help=(
+            "Full 40-hex axiom-rules-engine commit that overrides the "
+            "toolchain-declared engine pin"
+        ),
+    )
     _add_rulespec_dependency_root_argument(compile_parser)
+
+    # engine-bind command
+    engine_bind_parser = subparsers.add_parser(
+        "engine-bind",
+        help=(
+            "Verify (and build on demand) an axiom-rules-engine binary "
+            "against a declared engine pin, writing a binding receipt"
+        ),
+    )
+    engine_bind_parser.add_argument(
+        "--axiom-rules-engine-path",
+        dest="axiom_rules_path",
+        metavar="AXIOM_RULES_ENGINE_PATH",
+        type=Path,
+        required=True,
+        help="Exact axiom-rules-engine checkout (no sibling discovery)",
+    )
+    engine_bind_pin_source = engine_bind_parser.add_mutually_exclusive_group(
+        required=True
+    )
+    engine_bind_pin_source.add_argument(
+        "--policy-repo",
+        type=Path,
+        help=(
+            "Policy repo whose .axiom/toolchain.toml declares the "
+            f"{ENGINE_PIN_FIELD} engine pin"
+        ),
+    )
+    engine_bind_pin_source.add_argument(
+        "--pin",
+        help="Full 40-hex axiom-rules-engine commit SHA to bind against",
+    )
+    engine_bind_parser.add_argument(
+        "--no-build",
+        action="store_true",
+        help="Fail instead of building when no receipted binary matches the pin",
+    )
 
     # encode command - run the current RuleSpec generation path
     encode_parser = subparsers.add_parser(
@@ -3422,6 +3486,8 @@ def main():
         cmd_proof_validate(args)
     elif args.command == "compile":
         cmd_compile(args)
+    elif args.command == "engine-bind":
+        cmd_engine_bind(args)
     elif args.command == "test":
         cmd_test(args)
     elif args.command == "log":
@@ -3592,6 +3658,7 @@ def _cmd_validate_with_resolution_cache(args):
                 require_complete_source_unit=(
                     getattr(args, "require_complete_source_unit", False) is True
                 ),
+                axiom_rules_engine_ref=getattr(args, "axiom_rules_engine_ref", None),
             )
             pipelines[roots] = pipeline
             policyengine_runtimes[roots] = policyengine_runtime
@@ -5766,6 +5833,7 @@ def cmd_compile(args):
             local_corpus_release=None,
             enable_oracles=False,
             rulespec_dependency_roots=_rulespec_dependency_roots_from_args(args),
+            axiom_rules_engine_ref=getattr(args, "axiom_rules_engine_ref", None),
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -5820,6 +5888,50 @@ def cmd_compile(args):
             print(f"Compilation failed: {e}")
 
         sys.exit(1)
+
+
+def cmd_engine_bind(args):
+    """Bind an engine binary to a declared pin and write its binding receipt."""
+    try:
+        engine_root = _resolve_explicit_existing_directory(
+            args.axiom_rules_path,
+            label="Axiom rules engine",
+        )
+        if args.pin is not None:
+            pin = EnginePin(
+                sha=require_engine_ref_sha(args.pin, description="--pin"),
+                source=Path("<cli>"),
+            )
+        else:
+            policy_repo = _resolve_explicit_existing_directory(
+                args.policy_repo,
+                label="RuleSpec checkout",
+            )
+            pin = load_declared_engine_pin(policy_repo)
+            if pin is None:
+                raise EngineBindingError(
+                    f"No [toolchain].{ENGINE_PIN_FIELD} engine pin is declared "
+                    f"at or above: {policy_repo}"
+                )
+        binary = resolve_pinned_engine_binary(
+            engine_root,
+            pin,
+            allow_build=not args.no_build,
+        )
+    except (ValueError, OSError) as e:
+        print(f"Engine binding failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(
+        json.dumps(
+            {
+                "binary": str(binary),
+                "engine_commit": pin.sha,
+                "receipt": str(engine_binding_receipt_path(binary)),
+            },
+            indent=2,
+        )
+    )
+    sys.exit(0)
 
 
 def cmd_log(args):
@@ -26128,6 +26240,8 @@ class _FailedEncodeAttempt(NamedTuple):
     error: str
     candidate: ValidationRetryCandidate | None = None
     validation_issues: Sequence[str] = ()
+    validation_issue_count: int | None = None
+    full_validation_issues: Sequence[str] = ()
 
 
 _FAILED_ENCODE_CANDIDATE_SCHEMA = "axiom-encode/failed-encode-candidate/v1"
@@ -26268,14 +26382,19 @@ def _emit_final_rejected_candidate(
     citation: str,
     validation_issues: Sequence[str],
     attempt_count: int,
+    candidate_override: ValidationRetryCandidate | None = None,
 ) -> Path:
-    """Materialize exactly one final rejected pair and its bounded issue metadata."""
+    """Materialize exactly one selected rejected pair and its issue metadata."""
 
     resolved_destination = _resolve_final_rejected_candidate_destination(destination)
     _generated_root, _output_file, relative_output = (
         _validation_retry_candidate_location(result, output_root=output_root)
     )
-    candidate = _capture_validation_retry_candidate(result, output_root=output_root)
+    candidate = (
+        candidate_override
+        if candidate_override is not None
+        else _capture_validation_retry_candidate(result, output_root=output_root)
+    )
     if (
         not isinstance(attempt_count, int)
         or isinstance(attempt_count, bool)
@@ -26552,12 +26671,34 @@ def _validate_tests_only_repair_contract(
         raise ValueError("tests-only repair replacement path mismatch")
 
 
-def _latest_validation_retry_candidate(
+def _best_validation_retry_attempt(
     prior_attempts: Sequence[_FailedEncodeAttempt],
-) -> ValidationRetryCandidate | None:
-    """Return only the immediately preceding candidate, when safely captured."""
+) -> _FailedEncodeAttempt | None:
+    """Return the least-regressed candidate with its matching feedback."""
 
-    return prior_attempts[-1].candidate if prior_attempts else None
+    if not prior_attempts:
+        return None
+    if any(attempt.validation_issue_count is None for attempt in prior_attempts):
+        # Historical and unit-test callers without comparable full counts retain
+        # the original immediately-preceding-candidate behavior.
+        return prior_attempts[-1]
+
+    def score(indexed: tuple[int, _FailedEncodeAttempt]) -> tuple[int, int, int]:
+        index, attempt = indexed
+        unsafe_candidate = (
+            any(
+                "[generated-yaml:" in issue or "compile validation" in issue.casefold()
+                for issue in attempt.validation_issues
+                if isinstance(issue, str)
+            )
+            or "compile validation" in attempt.error.casefold()
+        )
+        assert attempt.validation_issue_count is not None
+        # Parser/compile failures cannot outrank a source-complete candidate.
+        # On an exact deterministic tie, keep forward progress by using newer.
+        return (int(unsafe_candidate), attempt.validation_issue_count, -index)
+
+    return min(enumerate(prior_attempts), key=score)[1]
 
 
 def _full_validation_issue_list(*issue_groups: object) -> tuple[str, ...]:
@@ -26753,7 +26894,8 @@ def _encode_validation_retry_feedback(
         feedback.append(item)
         feedback_chars += len(item)
 
-    failed_attempt = prior_attempts[-1]
+    failed_attempt = _best_validation_retry_attempt(prior_attempts)
+    assert failed_attempt is not None
     add(failed_attempt.error)
     issues = failed_attempt.validation_issues
     if isinstance(issues, Sequence) and not isinstance(issues, (str, bytes)):
@@ -26786,7 +26928,8 @@ def _encode_validation_retry_context(
         return _encode_validation_retry_feedback(
             prior_attempts
         ), initial_retry_candidate
-    candidate = _latest_validation_retry_candidate(prior_attempts)
+    selected_attempt = _best_validation_retry_attempt(prior_attempts)
+    candidate = selected_attempt.candidate if selected_attempt is not None else None
     if candidate is None:
         raise RuntimeError(
             "Immediately preceding validator-rejected candidate is unavailable"
@@ -29173,6 +29316,8 @@ def _run_encode_attempts_with_retries(
                     error=retry_error,
                     candidate=candidate,
                     validation_issues=execution.validation_retry_issues,
+                    validation_issue_count=len(execution.validation_issues),
+                    full_validation_issues=execution.validation_issues,
                 )
         if next_model is not None:
             action = "retrying" if next_model == current_model else "escalating"
@@ -29208,13 +29353,35 @@ def _run_encode_attempts_with_retries(
             final_issues = execution.validation_issues or (
                 _encode_outcome_issue(execution.result, outcome),
             )
+            terminal_candidate = _capture_validation_retry_candidate(
+                execution.result,
+                output_root=args.output,
+            )
+            terminal_failure = _FailedEncodeAttempt(
+                result=execution.result,
+                error=_encode_outcome_issue(execution.result, outcome),
+                candidate=terminal_candidate,
+                validation_issues=execution.validation_retry_issues,
+                validation_issue_count=len(final_issues),
+                full_validation_issues=final_issues,
+            )
+            selected_failure = _best_validation_retry_attempt(
+                (*failed_attempts, terminal_failure)
+            )
+            assert selected_failure is not None
+            selected_issues = (
+                selected_failure.full_validation_issues
+                or selected_failure.validation_issues
+                or (selected_failure.error,)
+            )
             emitted_candidate = _emit_final_rejected_candidate(
                 execution.result,
                 output_root=args.output,
                 destination=emit_destination,
                 citation=str(args.citation),
-                validation_issues=final_issues,
+                validation_issues=selected_issues,
                 attempt_count=len(failed_attempts) + 1,
+                candidate_override=selected_failure.candidate,
             )
             print(f"  final_rejected_candidate={emitted_candidate}")
         escalated = (
@@ -45884,6 +46051,13 @@ def _append_generated_judgment_positive_tests_in_overlay(
         overlay_rules_file.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(rules_file, overlay_rules_file)
         overlay_test_file = _rulespec_test_path(overlay_rules_file)
+        shutil.copy2(test_file, overlay_test_file)
+        baseline_failures = _rulespec_companion_test_failures(
+            overlay_test_file,
+            root=overlay_content_root,
+            axiom_rules_path=axiom_rules_path,
+            rulespec_dependency_roots=staged_dependency_roots,
+        )
 
         def check_generated_test(
             generated_test_file: Path,
@@ -45896,11 +46070,14 @@ def _append_generated_judgment_positive_tests_in_overlay(
                     "Judgment test repair checker received an unexpected policy root"
                 )
             shutil.copy2(generated_test_file, overlay_test_file)
-            return _rulespec_companion_test_failures(
-                overlay_test_file,
-                root=overlay_content_root,
-                axiom_rules_path=axiom_rules_path,
-                rulespec_dependency_roots=staged_dependency_roots,
+            return _companion_test_failures_new_since_baseline(
+                baseline_failures=baseline_failures,
+                candidate_failures=_rulespec_companion_test_failures(
+                    overlay_test_file,
+                    root=overlay_content_root,
+                    axiom_rules_path=axiom_rules_path,
+                    rulespec_dependency_roots=staged_dependency_roots,
+                ),
             )
 
         return _append_generated_judgment_positive_tests_if_missing(
@@ -45912,6 +46089,25 @@ def _append_generated_judgment_positive_tests_in_overlay(
             issues=issues,
             test_failure_checker=check_generated_test,
         )
+
+
+def _companion_test_failures_new_since_baseline(
+    *,
+    baseline_failures: list[dict[str, str | None]],
+    candidate_failures: list[dict[str, str | None]],
+) -> list[dict[str, str | None]]:
+    """Return failures introduced by an appended companion test candidate."""
+    remaining_baseline = Counter(
+        json.dumps(failure, sort_keys=True) for failure in baseline_failures
+    )
+    introduced: list[dict[str, str | None]] = []
+    for failure in candidate_failures:
+        identity = json.dumps(failure, sort_keys=True)
+        if remaining_baseline[identity]:
+            remaining_baseline[identity] -= 1
+            continue
+        introduced.append(failure)
+    return introduced
 
 
 def _try_repair_generated_import_output_inputs_for_apply(
@@ -48225,7 +48421,10 @@ def _try_repair_generated_test_input_assignments_for_apply(
             case_names=set(_indexed_parameter_key_zero_issue_cases(issues)),
         )
 
-    if not _only_pending_test_input_assignment_issues(issues):
+    missing_input_issues = [
+        issue for issue in issues if "Test input assignment missing:" in issue
+    ]
+    if not missing_input_issues:
         return []
 
     try:
@@ -48242,7 +48441,7 @@ def _try_repair_generated_test_input_assignments_for_apply(
         test_file=test_file,
         policy_repo_path=policy_repo_path,
         relative_output=relative_output,
-        issues=issues,
+        issues=missing_input_issues,
     )
 
 
@@ -54928,6 +55127,25 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                 None,
             )
             target_test_path = _rulespec_test_path(overlay_target)
+            if target_validation is not None and _complete_missing_local_test_inputs(
+                rules_file=overlay_target,
+                test_file=target_test_path,
+                repo_path=overlay_content_root,
+                relative_output=relative_output,
+                validation=target_validation,
+            ):
+                supplemental_files[
+                    _relative_to_rulespec_apply_content_root(
+                        target_test_path, overlay_content_root
+                    )
+                ] = target_test_path.read_text()
+                validations = _validate_overlay_files(
+                    pipeline,
+                    dependent_pipeline=dependent_pipeline,
+                    overlay_target=overlay_target,
+                    dependents=dependents,
+                )
+                continue
             if (
                 target_validation is not None
                 and _repair_generated_unused_imports_for_apply(
@@ -57777,6 +57995,51 @@ def _complete_missing_imported_test_inputs(
         return False
     test_file.write_text(updated)
     return True
+
+
+def _complete_missing_local_test_inputs(
+    *,
+    rules_file: Path,
+    test_file: Path,
+    repo_path: Path,
+    relative_output: Path,
+    validation: object,
+) -> bool:
+    """Fill target-local inputs reported by the proof-required test validator."""
+    if not test_file.exists():
+        return False
+    issues: list[str] = []
+    results = getattr(validation, "results", {})
+    if not isinstance(results, dict):
+        return False
+    for validator_result in results.values():
+        raw_issues = getattr(validator_result, "issues", ())
+        finite_issues = (
+            [str(issue) for issue in raw_issues if isinstance(issue, str) and issue]
+            if isinstance(raw_issues, Sequence)
+            and not isinstance(raw_issues, (str, bytes))
+            else []
+        )
+        if finite_issues:
+            issues.extend(finite_issues)
+            continue
+        error = getattr(validator_result, "error", None)
+        if isinstance(error, str) and error:
+            issues.append(error)
+    missing_input_issues = [
+        issue for issue in issues if "Test input assignment missing:" in issue
+    ]
+    if not missing_input_issues:
+        return False
+    return bool(
+        _fill_missing_test_input_assignments(
+            rules_file=rules_file,
+            test_file=test_file,
+            policy_repo_path=repo_path,
+            relative_output=relative_output,
+            issues=missing_input_issues,
+        )
+    )
 
 
 def _missing_input_names_from_validation(validation: object) -> set[str]:

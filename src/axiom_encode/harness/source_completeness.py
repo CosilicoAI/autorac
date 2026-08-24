@@ -12762,6 +12762,27 @@ def _source_conjunctive_fact_gates(
     if conditional is None:
         return ()
     body = conditional.group("body")
+    # A parenthetical condition modifies only the text inside its parentheses.
+    # Do not let later sentence-level conjunctions (for example "earned and
+    # unearned income") masquerade as additional factual gates.
+    open_parentheses: list[int] = []
+    for index, character in enumerate(text[: conditional.start()]):
+        if character == "(":
+            open_parentheses.append(index)
+        elif character == ")" and open_parentheses:
+            open_parentheses.pop()
+    if open_parentheses:
+        depth = 1
+        body_start = conditional.start("body")
+        for index in range(body_start, len(text)):
+            character = text[index]
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0:
+                    body = text[body_start:index]
+                    break
     segments = _source_gate_split_conjunctive_conditions(body)
     if len(segments) < 2:
         return ()
@@ -13124,7 +13145,24 @@ def _source_condition_clauses_owned_by_excerpt(
     for match, branch in selected:
         branch_path = branch.path if branch is not None else ()
         container_start = branch.start if branch is not None else 0
-        container_text = branch.text if branch is not None else source_text
+        container_end = branch.end if branch is not None else len(source_text)
+        if branch is not None:
+            # A parent chapeau commonly ends with a colon rather than sentence
+            # punctuation.  Keep its proposition local to the parent instead
+            # of absorbing the first structural child into the same condition.
+            # A proof excerpt located inside a child already resolves to that
+            # more-specific branch above, so this only bounds true chapeaux.
+            container_end = min(
+                (
+                    candidate.start
+                    for candidate in ownership_branches
+                    if len(candidate.path) == len(branch.path) + 1
+                    and candidate.path[: len(branch.path)] == branch.path
+                    and match.end() <= candidate.start < branch.end
+                ),
+                default=container_end,
+            )
+        container_text = source_text[container_start:container_end]
         local_start = match.start() - container_start
         local_end = match.end() - container_start
         proposition_start, proposition_end = _source_proposition_bounds(
@@ -15369,7 +15407,10 @@ def _rounding_text_refers_to_result(text: str) -> bool:
             r"\s*(?:"
             r"das\s+ergebnis|"
             r"the\s+result|"
-            r"der\s+sich\s+ergebende\s+steuerbetrag"
+            r"der\s+sich\s+ergebende\s+steuerbetrag|"
+            # German statutes also repeat the affected noun and use
+            # "dabei" to attach it to the immediately preceding computation.
+            r"d(?:as|er|ie)\s+[\wÄÖÜäöüß-]+\s+(?:ist|sind)\s+dabei"
             r")\b",
             unmarked,
             flags=re.IGNORECASE,

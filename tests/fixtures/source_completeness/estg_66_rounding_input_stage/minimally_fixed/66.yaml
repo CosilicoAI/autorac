@@ -1,0 +1,148 @@
+format: rulespec/v1
+module:
+  proof_validation:
+    required: true
+  source_verification:
+    corpus_citation_path: de/statute/estg/66
+    source_sha256: 2ac3c9ff2d11aa23e6850d0a8e81abd612034582a571c036627c8b689293871e
+  summary: '§ 66 Abs. 1: „Das Kindergeld beträgt monatlich für jedes Kind 259 Euro.“
+
+    Abs. 2 umfasst den Monat, in dem die Anspruchsvoraussetzungen erfüllt sind, bis
+    einschließlich des Monats ihres Wegfalls.
+
+    Abs. 3 erhöht das Kindergeld bei Anhebung der Kinderfreibeträge entsprechend und
+    verlangt kaufmännische Rundung auf volle Euro.'
+rules:
+- name: monthly_kindergeld_per_child
+  kind: parameter
+  dtype: Money
+  period: Month
+  unit: EUR
+  source: § 66 Abs. 1 EStG
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: amount
+        source:
+          corpus_citation_path: de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1
+          excerpt: In § 66 Absatz 1 wird die Angabe „250 Euro“ durch die Angabe „255
+            Euro“ ersetzt.
+      - path: versions[0].formula
+        kind: effective_period
+        source:
+          corpus_citation_path: de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1
+          excerpt: Dieses Gesetz tritt vorbehaltlich des Absatzes 2 am 1. Januar 2025
+            in Kraft.
+      - path: versions[1].formula
+        kind: amount
+        source:
+          corpus_citation_path: de/statute/estg/66
+          excerpt: Das Kindergeld beträgt monatlich für jedes Kind 259 Euro.
+      - path: versions[1].formula
+        kind: effective_period
+        source:
+          corpus_citation_path: de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1
+          excerpt: Die Artikel 2, 4 und 6 treten am 1. Januar 2026 in Kraft.
+  versions:
+  - effective_from: '2025-01-01'
+    formula: '255'
+  - effective_from: '2026-01-01'
+    formula: '259'
+- name: whole_euro_rounding_multiple
+  kind: parameter
+  dtype: Money
+  unit: EUR
+  source: § 66 Abs. 3 Satz 2 EStG
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: unit
+        source:
+          corpus_citation_path: de/statute/estg/66
+          excerpt: Das Kindergeld ist dabei auf volle Euro kaufmännisch zu runden.
+      - path: versions[0].formula
+        kind: effective_period
+        source:
+          corpus_citation_path: de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1
+          excerpt: Die Artikel 2, 4 und 6 treten am 1. Januar 2026 in Kraft.
+  versions:
+  - effective_from: '2026-01-01'
+    formula: '1'
+- name: kindergeld_payable_for_month
+  kind: derived
+  entity: Person
+  dtype: Judgment
+  period: Month
+  source: § 66 Abs. 2 EStG
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: condition
+        source:
+          corpus_citation_path: de/statute/estg/66
+          excerpt: vom Beginn des Monats an gezahlt, in dem die Anspruchsvoraussetzungen
+            erfüllt sind, bis zum Ende des Monats, in dem die Anspruchsvoraussetzungen
+            wegfallen
+  versions:
+  - effective_from: '2025-01-01'
+    formula: 'month_is_on_or_after_first_qualifying_month
+
+      and month_is_on_or_before_last_qualifying_month'
+- name: kindergeld_before_whole_euro_rounding
+  kind: derived
+  entity: Person
+  dtype: Money
+  period: Month
+  unit: EUR
+  source: § 66 Abs. 3 Satz 1 EStG
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: formula
+        source:
+          corpus_citation_path: de/statute/estg/66
+          excerpt: Werden die Freibeträge für Kinder nach § 31 Satz 1 in Verbindung
+            mit § 32 Absatz 6 Satz 1 angehoben, wird das Kindergeld entsprechend erhöht.
+      - path: versions[0].formula
+        kind: effective_period
+        source:
+          corpus_citation_path: de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1
+          excerpt: Die Artikel 2, 4 und 6 treten am 1. Januar 2026 in Kraft.
+  versions:
+  - effective_from: '2026-01-01'
+    formula: 'if child_allowances_under_sections_31_and_32_6_1_are_increased: correspondingly_increased_kindergeld_amount
+      else: monthly_kindergeld_per_child'
+- name: kindergeld_after_whole_euro_rounding
+  kind: derived
+  entity: Person
+  dtype: Money
+  period: Month
+  unit: EUR
+  source: § 66 Abs. 3 Sätze 1 und 2 EStG
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: formula
+        source:
+          corpus_citation_path: de/statute/estg/66
+          excerpt: Werden die Freibeträge für Kinder nach § 31 Satz 1 in Verbindung
+            mit § 32 Absatz 6 Satz 1 angehoben, wird das Kindergeld entsprechend erhöht.
+      - path: versions[0].formula
+        kind: formula
+        source:
+          corpus_citation_path: de/statute/estg/66
+          excerpt: Das Kindergeld ist dabei auf volle Euro kaufmännisch zu runden.
+      - path: versions[0].formula
+        kind: effective_period
+        source:
+          corpus_citation_path: de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1
+          excerpt: Die Artikel 2, 4 und 6 treten am 1. Januar 2026 in Kraft.
+  versions:
+  - effective_from: '2026-01-01'
+    formula: floor((kindergeld_before_whole_euro_rounding / whole_euro_rounding_multiple)
+      + 0.5) * whole_euro_rounding_multiple

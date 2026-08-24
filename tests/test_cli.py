@@ -65,8 +65,10 @@ from axiom_encode.cli import (
     _changed_manifest_group_files,
     _closest_exact_source_excerpt,
     _collapse_additive_versioned_derived_formulas,
+    _companion_test_failures_new_since_baseline,
     _complete_missing_dependent_test_inputs,
     _complete_missing_imported_test_inputs,
+    _complete_missing_local_test_inputs,
     _convert_indexed_parameter_values_to_derived_formulas,
     _convert_versioned_boolean_parameters_to_indicators,
     _current_guard_encoder_execution_identity,
@@ -6813,6 +6815,7 @@ rules:
         args.json = json_output
         args.as_of = None
         args.axiom_rules_path = self._require_axiom_rules_path()
+        args.axiom_rules_engine_ref = None
         args.rulespec_dependency_root = []
         return args
 
@@ -13854,6 +13857,74 @@ class TestCmdEncode:
             "escalation_model": DEFAULT_OPENAI_ESCALATION_MODEL,
         }
 
+    def test_encode_retries_from_best_candidate_when_later_attempt_regresses(
+        self, tmp_path
+    ):
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+        )
+
+        _exit_code, _generated, _validated, mock_run, _validate, _apply = (
+            self._run_validator_escalation_case(
+                args,
+                [
+                    (False, ["best issue 1", "best issue 2"]),
+                    (False, [f"regression issue {index}" for index in range(9)]),
+                    (False, [f"later issue {index}" for index in range(6)]),
+                    (True, []),
+                ],
+            )
+        )
+
+        retry_candidates = [
+            call.kwargs["validation_retry_candidate"]
+            for call in mock_run.call_args_list
+        ]
+        assert retry_candidates[0] is None
+        for candidate in retry_candidates[1:]:
+            assert "rejected-attempt-1" in candidate.rulespec
+        assert mock_run.call_args_list[2].kwargs["validation_retry_feedback"] == (
+            "best issue 1",
+            "best issue 2",
+        )
+
+    def test_best_retry_candidate_penalizes_generated_yaml_failure(self):
+        import axiom_encode.cli as cli_module
+
+        source_candidate = cli_module._FailedEncodeAttempt(
+            result=SimpleNamespace(),
+            error="Generated RuleSpec failed CI validation",
+            candidate=cli_module.ValidationRetryCandidate(
+                rulespec="format: rulespec/v1\n# source-candidate\nrules: []\n",
+                tests="[]\n",
+            ),
+            validation_issues=tuple(f"source issue {index}" for index in range(8)),
+            validation_issue_count=8,
+        )
+        malformed_candidate = cli_module._FailedEncodeAttempt(
+            result=SimpleNamespace(),
+            error="Generated RuleSpec failed compile validation",
+            candidate=cli_module.ValidationRetryCandidate(
+                rulespec="malformed: [\n",
+                tests="[]\n",
+            ),
+            validation_issues=("[generated-yaml:parser] invalid YAML",),
+            validation_issue_count=1,
+        )
+
+        feedback, candidate = cli_module._encode_validation_retry_context(
+            [source_candidate, malformed_candidate],
+            initial_retry_candidate=None,
+        )
+
+        assert candidate is source_candidate.candidate
+        assert feedback[0] == source_candidate.error
+        assert "source issue 0" in feedback
+
     def test_encode_retry_scans_full_overlay_issue_list_for_actionable_feedback(
         self, tmp_path
     ):
@@ -14683,7 +14754,7 @@ rules:
         assert len(feedback) == 12
         assert all(issue in feedback for issue in actionable_seeded_issues)
 
-    def test_encode_emits_only_final_validator_rejected_candidate(self, tmp_path):
+    def test_encode_emits_best_validator_rejected_candidate(self, tmp_path):
         failed_candidate_root = tmp_path / "failed-encode"
         args = self._make_args(
             tmp_path,
@@ -14702,9 +14773,9 @@ rules:
             self._run_validator_escalation_case(
                 args,
                 [
-                    (False, ["terra attempt one"]),
-                    (False, ["terra attempt two"]),
-                    (False, ["sol attempt one"]),
+                    (False, ["best issue one", "best issue two"]),
+                    (False, [f"terra regression {index}" for index in range(9)]),
+                    (False, [f"sol regression {index}" for index in range(6)]),
                     (False, final_issues),
                 ],
             )
@@ -14725,19 +14796,19 @@ rules:
             relative_tests.as_posix(),
         }
         assert (
-            "rejected-attempt-4"
+            "rejected-attempt-1"
             in (failed_candidate_root / relative_rulespec).read_text()
         )
         assert (
-            "deterministic-post-repair-4"
+            "deterministic-post-repair-1"
             in (failed_candidate_root / relative_rulespec).read_text()
         )
         assert (
-            "historical-and-current-cases-4"
+            "historical-and-current-cases-1"
             in (failed_candidate_root / relative_tests).read_text()
         )
         assert (
-            "deterministic-post-repair-tests-4"
+            "deterministic-post-repair-tests-1"
             in (failed_candidate_root / relative_tests).read_text()
         )
         issues = json.loads((failed_candidate_root / "issues.json").read_text())
@@ -14745,7 +14816,7 @@ rules:
             "schema": "axiom-encode/failed-encode-candidate/v1",
             "citation": "26 USC 1(j)(2)",
             "path": relative_rulespec.as_posix(),
-            "issues": final_issues,
+            "issues": ["best issue one", "best issue two"],
             "rulespec_sha256": hashlib.sha256(
                 (failed_candidate_root / relative_rulespec).read_bytes()
             ).hexdigest(),
@@ -29339,7 +29410,7 @@ rules:
         assert run.outcome["overlay_validation_success"] is True
         assert run.outcome["status"] == "apply_applied"
 
-    def test_encode_apply_auto_repairs_missing_test_input_assignments(
+    def test_encode_apply_auto_repairs_missing_inputs_among_mixed_issues(
         self, capsys, tmp_path
     ):
         args = self._make_args(tmp_path, backend="codex", sync=False)
@@ -29402,7 +29473,9 @@ rules:
                             "#input.tin_included_on_return. Every test for a "
                             "proof-required RuleSpec module must set all local "
                             "factual inputs, including false facts, so tests "
-                            "cannot pass through implicit defaults."
+                            "cannot pass through implicit defaults.",
+                            "statutes/26/151.yaml: ci: A distinct source "
+                            "condition is not encoded.",
                         ],
                         {},
                     ),
@@ -30628,8 +30701,10 @@ rules:
             )
             checked["test"] = staged_test_file.resolve()
             checked["root"] = root.resolve()
-            [case] = yaml.safe_load(staged_test_file.read_text())
-            assert case["output"] == {target: "holds"}
+            cases = yaml.safe_load(staged_test_file.read_text())
+            if cases:
+                [case] = cases
+                assert case["output"] == {target: "holds"}
             return []
 
         with patch(
@@ -30741,6 +30816,30 @@ rules:
 
         assert repaired == []
         stage.assert_not_called()
+
+    def test_judgment_positive_overlay_ignores_preexisting_companion_failures(self):
+        preexisting = {
+            "file": "/overlay/example.test.yaml",
+            "case": "preexisting_case",
+            "message": "missing input `existing_gate`",
+        }
+        introduced = {
+            "file": "/overlay/example.test.yaml",
+            "case": "auto_positive_target",
+            "message": "expected holds, got not_holds",
+        }
+
+        assert (
+            _companion_test_failures_new_since_baseline(
+                baseline_failures=[preexisting],
+                candidate_failures=[preexisting],
+            )
+            == []
+        )
+        assert _companion_test_failures_new_since_baseline(
+            baseline_failures=[preexisting],
+            candidate_failures=[preexisting, introduced],
+        ) == [introduced]
 
     def test_imported_output_repair_satisfies_positive_judgment_composition(
         self, tmp_path
@@ -43501,6 +43600,106 @@ rules:
             "us:statutes/26/24/d#input.earned_income_before_section_112_election: 0"
             in target_test.read_text()
         )
+
+    def test_complete_missing_local_test_inputs_uses_finite_ci_issues(self, tmp_path):
+        policy_repo = tmp_path / "rulespec-us" / "us"
+        target = policy_repo / "regulations/7-cfr/273/4.yaml"
+        target_test = target.with_name("4.test.yaml")
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            """format: rulespec/v1
+rules:
+  - name: hmong_or_highland_laotian_status_eligible
+    kind: derived
+    dtype: Judgment
+    period: Month
+    versions:
+      - effective_from: '2025-10-01'
+        formula: |-
+          member_is_hmong_or_highland_laotian_qualifying_person
+          or member_is_qualifying_hmong_or_highland_laotian_child
+"""
+        )
+        target_test.write_text(
+            """- name: auto_positive_hmong_or_highland_laotian_status_eligible
+  period: 2025-10
+  input:
+    us:regulations/7-cfr/273/4#input.member_is_hmong_or_highland_laotian_qualifying_person: true
+  output:
+    us:regulations/7-cfr/273/4#hmong_or_highland_laotian_status_eligible: holds
+"""
+        )
+        validation = SimpleNamespace(
+            results={
+                "ci": SimpleNamespace(
+                    error="Generated RuleSpec failed CI validation",
+                    issues=[
+                        "Test input assignment missing: "
+                        "`auto_positive_hmong_or_highland_laotian_status_eligible` "
+                        "does not assign "
+                        "#input.member_is_qualifying_hmong_or_highland_laotian_child. "
+                        "Every test for a proof-required RuleSpec module must set "
+                        "all local factual inputs, including false facts, so tests "
+                        "cannot pass through implicit defaults."
+                    ],
+                )
+            }
+        )
+
+        changed = _complete_missing_local_test_inputs(
+            rules_file=target,
+            test_file=target_test,
+            repo_path=policy_repo,
+            relative_output=Path("regulations/7-cfr/273/4.yaml"),
+            validation=validation,
+        )
+
+        assert changed is True
+        [test_case] = yaml.safe_load(target_test.read_text())
+        assert (
+            test_case["input"][
+                "us:regulations/7-cfr/273/4#input.member_is_qualifying_hmong_or_highland_laotian_child"
+            ]
+            is False
+        )
+
+    def test_complete_missing_local_test_inputs_repairs_assignment_among_mixed_issues(
+        self, tmp_path
+    ):
+        policy_repo = tmp_path / "rulespec-us" / "us"
+        target = policy_repo / "regulations/7-cfr/273/4.yaml"
+        target_test = target.with_name("4.test.yaml")
+        target.parent.mkdir(parents=True)
+        target.write_text("format: rulespec/v1\nrules: []\n")
+        target_test.write_text("- name: case_one\n  input: {}\n  output: {}\n")
+        validation = SimpleNamespace(
+            results={
+                "ci": SimpleNamespace(
+                    error=None,
+                    issues=[
+                        "Test input assignment missing: `case_one` does not assign "
+                        "#input.member_is_refugee. Every test for a proof-required "
+                        "RuleSpec module must set all local factual inputs, including "
+                        "false facts, so tests cannot pass through implicit defaults.",
+                        "A distinct source condition is not encoded.",
+                    ],
+                )
+            }
+        )
+
+        changed = _complete_missing_local_test_inputs(
+            rules_file=target,
+            test_file=target_test,
+            repo_path=policy_repo,
+            relative_output=Path("regulations/7-cfr/273/4.yaml"),
+            validation=validation,
+        )
+
+        assert changed is True
+        [test_case] = yaml.safe_load(target_test.read_text())
+        assert test_case["input"] == {
+            "us:regulations/7-cfr/273/4#input.member_is_refugee": False
+        }
 
     def test_rulespec_base_for_file_uses_country_content_root(self, tmp_path):
         policy_repo = _canonical_rulespec_content_root(tmp_path)
