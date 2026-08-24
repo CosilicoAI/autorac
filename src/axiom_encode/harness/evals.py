@@ -16827,7 +16827,9 @@ def _normalize_repair_deferred_source_roots(
     try:
         relative_target = rulespec_file.relative_to(artifact_root).with_suffix("")
     except ValueError as exc:
-        raise ValueError("repair overlay RuleSpec must be inside artifact root") from exc
+        raise ValueError(
+            "repair overlay RuleSpec must be inside artifact root"
+        ) from exc
     source_root = _rulespec_target_base(corpus_citation_path)
     jurisdiction = source_root.partition(":")[0]
     destination_root = f"{jurisdiction}:{relative_target.as_posix()}"
