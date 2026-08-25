@@ -21182,16 +21182,14 @@ def _formula_node_boundary_value(
             if (
                 candidate_names
                 and candidate_names.issubset(boundary_names)
+                and isinstance(base, ast.Name)
                 and not base_names.intersection(boundary_names)
                 and boundary.has_rate_context
                 and source_text is not None
-                and any(
-                    _source_percentage_base_matches(
-                        source_text,
-                        boundary=boundary,
-                        base_name=base_name,
-                    )
-                    for base_name in base_names
+                and _source_percentage_base_matches(
+                    source_text,
+                    boundary=boundary,
+                    base_name=base.id,
                 )
             ):
                 boundary_factor = candidate
@@ -23698,6 +23696,51 @@ def _source_negative_output_predicate_matches(
     )
 
 
+def _described_output_clause(text: str) -> str:
+    """Return the main output clause without a subordinate condition."""
+
+    normalized = " ".join(text.split())
+    leading_condition = re.match(
+        r"^(?:if|when|unless|except\s+when)\b[^,;]*[,;]\s*(?P<output>.+)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if leading_condition is not None:
+        return leading_condition.group("output")
+    trailing_condition = re.search(
+        r"\b(?:if|when|unless|except\s+when)\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if trailing_condition is not None:
+        return normalized[: trailing_condition.start()].strip()
+    return normalized
+
+
+def _rule_has_negative_output_semantics(
+    rule: Mapping[str, Any] | None,
+    *,
+    fallback_name: str,
+) -> bool:
+    """Infer polarity from the described output, or a predicate-shaped name."""
+
+    description = str(rule.get("description") or "").strip() if rule else ""
+    if description:
+        output_clause = _described_output_clause(description)
+        return bool(_source_negative_output_predicate_matches(output_clause)) and not bool(
+            _source_positive_effect_matches(output_clause)
+        )
+    name = str(rule.get("name") or fallback_name) if rule else fallback_name
+    normalized_name = re.sub(r"[^a-z0-9]+", "_", name.casefold()).strip("_")
+    return bool(
+        re.search(
+            r"(?:^|_)(?:ineligible|excluded|disqualified|unqualified)"
+            r"(?:$|_(?:after|because|due|following|from|pending|until|when)(?:_|$))",
+            normalized_name,
+        )
+    )
+
+
 def _exception_reverses_negative_proposition(text: str) -> bool:
     reversal = re.search(
         r"\b(?:außer|ausser|es\s+sei\s+denn|unless|except)\b",
@@ -24239,14 +24282,9 @@ def _exception_witness_satisfies_requirement(
     *,
     rule: Mapping[str, Any] | None = None,
 ) -> bool:
-    description = str(rule.get("description") or "").strip() if rule else ""
-    semantic_texts = (description,) if description else ()
-    negative_output = any(
-        _source_negative_output_predicate_matches(text)
-        for text in semantic_texts
-        if text
-    ) and not any(
-        _source_positive_effect_matches(text) for text in semantic_texts if text
+    negative_output = _rule_has_negative_output_semantics(
+        rule,
+        fallback_name=witness.rule_name,
     )
     effective_blocks = witness.blocks != negative_output
     if requirement == "zero":

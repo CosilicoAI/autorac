@@ -5866,6 +5866,23 @@ def test_percentage_boundary_comparison_uses_resolved_case_scale():
         extract_numeric_occurrences=extractor,
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= poverty_rate * (poverty_guideline + unrelated_amount)",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=boundary,
+        source_text=source,
+        formula_environment={
+            "assistance": 26_000,
+            "poverty_guideline": 20_000,
+            "poverty_rate": 1.3,
+            "unrelated_amount": 1,
+        },
+        source_interval=interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
 
     multi_amount_source = (
         "The poverty guideline is updated, and assistance does not exceed "
@@ -32720,6 +32737,36 @@ def test_true_ineligibility_output_witnesses_exclusion_effect():
     )
 
 
+def test_undescribed_negative_rule_name_controls_output_polarity():
+    witness = completeness_module._ExceptionWitness(
+        rule_name="alien_status_documentation_ineligible",
+        selector_name="documentation_missing_or_unwilling",
+        active_value=True,
+        blocks=False,
+        boolean_effect=True,
+        zeroes=False,
+        numeric_transition=None,
+        relational_transitions=(),
+        case_pair_identity=(1, 2),
+    )
+
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={"name": "alien_status_documentation_ineligible"},
+    )
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={"name": "alien_status_ineligible_after_consent_failure"},
+    )
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={"name": "entire_household_ineligible_pending_sponsor_verification"},
+    )
+
+
 def test_positive_rule_description_controls_negative_source_excerpt_polarity():
     witness = completeness_module._ExceptionWitness(
         rule_name="person_eligible",
@@ -32816,6 +32863,14 @@ def test_negative_subject_modifier_does_not_invert_positive_output_effect():
         witness,
         "enable",
         rule={"description": "Whether the ineligible person receives a notice."},
+    )
+
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "enable",
+        rule={
+            "description": "Whether a notice is required when the person is ineligible."
+        },
     )
 
 
