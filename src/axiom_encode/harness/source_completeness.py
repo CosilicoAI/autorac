@@ -20544,7 +20544,7 @@ def _branch_boundary_test_witnesses(
                     and _formula_execution_binds_boundary(
                         controller_execution,
                         boundary,
-                        source_text=branch.text,
+                        source_text=authoritative_numeric_recall_text(branch.text),
                         input_names=input_names,
                         formula_environment=(controller_execution.constant_environment),
                         evaluation_environment=execution_environment,
@@ -24240,15 +24240,7 @@ def _exception_witness_satisfies_requirement(
     rule: Mapping[str, Any] | None = None,
 ) -> bool:
     description = str(rule.get("description") or "").strip() if rule else ""
-    semantic_texts = (
-        (description,)
-        if description
-        else (
-            tuple(excerpt for _citation_path, excerpt in _rule_source_excerpts(rule))
-            if rule is not None
-            else ()
-        )
-    )
+    semantic_texts = (description,) if description else ()
     negative_output = any(
         _source_negative_output_predicate_matches(text)
         for text in semantic_texts

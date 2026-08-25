@@ -5951,6 +5951,15 @@ def test_percentage_boundary_comparison_uses_resolved_case_scale():
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
 
+    labeled_source = f"(1) {multi_amount_source}"
+    cleaned_labeled_source = authoritative_numeric_recall_text(labeled_source)
+    labeled_boundary = extractor(cleaned_labeled_source)[0]
+    assert not completeness_module._source_percentage_base_matches(
+        cleaned_labeled_source,
+        boundary=labeled_boundary,
+        base_name="poverty_guideline",
+    )
+
     amount_source = "Assistance does not exceed $100 when income is reported."
     amount_boundary = extractor(amount_source)[0]
     amount_interval = completeness_module._formula_interval_from_text(
@@ -32743,6 +32752,44 @@ def test_positive_rule_description_controls_negative_source_excerpt_polarity():
     assert completeness_module._exception_witness_satisfies_requirement(
         witness,
         "enable",
+        rule=rule,
+    )
+
+
+def test_proof_excerpt_does_not_define_undescribed_rule_output_polarity():
+    witness = completeness_module._ExceptionWitness(
+        rule_name="eligible",
+        selector_name="disqualification_applies",
+        active_value=True,
+        blocks=True,
+        boolean_effect=True,
+        zeroes=False,
+        numeric_transition=None,
+        relational_transitions=(),
+        case_pair_identity=(1, 2),
+    )
+    rule = {
+        "metadata": {
+            "proof": {
+                "atoms": [
+                    {
+                        "path": "versions[0].formula",
+                        "source": {
+                            "corpus_citation_path": CORPUS_CITATION_PATH,
+                            "excerpt": (
+                                "The claimant is not eligible if a "
+                                "disqualification applies."
+                            ),
+                        },
+                    }
+                ]
+            }
+        }
+    }
+
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
         rule=rule,
     )
 
