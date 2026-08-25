@@ -13950,7 +13950,8 @@ def _opaque_same_source_condition_input_issues(
         "version(s) delegate multiple conjunctive factual gates stated in their "
         "exact authoritative source clause to too few terminal local inputs or "
         f"canonical imports: {'; '.join(rendered)}. Encode the source-stated facts "
-        "as distinct local inputs or canonical imports, combine them in a "
+        "as distinct local inputs or canonical imports, declare every local fact "
+        "in the module's top-level `inputs` list, combine them in a "
         "source-proved derived Judgment, and test each gate. Reserve aggregate "
         "boundary statuses for source-atomic or externally determined conditions."
     ]

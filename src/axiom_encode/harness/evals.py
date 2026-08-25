@@ -10935,7 +10935,7 @@ RuleSpec requirements:
   amounts described by that upstream source.
 - If an upstream output is already executable, do not replace it with a local
   placeholder fact or compatibility alias.
-- Do not encode simple unary factual inputs as `kind: data_relation` rules. If a formula needs a local true/false fact, reference a descriptive bare fact name in the formula and put that fact in tests as `{target_ref_prefix + "#input.<fact>" if target_ref_prefix else "<jurisdiction>:<path>#input.<fact>"}`.
+- Do not encode simple unary factual inputs as `kind: data_relation` rules. If a formula needs a local true/false fact, reference a descriptive bare fact name in the formula, declare that fact in the module's top-level `inputs` list with its `entity`, `dtype`, and `period`, and put that fact in tests as `{target_ref_prefix + "#input.<fact>" if target_ref_prefix else "<jurisdiction>:<path>#input.<fact>"}`.
 - Use `kind: data_relation` only for structural runtime predicates with explicit `data_relation.predicate`, `data_relation.arity`, and `data_relation.arguments`.
 - If the requested source text includes a limitation, cap, exception, or
   cross-referenced subparagraph that changes the final exported amount, the
