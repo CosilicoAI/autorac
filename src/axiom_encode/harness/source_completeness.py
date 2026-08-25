@@ -1273,6 +1273,11 @@ _SOURCE_SELECTOR_GENERIC_ENTITY_TOKENS = frozenset(
     {"alien", "applicant", "household", "individual", "member", "person"}
 )
 _SOURCE_GENERIC_NUMERIC_NAME_TOKENS = frozenset({"amount", "value"})
+_SOURCE_ACRONYM_EXPANSIONS = {
+    "fpl": ("federal", "poverty", "level"),
+    "lpr": ("lawful", "permanent", "resident"),
+    "ssn": ("social", "security", "number"),
+}
 _NEGATIVE_NONAPPLICABILITY_LANGUAGE = re.compile(
     r"\b(?:"
     r"(?:shall|does)\s+not\s+apply|"
@@ -21257,15 +21262,24 @@ def _source_percentage_base_matches(
     concept_tokens = tuple(
         token
         for token in _normalized_selector_name(base_name).split("_")
-        if len(token) >= 4
+        if (len(token) >= 4 or token in _SOURCE_ACRONYM_EXPANSIONS)
         and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
         and token not in _SOURCE_SELECTOR_GENERIC_ENTITY_TOKENS
         and token not in _SOURCE_GENERIC_NUMERIC_NAME_TOKENS
     )
     return bool(concept_tokens) and all(
-        re.search(rf"\b{re.escape(token)}\w*", collapsed) is not None
-        for token in concept_tokens
+        _source_concept_token_matches(collapsed, token) for token in concept_tokens
     )
+
+
+def _source_concept_token_matches(text: str, token: str) -> bool:
+    expansion = _SOURCE_ACRONYM_EXPANSIONS.get(token)
+    if expansion is not None:
+        return all(
+            re.search(rf"\b{re.escape(part)}\w*", text) is not None
+            for part in expansion
+        )
+    return re.search(rf"\b{re.escape(token)}\w*", text) is not None
 
 
 def _source_interval_and_polarity_for_boundary(
@@ -23816,14 +23830,13 @@ def _source_selector_distinctive_concept_matches(
     distinctive_tokens = tuple(
         token
         for token in normalized_name.split("_")
-        if len(token) >= 4
+        if (len(token) >= 4 or token in _SOURCE_ACRONYM_EXPANSIONS)
         and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
         and token not in _SOURCE_SELECTOR_GENERIC_ENTITY_TOKENS
     )
     collapsed = _collapse_text(text).lower()
     return bool(distinctive_tokens) and all(
-        re.search(rf"\b{re.escape(token)}\w*", collapsed) is not None
-        for token in distinctive_tokens
+        _source_concept_token_matches(collapsed, token) for token in distinctive_tokens
     )
 
 

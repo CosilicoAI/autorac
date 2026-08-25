@@ -5950,6 +5950,30 @@ def test_percentage_boundary_comparison_uses_resolved_case_scale():
             extract_numeric_occurrences=extractor,
             numeric_value_is_grounded=numeric_value_is_grounded,
         )
+
+    fpl_source = "Assistance does not exceed 130 percent of the federal poverty level."
+    fpl_boundary = extractor(fpl_source)[0]
+    fpl_interval = completeness_module._formula_interval_from_text(
+        fpl_source,
+        extract_numeric_occurrences=extractor,
+    )
+    assert fpl_interval is not None
+    assert completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= fpl * poverty_rate",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=fpl_boundary,
+        source_text=fpl_source,
+        formula_environment={
+            "assistance": 26_000,
+            "fpl": 20_000,
+            "poverty_rate": 1.3,
+        },
+        source_interval=fpl_interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
     assert not completeness_module._formula_text_has_boundary_comparison(
         "assistance <= poverty_guideline * poverty_rate",
         allow_complement_relation=False,
@@ -32753,6 +32777,16 @@ def test_generic_at_least_one_criterion_chapeau_accepts_descendant_selector():
     assert completeness_module._source_exception_selector_is_relevant(
         "At least one of the conditions applies: refugee status.",
         "member_is_refugee",
+    )
+    assert completeness_module._source_exception_selector_is_relevant(
+        source,
+        "member_is_lpr",
+        supporting_texts=("The alien is a lawful permanent resident.",),
+    )
+    assert completeness_module._source_exception_selector_is_relevant(
+        source,
+        "member_has_ssn",
+        supporting_texts=("The member has a Social Security number.",),
     )
 
 
