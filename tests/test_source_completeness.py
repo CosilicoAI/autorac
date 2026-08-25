@@ -5927,6 +5927,54 @@ def test_percentage_boundary_comparison_uses_resolved_case_scale():
             numeric_value_is_grounded=numeric_value_is_grounded,
         )
 
+    symbolic_source = multi_amount_source.replace("130 percent", "130%")
+    symbolic_boundary = extractor(symbolic_source)[0]
+    symbolic_interval = completeness_module._formula_interval_from_text(
+        symbolic_source,
+        extract_numeric_occurrences=extractor,
+    )
+    assert symbolic_interval is not None
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= poverty_guideline * poverty_rate",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=symbolic_boundary,
+        source_text=symbolic_source,
+        formula_environment={
+            "assistance": 26_000,
+            "poverty_guideline": 20_000,
+            "poverty_rate": 1.3,
+        },
+        source_interval=symbolic_interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    amount_source = "Assistance does not exceed $100 when income is reported."
+    amount_boundary = extractor(amount_source)[0]
+    amount_interval = completeness_module._formula_interval_from_text(
+        amount_source,
+        extract_numeric_occurrences=extractor,
+    )
+    assert amount_interval is not None
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= income * assistance_limit",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"assistance_limit"},
+        boundary=amount_boundary,
+        source_text=amount_source,
+        formula_environment={
+            "assistance": 100,
+            "income": 2,
+            "assistance_limit": 100,
+        },
+        source_interval=amount_interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
 
 @pytest.mark.parametrize("floor_expression", ("bracket_floor", "5000"))
 def test_progressive_max_clamp_binds_exact_source_lower_boundary(

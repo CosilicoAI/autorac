@@ -21183,6 +21183,7 @@ def _formula_node_boundary_value(
                 candidate_names
                 and candidate_names.issubset(boundary_names)
                 and not base_names.intersection(boundary_names)
+                and boundary.has_rate_context
                 and source_text is not None
                 and any(
                     _source_percentage_base_matches(
@@ -21245,7 +21246,7 @@ def _source_percentage_base_matches(
 
     trailing_text = source_text[boundary.end :]
     explicit_base = re.match(
-        r"\s+of\b(?P<base>[^.;:]{1,160})",
+        r"\s*%?\s+of\b(?P<base>[^.;:]{1,160})",
         trailing_text,
         flags=re.IGNORECASE,
     )
