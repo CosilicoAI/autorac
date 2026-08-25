@@ -1032,9 +1032,7 @@ def test_repair_tombstone_survives_materialization_before_overlay(tmp_path):
         ({"name": "unknown", "repair_remove": True}, "no preserved item"),
     ],
 )
-def test_repair_candidate_overlay_rejects_invalid_tombstones(
-    tmp_path, marker, match
-):
+def test_repair_candidate_overlay_rejects_invalid_tombstones(tmp_path, marker, match):
     artifact_root = tmp_path / "generated"
     rulespec_file = artifact_root / "section.yaml"
     artifact_root.mkdir()

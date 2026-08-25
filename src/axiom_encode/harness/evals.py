@@ -16804,7 +16804,10 @@ def _merge_named_yaml_items(
             raise ValueError(f"generated {label} contains duplicate name `{name}`")
         generated_names.add(name)
         if "repair_remove" in item:
-            if set(item) != {"name", "repair_remove"} or item["repair_remove"] is not True:
+            if (
+                set(item) != {"name", "repair_remove"}
+                or item["repair_remove"] is not True
+            ):
                 raise ValueError(
                     f"generated {label} removal marker for `{name}` must contain "
                     "only name and repair_remove: true"
