@@ -801,7 +801,8 @@ _NAMING_PROTOCOL = """- Do not create standalone small-number parameters just to
   `member_of_household`. Put arity under `data_relation.arity`.
 - Do not encode simple unary factual inputs as `kind: data_relation` rules. If
   a formula needs a local true/false fact, reference a descriptive bare fact
-  name in the formula and put that fact in tests as
+  name in the formula, declare that fact in the module's top-level `inputs`
+  list with its `entity`, `dtype`, and `period`, and put that fact in tests as
   `<jurisdiction>:<repo-path>#input.<fact>`.
 - If an upstream output is already executable, do not replace it with a local
   placeholder fact or compatibility alias.

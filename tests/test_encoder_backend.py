@@ -123,6 +123,7 @@ def _assert_encoder_prompt_topics(prompt: str) -> None:
         "Never drop the jurisdiction prefix",
         "Importing an adjacent upstream output only as proof",
         "is not an executable dependency",
+        "declare that fact in the module's top-level `inputs`",
         "purpose-limited replacement rate",
         "not as `section_<cited>_*`",
         "predicate for the excepted category",
