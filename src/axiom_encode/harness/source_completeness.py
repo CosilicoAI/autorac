@@ -12871,7 +12871,7 @@ def _source_proposition_bounds(text: str, start: int, end: int) -> tuple[int, in
     boundaries.extend(
         match.end()
         for match in re.finditer(
-            r";|[.!?](?=\s+(?:[A-Z(]|\d+\s*[.)]))",
+            r";|[.!?:](?=\s+(?:[A-Z(]|\d+\s*[.)]|\d+\s+(?:After|For)\b))",
             text,
         )
     )
@@ -17531,7 +17531,7 @@ def _formula_operation_kinds(text: str) -> set[str]:
             r"\b(?:doppelte|zweifache|dreifache|twice)\b)"
         ),
         "divide": (
-            r"(?:/|\bgeteilt\b|\bteilen\b|\bdivided\b|"
+            r"(?:(?<![a-z])/(?![a-z])|\bgeteilt\b|\bteilen\b|\bdivided\b|"
             r"\bhälfte\b|\bhalbier\w*\b|\bhalbierung\b|\bhalf\s+of\b)"
         ),
     }
@@ -20512,6 +20512,13 @@ def _branch_boundary_test_witnesses(
             )
             if execution is None:
                 continue
+            execution_environment = _case_formula_identifier_environment(
+                case,
+                formula_environment=formula_environment or {},
+                dependency_environment=dependency_environment,
+            )
+            if execution_environment is None:
+                continue
             for (
                 controller_rule,
                 controller_execution,
@@ -20535,6 +20542,7 @@ def _branch_boundary_test_witnesses(
                         boundary,
                         input_names=input_names,
                         formula_environment=(controller_execution.constant_environment),
+                        evaluation_environment=execution_environment,
                         source_bound_constant_occurrences=(
                             source_bound_constant_occurrences or {}
                         ),
@@ -20648,6 +20656,7 @@ def _formula_execution_binds_boundary(
     *,
     input_names: set[str],
     formula_environment: dict[str, Any],
+    evaluation_environment: dict[str, Any] | None = None,
     source_bound_constant_occurrences: dict[str, tuple[NumericOccurrenceLike, ...]],
     source_interval: _NumericInterval | None,
     source_boolean_polarity: int,
@@ -20679,6 +20688,8 @@ def _formula_execution_binds_boundary(
             continue
         checks.extend((selector, True) for selector in step.selectors)
     checks.append((execution.leaf, source_boolean_polarity < 0))
+    resolved_environment = dict(formula_environment)
+    resolved_environment.update(evaluation_environment or {})
     return any(
         _formula_text_has_boundary_comparison(
             text,
@@ -20686,7 +20697,7 @@ def _formula_execution_binds_boundary(
             input_names=input_names,
             boundary_names=boundary_names,
             boundary=boundary,
-            formula_environment=formula_environment,
+            formula_environment=resolved_environment,
             source_bound_boundary_names=source_bound_boundary_names,
             source_bound_constant_occurrences=source_bound_constant_occurrences,
             source_interval=source_interval,
@@ -21144,6 +21155,17 @@ def _formula_node_boundary_value(
         value = formula_environment.get(node.id)
         if _rulespec_runtime_decimal(value) is not None:
             return float(value)
+    node_names = {
+        candidate.id for candidate in ast.walk(node) if isinstance(candidate, ast.Name)
+    }
+    if node_names & boundary_names:
+        value = _evaluate_condition_expression(node, formula_environment)
+        numeric_value = _rulespec_runtime_decimal(value)
+        if numeric_value is not None and numeric_value_is_grounded(
+            float(numeric_value),
+            (boundary,),
+        ):
+            return float(numeric_value)
     if (
         isinstance(node, ast.Constant)
         and isinstance(
@@ -23302,10 +23324,6 @@ def _exception_witnesses_for_branch(
     }
     requirement = _source_exception_effect_requirement(branch.text)
     condition_text = _source_exception_condition_text(branch.text)
-    numeric_interval = _formula_interval_from_text(
-        authoritative_numeric_recall_text(branch.text),
-        extract_numeric_occurrences=extract_numeric_occurrences,
-    )
     return {
         witness
         for witness in toggled_exception_selectors
@@ -23318,8 +23336,7 @@ def _exception_witnesses_for_branch(
             )
             if witness.numeric_transition is not None
             else (
-                numeric_interval is None
-                and witness.active_value
+                witness.active_value
                 == _source_exception_selector_active_value(
                     condition_text,
                     witness.selector_name,
@@ -23596,6 +23613,7 @@ def _exception_reverses_negative_proposition(text: str) -> bool:
             r"\bfindet\s+keine\s+anwendung\b|"
             r"\b(?:does|shall)\s+not\s+apply\b|"
             r"\b(?:is|are)\s+not\s+(?:eligible|qualified|entitled)\b|"
+            r"\bno\b[^.;]{0,80}\b(?:is|are)\s+(?:eligible|qualified|entitled)\b|"
             r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\bkein(?:e|en|em|er|es)?\s+(?:anspruch|berechtigung)\b",
             proposition,
@@ -23610,6 +23628,12 @@ def _source_exception_selector_is_relevant(text: str, name: str) -> bool:
 
     normalized_name = _normalized_selector_name(name)
     collapsed = _collapse_text(text).lower()
+    if re.search(
+        r"\b(?:at\s+least\s+one|one\s+or\s+more)\b[^.;]{0,80}"
+        r"\b(?:criteria|conditions|requirements)\b",
+        collapsed,
+    ):
+        return True
     if _source_selector_concept_matches(collapsed, normalized_name):
         return True
     return any(
@@ -24029,7 +24053,8 @@ def _source_selector_concept_polarity(
         after = text[match.end() : min(len(text), match.end() + 48)]
         negative = bool(
             re.fullmatch(
-                r"(?:ineligible|disqualified|unqualified)",
+                r"(?:ineligible|disqualified|unqualified|inability|unable|"
+                r"unwilling|unwillingness)",
                 match.group(0),
                 flags=re.IGNORECASE,
             )
@@ -24078,14 +24103,17 @@ def _exception_witness_satisfies_requirement(
     witness: _ExceptionWitness,
     requirement: str,
 ) -> bool:
+    effective_blocks = witness.blocks != bool(
+        _selector_identifier_negation_count(witness.rule_name) % 2
+    )
     if requirement == "zero":
         return witness.zeroes
     if requirement == "enable":
-        return (witness.boolean_effect and not witness.blocks) or (
+        return (witness.boolean_effect and not effective_blocks) or (
             not witness.boolean_effect
         )
     if requirement == "exclude":
-        return witness.blocks or not witness.boolean_effect
+        return effective_blocks or not witness.boolean_effect
     return True
 
 

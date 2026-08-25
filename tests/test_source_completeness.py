@@ -2273,6 +2273,48 @@ def test_later_independent_condition_in_same_sentence_does_not_contaminate():
     assert not _has_issue(result, "source-explicit-conditions")
 
 
+def test_proposition_bounds_split_bare_footnote_before_following_sentence():
+    source = (
+        "A battered alien is exempt when the agency approves the case. 3 "
+        "After 12 months, deeming stops if a court recognizes the battery and "
+        "the alien lives apart."
+    )
+    excerpt = "the agency approves the case"
+    start = source.index(excerpt)
+    end = start + len(excerpt)
+
+    proposition_start, proposition_end = completeness_module._source_proposition_bounds(
+        source,
+        start,
+        end,
+    )
+
+    assert source[proposition_start:proposition_end] == (
+        "A battered alien is exempt when the agency approves the case."
+    )
+
+
+def test_proposition_bounds_split_chapeau_before_labeled_children():
+    source = (
+        "A qualified alien is immediately eligible if the individual meets one "
+        "criterion: (A) The alien has qualifying quarters. (B) The alien is a refugee."
+    )
+    excerpt = "meets one criterion"
+    start = source.index(excerpt)
+    end = start + len(excerpt)
+
+    proposition_start, proposition_end = completeness_module._source_proposition_bounds(
+        source,
+        start,
+        end,
+    )
+
+    assert source[proposition_start:proposition_end] == (
+        "A qualified alien is immediately eligible if the individual meets one "
+        "criterion:"
+    )
+
+
 def test_elided_subject_later_condition_does_not_contaminate_atomic_proposition():
     source = (
         "A credit applies if certification status holds, and is refundable if "
@@ -5763,6 +5805,36 @@ def test_progressive_min_clamp_binds_matching_subtracted_offset():
         formula_environment={"rate": 0.02, "lower_bound": 100, "ceiling": 500},
         source_interval=interval,
         extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+
+def test_percentage_boundary_comparison_uses_resolved_case_scale():
+    source = "Assistance does not exceed 130 percent of the poverty guideline."
+    extractor = functools.partial(
+        extract_typed_numeric_inventory_occurrences_from_text,
+        profile="legacy",
+    )
+    boundary = extractor(source)[0]
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=extractor,
+    )
+
+    assert interval is not None
+    assert completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= poverty_guideline * poverty_rate",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=boundary,
+        formula_environment={
+            "assistance": 1.3,
+            "poverty_guideline": 1,
+            "poverty_rate": 1.3,
+        },
+        source_interval=interval,
+        extract_numeric_occurrences=extractor,
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
 
@@ -20825,6 +20897,19 @@ def test_en_us_state_code_citations_are_structural_for_numeric_recall():
     assert inventory == []
 
 
+def test_section_symbol_decimal_citation_is_not_numeric_recall():
+    cleaned = authoritative_numeric_recall_text(
+        "Determine remaining household eligibility under § 273.11(c); "
+        "a 500 dollar cap applies."
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        cleaned,
+        profile="legacy",
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [(500.0, "500")]
+
+
 def test_louisiana_revised_statutes_citations_are_structural_for_numeric_recall():
     source = (
         "The amount is determined under R.S. 47:32. Notwithstanding R.S.\n"
@@ -31293,6 +31378,16 @@ def test_ordinary_language_is_not_a_formal_structural_reference(text: str):
     assert not completeness_module._source_has_formal_cross_reference(text)
 
 
+def test_and_or_in_legal_prose_is_not_treated_as_division():
+    source = (
+        "The agency must explain the determination to the alien and/or household "
+        "representative."
+    )
+
+    assert "divide" not in completeness_module._formula_operation_kinds(source)
+    assert "divide" in completeness_module._formula_operation_kinds("income / 2")
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -32355,6 +32450,106 @@ rules:
     result = _analyze(content, source, test_cases=cases)
 
     assert _has_issue(result, "exception", "test") is expected_issue
+
+
+def test_boolean_unless_exception_can_witness_numeric_trigger_clause():
+    source = (
+        "(1) Residency is presumed interrupted if absence is more than 6 months "
+        "unless the resident presents evidence of intent to resume residency."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/1
+rules:
+  - name: absence_month_limit
+    kind: parameter
+    dtype: Count
+    source: us-zz/statute/1(1)
+    versions: [{formula: 6}]
+  - name: residency_interruption_presumed
+    kind: derived
+    dtype: Judgment
+    source: us-zz/statute/1(1)
+    versions:
+      - formula: 'months_absent > absence_month_limit and not evidence_of_intent_to_resume_residency'
+"""
+    cases = [
+        {
+            "name": "presumption applies",
+            "input": {"months_absent": 7, "evidence_of_intent_to_resume_residency": False},
+            "output": {"residency_interruption_presumed": True},
+        },
+        {
+            "name": "resume evidence blocks presumption",
+            "input": {"months_absent": 7, "evidence_of_intent_to_resume_residency": True},
+            "output": {"residency_interruption_presumed": False},
+        },
+    ]
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-zz/statute/1",
+        test_cases=cases,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "exceptions or applicability", "paired")
+
+
+def test_no_person_eligible_unless_status_is_an_enabling_exception():
+    source = "No person is eligible unless that person is a citizen."
+
+    assert completeness_module._source_exception_effect_requirement(source) == "enable"
+
+
+def test_generic_at_least_one_criterion_chapeau_accepts_descendant_selector():
+    source = "The person is eligible if the person meets at least one of the criteria."
+
+    assert completeness_module._source_exception_selector_is_relevant(
+        source,
+        "member_is_refugee",
+    )
+
+
+def test_true_ineligibility_output_witnesses_exclusion_effect():
+    witness = completeness_module._ExceptionWitness(
+        rule_name="person_ineligible_after_consent_failure",
+        selector_name="person_failed_to_provide_consent",
+        active_value=True,
+        blocks=False,
+        boolean_effect=True,
+        zeroes=False,
+        numeric_transition=None,
+        relational_transitions=(),
+        case_pair_identity=(1, 2),
+    )
+
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+    )
+    assert not completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "enable",
+    )
+
+
+def test_inability_or_unwillingness_is_active_missing_documentation_condition():
+    source = (
+        "When a person indicates inability or unwillingness to provide "
+        "documentation of alien status, the person is ineligible."
+    )
+
+    assert completeness_module._source_exception_selector_active_value(
+        source,
+        "alien_status_documentation_missing_or_unwilling",
+    )
 
 
 def test_numeric_input_change_cannot_hide_identical_exception_branches():
