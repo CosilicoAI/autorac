@@ -5974,6 +5974,31 @@ def test_percentage_boundary_comparison_uses_resolved_case_scale():
         extract_numeric_occurrences=extractor,
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
+    unlinked_source = (
+        "The poverty guideline is updated. Assistance does not exceed 130 percent."
+    )
+    unlinked_boundary = extractor(unlinked_source)[0]
+    unlinked_interval = completeness_module._formula_interval_from_text(
+        "Assistance does not exceed 130 percent.",
+        extract_numeric_occurrences=extractor,
+    )
+    assert unlinked_interval is not None
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= poverty_guideline * poverty_rate",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=unlinked_boundary,
+        source_text=unlinked_source,
+        formula_environment={
+            "assistance": 26_000,
+            "poverty_guideline": 20_000,
+            "poverty_rate": 1.3,
+        },
+        source_interval=unlinked_interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
     assert not completeness_module._formula_text_has_boundary_comparison(
         "assistance <= poverty_guideline * poverty_rate",
         allow_complement_relation=False,
@@ -32822,6 +32847,17 @@ def test_true_ineligibility_output_witnesses_exclusion_effect():
         "exclude",
         rule={"description": "The person must be classified as an ineligible alien."},
     )
+    for description in (
+        "The person shall be deemed ineligible.",
+        "The person is deemed ineligible.",
+        "The person must be treated as ineligible.",
+        "The person must be ineligible.",
+    ):
+        assert completeness_module._exception_witness_satisfies_requirement(
+            witness,
+            "exclude",
+            rule={"description": description},
+        )
 
 
 def test_undescribed_negative_rule_name_controls_output_polarity():

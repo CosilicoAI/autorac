@@ -21255,9 +21255,9 @@ def _source_percentage_base_matches(
         trailing_text,
         flags=re.IGNORECASE,
     )
-    searchable_text = (
-        explicit_base.group("base") if explicit_base is not None else source_text
-    )
+    if explicit_base is None:
+        return False
+    searchable_text = explicit_base.group("base")
     collapsed = _collapse_text(searchable_text).lower()
     concept_tokens = tuple(
         token
@@ -23702,12 +23702,12 @@ def _source_negative_output_predicate_matches(
 
     return tuple(
         re.finditer(
-            r"\b(?:shall|will|is|are|becomes?)\s+(?:be\s+)?"
+            r"\b(?:must|shall|will|is|are|becomes?)\s+(?:be\s+)?"
             r"(?:ineligible|excluded|disqualified|unqualified)\b|"
-            r"\b(?:must|shall|will)\s+(?:be\s+)?"
-            r"(?:classif\w*|deem\w*|treat\w*)[^.;]{0,80}\bas\s+"
+            r"\b(?:must|shall|will)\s+classif\w*[^.;]{0,80}\bas\s+"
             r"(?:an?\s+)?(?:ineligible|excluded|disqualified|unqualified)\b|"
-            r"\b(?:is|are)\s+(?:classified|deemed|treated)\s+as\s+"
+            r"\b(?:must|shall|will|is|are)\s+(?:be\s+)?"
+            r"(?:classif\w*\s+as|deem\w*(?:\s+as)?|treat\w*(?:\s+as)?)\s+"
             r"(?:an?\s+)?(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\b(?:shall|does|is|are|will)\s+not\s+(?:be\s+)?"
             r"(?:apply|eligible|qualified|allowed|entitled)\b|"
