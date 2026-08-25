@@ -20541,6 +20541,7 @@ def _branch_boundary_test_witnesses(
                     and _formula_execution_binds_boundary(
                         controller_execution,
                         boundary,
+                        source_text=branch.text,
                         input_names=input_names,
                         formula_environment=(controller_execution.constant_environment),
                         evaluation_environment=execution_environment,
@@ -20655,6 +20656,7 @@ def _formula_execution_binds_boundary(
     execution: _FormulaExecution,
     boundary: NumericOccurrenceLike,
     *,
+    source_text: str,
     input_names: set[str],
     formula_environment: dict[str, Any],
     evaluation_environment: dict[str, Any] | None = None,
@@ -20698,6 +20700,7 @@ def _formula_execution_binds_boundary(
             input_names=input_names,
             boundary_names=boundary_names,
             boundary=boundary,
+            source_text=source_text,
             formula_environment=resolved_environment,
             source_bound_boundary_names=source_bound_boundary_names,
             source_bound_constant_occurrences=source_bound_constant_occurrences,
@@ -20716,6 +20719,7 @@ def _formula_text_has_boundary_comparison(
     input_names: set[str],
     boundary_names: set[str],
     boundary: NumericOccurrenceLike,
+    source_text: str | None = None,
     formula_environment: dict[str, Any],
     source_interval: _NumericInterval | None,
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
@@ -20752,6 +20756,7 @@ def _formula_text_has_boundary_comparison(
                     boundary_node,
                     boundary_names=boundary_names,
                     boundary=boundary,
+                    source_text=source_text,
                     formula_environment=formula_environment,
                     extract_numeric_occurrences=extract_numeric_occurrences,
                     numeric_value_is_grounded=numeric_value_is_grounded,
@@ -21148,6 +21153,7 @@ def _formula_node_boundary_value(
     *,
     boundary_names: set[str],
     boundary: NumericOccurrenceLike,
+    source_text: str | None = None,
     formula_environment: dict[str, Any],
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
     numeric_value_is_grounded: NumericGroundingPredicate,
@@ -21174,6 +21180,14 @@ def _formula_node_boundary_value(
                 candidate_names
                 and candidate_names.issubset(boundary_names)
                 and not base_names.intersection(boundary_names)
+                and source_text is not None
+                and any(
+                    _source_selector_concept_matches(
+                        _collapse_text(source_text).lower(),
+                        _normalized_selector_name(base_name),
+                    )
+                    for base_name in base_names
+                )
             ):
                 boundary_factor = candidate
                 break
@@ -23630,6 +23644,26 @@ def _source_negative_effect_matches(text: str) -> tuple[re.Match[str], ...]:
     )
 
 
+def _source_negative_output_predicate_matches(
+    text: str,
+) -> tuple[re.Match[str], ...]:
+    """Match a negative legal effect, excluding negative subject modifiers."""
+
+    return tuple(
+        re.finditer(
+            r"\b(?:shall|will|is|are|becomes?)\s+(?:be\s+)?"
+            r"(?:ineligible|excluded|disqualified|unqualified)\b|"
+            r"\b(?:must|shall)\s+classif\w*[^.;]{0,80}\bas\s+"
+            r"(?:an?\s+)?(?:ineligible|excluded|disqualified|unqualified)\b|"
+            r"\b(?:shall|does|is|are|will)\s+not\s+(?:be\s+)?"
+            r"(?:apply|eligible|qualified|allowed|entitled)\b|"
+            r"\bnicht\s+berechtigt\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def _exception_reverses_negative_proposition(text: str) -> bool:
     reversal = re.search(
         r"\b(?:außer|ausser|es\s+sei\s+denn|unless|except)\b",
@@ -23665,6 +23699,8 @@ def _source_exception_selector_is_relevant(
 
     normalized_name = _normalized_selector_name(name)
     collapsed = _collapse_text(text).lower()
+    if _source_selector_concept_matches(collapsed, normalized_name):
+        return True
     if re.search(
         r"\b(?:at\s+least\s+one|one\s+or\s+more)\b[^.;]{0,80}"
         r"\b(?:criteria|conditions|requirements)\b",
@@ -23677,8 +23713,6 @@ def _source_exception_selector_is_relevant(
             )
             for supporting_text in supporting_texts
         )
-    if _source_selector_concept_matches(collapsed, normalized_name):
-        return True
     return any(
         len(token) >= 4
         and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
@@ -24157,7 +24191,9 @@ def _exception_witness_satisfies_requirement(
         else ()
     )
     negative_output = any(
-        _source_negative_effect_matches(text) for text in semantic_texts if text
+        _source_negative_output_predicate_matches(text)
+        for text in semantic_texts
+        if text
     ) and not any(
         _source_positive_effect_matches(text) for text in semantic_texts if text
     )

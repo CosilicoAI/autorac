@@ -5828,6 +5828,7 @@ def test_percentage_boundary_comparison_uses_resolved_case_scale():
         input_names={"assistance"},
         boundary_names={"poverty_rate"},
         boundary=boundary,
+        source_text=source,
         formula_environment={
             "assistance": 26_000,
             "poverty_guideline": 20_000,
@@ -5843,7 +5844,24 @@ def test_percentage_boundary_comparison_uses_resolved_case_scale():
         input_names={"assistance"},
         boundary_names={"poverty_rate"},
         boundary=boundary,
+        source_text=source,
         formula_environment={"assistance": 26_000, "poverty_rate": 1.3},
+        source_interval=interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= unrelated_amount * poverty_rate",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=boundary,
+        source_text=source,
+        formula_environment={
+            "assistance": 26_000,
+            "unrelated_amount": 20_000,
+            "poverty_rate": 1.3,
+        },
         source_interval=interval,
         extract_numeric_occurrences=extractor,
         numeric_value_is_grounded=numeric_value_is_grounded,
@@ -32545,6 +32563,10 @@ def test_generic_at_least_one_criterion_chapeau_accepts_descendant_selector():
             "An alien admitted as a refugee under section 207 of the INA",
         ),
     )
+    assert completeness_module._source_exception_selector_is_relevant(
+        "At least one of the conditions applies: refugee status.",
+        "member_is_refugee",
+    )
 
 
 def test_true_ineligibility_output_witnesses_exclusion_effect():
@@ -32563,12 +32585,16 @@ def test_true_ineligibility_output_witnesses_exclusion_effect():
     assert completeness_module._exception_witness_satisfies_requirement(
         witness,
         "exclude",
-        rule={"description": "The person shall be ineligible."},
+        rule={
+            "description": "The agency must classify the person as an ineligible alien."
+        },
     )
     assert not completeness_module._exception_witness_satisfies_requirement(
         witness,
         "enable",
-        rule={"description": "The person shall be ineligible."},
+        rule={
+            "description": "The agency must classify the person as an ineligible alien."
+        },
     )
 
 
@@ -32588,12 +32614,12 @@ def test_negative_subject_modifier_does_not_invert_positive_output_effect():
     assert not completeness_module._exception_witness_satisfies_requirement(
         witness,
         "exclude",
-        rule={"description": "Whether the person receives a notice."},
+        rule={"description": "Whether the ineligible person receives a notice."},
     )
     assert completeness_module._exception_witness_satisfies_requirement(
         witness,
         "enable",
-        rule={"description": "Whether the person receives a notice."},
+        rule={"description": "Whether the ineligible person receives a notice."},
     )
 
 
