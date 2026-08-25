@@ -5909,6 +5909,23 @@ def test_percentage_boundary_comparison_uses_resolved_case_scale():
         extract_numeric_occurrences=extractor,
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
+    for wrong_base in ("unearned_income", "other_income"):
+        assert not completeness_module._formula_text_has_boundary_comparison(
+            f"assistance <= {wrong_base} * poverty_rate",
+            allow_complement_relation=False,
+            input_names={"assistance"},
+            boundary_names={"poverty_rate"},
+            boundary=multi_amount_boundary,
+            source_text=multi_amount_source,
+            formula_environment={
+                "assistance": 26_000,
+                wrong_base: 20_000,
+                "poverty_rate": 1.3,
+            },
+            source_interval=multi_amount_interval,
+            extract_numeric_occurrences=extractor,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+        )
 
 
 @pytest.mark.parametrize("floor_expression", ("bracket_floor", "5000"))
@@ -32606,6 +32623,11 @@ def test_generic_at_least_one_criterion_chapeau_accepts_descendant_selector():
             "An alien admitted as a refugee under section 207 of the INA",
         ),
     )
+    assert not completeness_module._source_exception_selector_is_relevant(
+        source,
+        "member_owns_luxury_car",
+        supporting_texts=("A member is admitted as a refugee.",),
+    )
     assert completeness_module._source_exception_selector_is_relevant(
         "At least one of the conditions applies: refugee status.",
         "member_is_refugee",
@@ -32638,6 +32660,42 @@ def test_true_ineligibility_output_witnesses_exclusion_effect():
         rule={
             "description": "The agency must classify the person as an ineligible alien."
         },
+    )
+
+
+def test_positive_rule_description_controls_negative_source_excerpt_polarity():
+    witness = completeness_module._ExceptionWitness(
+        rule_name="person_eligible",
+        selector_name="person_is_citizen",
+        active_value=True,
+        blocks=False,
+        boolean_effect=True,
+        zeroes=False,
+        numeric_transition=None,
+        relational_transitions=(),
+        case_pair_identity=(1, 2),
+    )
+    rule = {
+        "description": "Whether the person is eligible.",
+        "metadata": {
+            "proof": {
+                "atoms": [
+                    {
+                        "path": "versions[0].formula",
+                        "citation_path": CORPUS_CITATION_PATH,
+                        "excerpt": (
+                            "A person is ineligible unless that person is a citizen."
+                        ),
+                    }
+                ]
+            }
+        },
+    }
+
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "enable",
+        rule=rule,
     )
 
 

@@ -1269,6 +1269,9 @@ _SOURCE_SELECTOR_TOKEN_STOPWORDS = frozenset(
         "without",
     }
 )
+_SOURCE_SELECTOR_GENERIC_ENTITY_TOKENS = frozenset(
+    {"alien", "applicant", "household", "individual", "member", "person"}
+)
 _NEGATIVE_NONAPPLICABILITY_LANGUAGE = re.compile(
     r"\b(?:"
     r"(?:shall|does)\s+not\s+apply|"
@@ -21249,11 +21252,15 @@ def _source_percentage_base_matches(
     searchable_text = (
         explicit_base.group("base") if explicit_base is not None else source_text
     )
-    return bool(
-        _source_selector_concept_matches(
-            _collapse_text(searchable_text).lower(),
-            _normalized_selector_name(base_name),
-        )
+    collapsed = _collapse_text(searchable_text).lower()
+    concept_tokens = tuple(
+        token
+        for token in _normalized_selector_name(base_name).split("_")
+        if len(token) >= 4 and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
+    )
+    return bool(concept_tokens) and all(
+        re.search(rf"\b{re.escape(token)}\w*", collapsed) is not None
+        for token in concept_tokens
     )
 
 
@@ -23733,8 +23740,8 @@ def _source_exception_selector_is_relevant(
         collapsed,
     ):
         return any(
-            _source_selector_concept_matches(
-                _collapse_text(supporting_text).lower(),
+            _source_selector_distinctive_concept_matches(
+                supporting_text,
                 normalized_name,
             )
             for supporting_text in supporting_texts
@@ -23744,6 +23751,25 @@ def _source_exception_selector_is_relevant(
         and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
         and re.search(rf"\b{re.escape(token)}\w*", collapsed) is not None
         for token in normalized_name.split("_")
+    )
+
+
+def _source_selector_distinctive_concept_matches(
+    text: str,
+    normalized_name: str,
+) -> bool:
+    distinctive_tokens = tuple(
+        token
+        for token in normalized_name.split("_")
+        if len(token) >= 4
+        and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
+        and token not in _SOURCE_SELECTOR_GENERIC_ENTITY_TOKENS
+    )
+    return bool(distinctive_tokens) and bool(
+        _source_selector_concept_matches(
+            _collapse_text(text).lower(),
+            "_".join(distinctive_tokens),
+        )
     )
 
 
@@ -24212,13 +24238,15 @@ def _exception_witness_satisfies_requirement(
     *,
     rule: Mapping[str, Any] | None = None,
 ) -> bool:
+    description = str(rule.get("description") or "").strip() if rule else ""
     semantic_texts = (
-        (
-            str(rule.get("description") or ""),
-            *(excerpt for _citation_path, excerpt in _rule_source_excerpts(rule)),
+        (description,)
+        if description
+        else (
+            tuple(excerpt for _citation_path, excerpt in _rule_source_excerpts(rule))
+            if rule is not None
+            else ()
         )
-        if rule is not None
-        else ()
     )
     negative_output = any(
         _source_negative_output_predicate_matches(text)
