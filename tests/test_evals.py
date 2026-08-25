@@ -1030,6 +1030,25 @@ def test_repair_tombstone_survives_materialization_before_overlay(tmp_path):
     assert repairs == ("removed_rule:obsolete", "removed_test:obsolete_case")
 
 
+def test_single_amount_test_normalizer_preserves_exact_repair_tombstone():
+    normalized = evals_module._normalize_single_amount_row_test_content(
+        "- name: alternate_branch_case\n  repair_remove: true\n",
+        rulespec_content=(
+            "format: rulespec/v1\n"
+            "period: Year\n"
+            "rules:\n"
+            "  - name: amount\n"
+            "    kind: parameter\n"
+            "    dtype: Money\n"
+            "    versions: [{effective_from: '2026-01-01', formula: 1}]\n"
+        ),
+    )
+
+    assert yaml.safe_load(normalized) == [
+        {"name": "alternate_branch_case", "repair_remove": True}
+    ]
+
+
 @pytest.mark.parametrize(
     "marker,match",
     [

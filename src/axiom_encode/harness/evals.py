@@ -15858,6 +15858,8 @@ def _normalize_single_amount_row_test_content(
     def normalize_case(case: object) -> object:
         if not isinstance(case, dict):
             return case
+        if _is_exact_repair_removal_marker(case):
+            return case
         normalized_case = dict(case)
         if annual_period and effective_date is not None:
             normalized_case["period"] = _normalize_annual_test_period_value(
@@ -15887,7 +15889,11 @@ def _normalize_single_amount_row_test_content(
         filtered = [
             normalize_case(case)
             for case in cases
-            if not isinstance(case, dict) or should_keep(case.get("name"))
+            if (
+                not isinstance(case, dict)
+                or _is_exact_repair_removal_marker(case)
+                or should_keep(case.get("name"))
+            )
         ]
         return yaml.safe_dump(filtered, sort_keys=False).strip() + "\n"
 
