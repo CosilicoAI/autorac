@@ -23470,12 +23470,24 @@ def _selector_targets_numeric_condition(
 ) -> bool:
     """Identify a Boolean selector that merely restates a numeric predicate."""
 
+    normalized_name = _normalized_selector_name(selector_name)
+    selector_tokens = set(normalized_name.split("_"))
+    numeric_selector_tokens = _FORMULA_NUMERIC_OPERAND_HEADS | {
+        "age",
+        "day",
+        "days",
+        "month",
+        "months",
+        "year",
+        "years",
+    }
+    if not selector_tokens & numeric_selector_tokens:
+        return False
     boundary_end = max(
         boundary.end
         for boundary in (numeric_interval.lower, numeric_interval.upper)
         if boundary is not None
     )
-    normalized_name = _normalized_selector_name(selector_name)
     matches = tuple(_source_selector_concept_matches(text, normalized_name))
     if any(
         match.start() > boundary_end
@@ -24300,15 +24312,37 @@ def _source_selector_concept_polarity(
                 flags=re.IGNORECASE,
             )
         )
-        explicitly_negated = bool(
+        explicit_prefix = re.search(
+            r"\b(?:kein(?:e|en|em|er|es)?|fehlend\w*|ohne|mangels|"
+            r"no|without|lack(?:ing)?(?:\s+of)?|absence\s+of|nicht|not)\b"
+            r"(?P<scope>[^.;,:]{0,80})$",
+            before,
+            flags=re.IGNORECASE,
+        )
+        prefix_scope = explicit_prefix.group("scope") if explicit_prefix else ""
+        prefix_crosses_predicate = bool(
             re.search(
-                r"\b(?:kein(?:e|en|em|er|es)?|fehlend\w*|ohne|mangels|"
-                r"no|without|lack(?:ing)?(?:\s+of)?|absence\s+of)"
-                r"\b\s+(?:(?!(?:and|or|und|oder)\b)\w+\s+){0,2}$|"
-                r"\b(?:nicht|not)\s+(?:\w+\s+){0,1}$",
-                before,
+                r"\b(?:although|because|but|except|if|unless|when|while)\b|"
+                r"\b(?:and|or|und|oder)\b\s+"
+                r"(?:(?:the|a|an|der|die|das|ein(?:e|en|em|er|es)?)\s+)?"
+                r"(?:\w+\s+){0,3}"
+                r"(?:is|are|was|were|has|have|does|do|shall|must|can|"
+                r"ist|sind|hat|haben)\b",
+                prefix_scope,
                 flags=re.IGNORECASE,
             )
+            or (
+                inherently_negative
+                and re.search(
+                    r"\b(?:and|or|und|oder)\b",
+                    prefix_scope,
+                    flags=re.IGNORECASE,
+                )
+                is not None
+            )
+        )
+        explicitly_negated = bool(
+            (explicit_prefix is not None and not prefix_crosses_predicate)
             or re.match(
                 r"\s+(?:fehlt|fehlen|nicht\s+(?:vorhanden|"
                 r"gegeben)|liegt\s+nicht\s+vor|is\s+not\s+present|"

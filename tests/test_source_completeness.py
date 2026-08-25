@@ -33115,6 +33115,46 @@ def test_negative_condition_name_is_active_when_source_uses_same_condition(
 @pytest.mark.parametrize(
     ("source", "selector"),
     (
+        (
+            "When there is an absence of any reasonably available documentation.",
+            "documentation_missing",
+        ),
+        ("When the person has no income or resources.", "resources_missing"),
+    ),
+)
+def test_qualified_or_coordinated_negation_controls_selector_polarity(
+    source: str,
+    selector: str,
+):
+    assert completeness_module._source_exception_selector_active_value(
+        source,
+        selector,
+    )
+
+
+def test_only_numeric_selector_names_restate_compound_numeric_condition():
+    source = "Income is more than 100 dollars and the applicant is disabled."
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert completeness_module._selector_targets_numeric_condition(
+        source,
+        "income_more_than_limit",
+        numeric_interval=interval,
+    )
+    assert not completeness_module._selector_targets_numeric_condition(
+        source,
+        "applicant_is_disabled",
+        numeric_interval=interval,
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "selector"),
+    (
         ("When the person is not unwilling to provide documentation.", "is_unwilling"),
         ("When the person is not unable to work.", "is_unable"),
         ("When no applicant has inability to work.", "has_inability"),
