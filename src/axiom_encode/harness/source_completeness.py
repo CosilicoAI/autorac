@@ -17531,7 +17531,7 @@ def _formula_operation_kinds(text: str) -> set[str]:
             r"\b(?:doppelte|zweifache|dreifache|twice)\b)"
         ),
         "divide": (
-            r"(?:(?<![a-z])/(?![a-z])|\bgeteilt\b|\bteilen\b|\bdivided\b|"
+            r"(?:(?<!\band)/(?!or\b)|\bgeteilt\b|\bteilen\b|\bdivided\b|"
             r"\bhälfte\b|\bhalbier\w*\b|\bhalbierung\b|\bhalf\s+of\b)"
         ),
     }
@@ -21155,11 +21155,14 @@ def _formula_node_boundary_value(
         value = formula_environment.get(node.id)
         if _rulespec_runtime_decimal(value) is not None:
             return float(value)
-    node_names = {
-        candidate.id for candidate in ast.walk(node) if isinstance(candidate, ast.Name)
-    }
-    if node_names & boundary_names:
-        value = _evaluate_condition_expression(node, formula_environment)
+    boundary_nodes = [
+        candidate
+        for candidate in ast.walk(node)
+        if {name.id for name in ast.walk(candidate) if isinstance(name, ast.Name)}
+        & boundary_names
+    ]
+    for candidate in reversed(boundary_nodes):
+        value = _evaluate_condition_expression(candidate, formula_environment)
         numeric_value = _rulespec_runtime_decimal(value)
         if numeric_value is not None and numeric_value_is_grounded(
             float(numeric_value),
@@ -24103,9 +24106,25 @@ def _exception_witness_satisfies_requirement(
     witness: _ExceptionWitness,
     requirement: str,
 ) -> bool:
-    effective_blocks = witness.blocks != bool(
-        _selector_identifier_negation_count(witness.rule_name) % 2
+    rule_name_tokens = _normalized_selector_name(witness.rule_name).split("_")
+    output_negation_count = sum(
+        token
+        in {
+            "absent",
+            "disqualified",
+            "ineligible",
+            "lacking",
+            "missing",
+            "no",
+            "non",
+            "not",
+            "unqualified",
+            "without",
+        }
+        for index, token in enumerate(rule_name_tokens)
+        if index > 0 or len(rule_name_tokens) == 1
     )
+    effective_blocks = witness.blocks != bool(output_negation_count % 2)
     if requirement == "zero":
         return witness.zeroes
     if requirement == "enable":

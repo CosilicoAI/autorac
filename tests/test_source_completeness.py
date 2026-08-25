@@ -5829,8 +5829,8 @@ def test_percentage_boundary_comparison_uses_resolved_case_scale():
         boundary_names={"poverty_rate"},
         boundary=boundary,
         formula_environment={
-            "assistance": 1.3,
-            "poverty_guideline": 1,
+            "assistance": 26_000,
+            "poverty_guideline": 20_000,
             "poverty_rate": 1.3,
         },
         source_interval=interval,
@@ -31386,6 +31386,7 @@ def test_and_or_in_legal_prose_is_not_treated_as_division():
 
     assert "divide" not in completeness_module._formula_operation_kinds(source)
     assert "divide" in completeness_module._formula_operation_kinds("income / 2")
+    assert "divide" in completeness_module._formula_operation_kinds("$5/person")
 
 
 @pytest.mark.parametrize(
@@ -32541,6 +32542,29 @@ def test_true_ineligibility_output_witnesses_exclusion_effect():
         "exclude",
     )
     assert not completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "enable",
+    )
+
+
+def test_negative_subject_modifier_does_not_invert_positive_output_effect():
+    witness = completeness_module._ExceptionWitness(
+        rule_name="ineligible_person_receives_notice",
+        selector_name="notice_required",
+        active_value=True,
+        blocks=False,
+        boolean_effect=True,
+        zeroes=False,
+        numeric_transition=None,
+        relational_transitions=(),
+        case_pair_identity=(1, 2),
+    )
+
+    assert not completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+    )
+    assert completeness_module._exception_witness_satisfies_requirement(
         witness,
         "enable",
     )
