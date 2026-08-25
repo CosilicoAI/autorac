@@ -227,6 +227,23 @@ def test_unreadable_retained_candidate_does_not_replace_valid_generation(
         ),
         (
             ValidationRetryCandidate(
+                rulespec="format: rulespec/v1\ninputs: {name: broken}\nrules: []\n"
+            ),
+            "preserved repair overlay inputs must be a list",
+        ),
+        (
+            ValidationRetryCandidate(
+                rulespec=(
+                    "format: rulespec/v1\ninputs:\n"
+                    "  - {name: duplicate, entity: Person}\n"
+                    "  - {name: duplicate, entity: Person}\n"
+                    "rules: []\n"
+                )
+            ),
+            "preserved inputs contains duplicate name `duplicate`",
+        ),
+        (
+            ValidationRetryCandidate(
                 rulespec=(
                     "format: rulespec/v1\nrules:\n"
                     "  - {name: duplicate, kind: parameter}\n"

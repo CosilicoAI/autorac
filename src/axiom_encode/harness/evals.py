@@ -17024,6 +17024,13 @@ def _repair_overlay_candidate_base_issue(
         not isinstance(import_target, str) for import_target in imports
     ):
         return "preserved repair overlay imports must be a list of strings"
+    preserved_inputs = preserved.get("inputs", [])
+    if not isinstance(preserved_inputs, list):
+        return "preserved repair overlay inputs must be a list"
+    try:
+        _merge_named_yaml_items([], preserved_inputs, label="inputs")
+    except ValueError as exc:
+        return str(exc)
     preserved_rules = preserved.get("rules")
     if not isinstance(preserved_rules, list):
         return "preserved repair overlay rules must be a list"
@@ -17110,6 +17117,21 @@ def _overlay_validation_retry_candidate(
             repairs.append(f"import:{import_target}")
     if imports:
         generated["imports"] = imports
+
+    generated_inputs = generated.get("inputs", [])
+    preserved_inputs = preserved.get("inputs", [])
+    if not isinstance(generated_inputs, list) or not isinstance(preserved_inputs, list):
+        raise ValueError("repair overlay inputs must be lists")
+    inputs, restored_inputs, removed_inputs = _merge_named_yaml_items(
+        generated_inputs,
+        preserved_inputs,
+        label="inputs",
+    )
+    if removed_inputs:
+        raise ValueError("repair overlay cannot remove retained inputs")
+    if inputs:
+        generated["inputs"] = inputs
+    repairs.extend(f"input:{name}" for name in restored_inputs)
 
     generated_rules = generated.get("rules")
     rules, restored_rules, removed_rules = _merge_named_yaml_items(
