@@ -1272,6 +1272,7 @@ _SOURCE_SELECTOR_TOKEN_STOPWORDS = frozenset(
 _SOURCE_SELECTOR_GENERIC_ENTITY_TOKENS = frozenset(
     {"alien", "applicant", "household", "individual", "member", "person"}
 )
+_SOURCE_GENERIC_NUMERIC_NAME_TOKENS = frozenset({"amount", "value"})
 _NEGATIVE_NONAPPLICABILITY_LANGUAGE = re.compile(
     r"\b(?:"
     r"(?:shall|does)\s+not\s+apply|"
@@ -21256,7 +21257,10 @@ def _source_percentage_base_matches(
     concept_tokens = tuple(
         token
         for token in _normalized_selector_name(base_name).split("_")
-        if len(token) >= 4 and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
+        if len(token) >= 4
+        and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
+        and token not in _SOURCE_SELECTOR_GENERIC_ENTITY_TOKENS
+        and token not in _SOURCE_GENERIC_NUMERIC_NAME_TOKENS
     )
     return bool(concept_tokens) and all(
         re.search(rf"\b{re.escape(token)}\w*", collapsed) is not None
@@ -23686,7 +23690,10 @@ def _source_negative_output_predicate_matches(
         re.finditer(
             r"\b(?:shall|will|is|are|becomes?)\s+(?:be\s+)?"
             r"(?:ineligible|excluded|disqualified|unqualified)\b|"
-            r"\b(?:must|shall)\s+classif\w*[^.;]{0,80}\bas\s+"
+            r"\b(?:must|shall|will)\s+(?:be\s+)?"
+            r"(?:classif\w*|deem\w*|treat\w*)[^.;]{0,80}\bas\s+"
+            r"(?:an?\s+)?(?:ineligible|excluded|disqualified|unqualified)\b|"
+            r"\b(?:is|are)\s+(?:classified|deemed|treated)\s+as\s+"
             r"(?:an?\s+)?(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\b(?:shall|does|is|are|will)\s+not\s+(?:be\s+)?"
             r"(?:apply|eligible|qualified|allowed|entitled)\b|"

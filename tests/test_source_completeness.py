@@ -5933,6 +5933,23 @@ def test_percentage_boundary_comparison_uses_resolved_case_scale():
         extract_numeric_occurrences=extractor,
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
+    for conventional_base in ("earned_income_amount", "household_earned_income"):
+        assert completeness_module._formula_text_has_boundary_comparison(
+            f"assistance <= {conventional_base} * poverty_rate",
+            allow_complement_relation=False,
+            input_names={"assistance"},
+            boundary_names={"poverty_rate"},
+            boundary=multi_amount_boundary,
+            source_text=multi_amount_source,
+            formula_environment={
+                "assistance": 26_000,
+                conventional_base: 20_000,
+                "poverty_rate": 1.3,
+            },
+            source_interval=multi_amount_interval,
+            extract_numeric_occurrences=extractor,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+        )
     assert not completeness_module._formula_text_has_boundary_comparison(
         "assistance <= poverty_guideline * poverty_rate",
         allow_complement_relation=False,
@@ -32765,6 +32782,11 @@ def test_true_ineligibility_output_witnesses_exclusion_effect():
         rule={
             "description": "The agency must classify the person as an ineligible alien."
         },
+    )
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={"description": "The person must be classified as an ineligible alien."},
     )
 
 
