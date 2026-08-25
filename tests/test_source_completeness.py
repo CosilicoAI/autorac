@@ -32852,6 +32852,8 @@ def test_true_ineligibility_output_witnesses_exclusion_effect():
         "The person is deemed ineligible.",
         "The person must be treated as ineligible.",
         "The person must be ineligible.",
+        "The applicant is an ineligible alien.",
+        "The applicant becomes an excluded member.",
     ):
         assert completeness_module._exception_witness_satisfies_requirement(
             witness,
@@ -33021,6 +33023,14 @@ def test_inability_or_unwillingness_is_active_missing_documentation_condition():
     assert completeness_module._source_exception_selector_active_value(
         source,
         "alien_status_documentation_missing_or_unwilling",
+    )
+    assert completeness_module._source_exception_selector_active_value(
+        source,
+        "has_inability_or_unwillingness",
+    )
+    assert completeness_module._source_exception_selector_active_value(
+        "When the person is unable or unwilling to provide documentation.",
+        "is_unable_or_unwilling",
     )
 
 

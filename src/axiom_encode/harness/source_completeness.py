@@ -23703,6 +23703,7 @@ def _source_negative_output_predicate_matches(
     return tuple(
         re.finditer(
             r"\b(?:must|shall|will|is|are|becomes?)\s+(?:be\s+)?"
+            r"(?:(?:an?|the)\s+)?"
             r"(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\b(?:must|shall|will)\s+classif\w*[^.;]{0,80}\bas\s+"
             r"(?:an?\s+)?(?:ineligible|excluded|disqualified|unqualified)\b|"
@@ -24278,28 +24279,34 @@ def _source_selector_concept_polarity(
 
 
 def _selector_identifier_negation_count(normalized_name: str) -> int:
-    count = sum(
+    tokens = normalized_name.split("_")
+    explicit_negation_count = sum(
         token
         in {
-            "absent",
-            "lacking",
-            "missing",
             "no",
             "non",
             "not",
-            "inability",
-            "unable",
-            "unwilling",
-            "unwillingness",
             "without",
         }
-        for token in normalized_name.split("_")
+        for token in tokens
     )
-    count += sum(
-        marker in normalized_name.split("_")
-        for marker in {"disqualified", "ineligible", "unqualified"}
+    has_negative_state = any(
+        token
+        in {
+            "absent",
+            "disqualified",
+            "inability",
+            "ineligible",
+            "lacking",
+            "missing",
+            "unable",
+            "unqualified",
+            "unwilling",
+            "unwillingness",
+        }
+        for token in tokens
     )
-    return count
+    return explicit_negation_count + int(has_negative_state)
 
 
 def _exception_witness_satisfies_requirement(
