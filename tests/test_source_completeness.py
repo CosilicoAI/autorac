@@ -32478,12 +32478,18 @@ rules:
     cases = [
         {
             "name": "presumption applies",
-            "input": {"months_absent": 7, "evidence_of_intent_to_resume_residency": False},
+            "input": {
+                "months_absent": 7,
+                "evidence_of_intent_to_resume_residency": False,
+            },
             "output": {"residency_interruption_presumed": True},
         },
         {
             "name": "resume evidence blocks presumption",
-            "input": {"months_absent": 7, "evidence_of_intent_to_resume_residency": True},
+            "input": {
+                "months_absent": 7,
+                "evidence_of_intent_to_resume_residency": True,
+            },
             "output": {"residency_interruption_presumed": False},
         },
     ]
