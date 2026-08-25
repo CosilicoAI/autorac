@@ -983,6 +983,41 @@ def test_repair_candidate_overlay_removes_explicit_named_tombstones(tmp_path):
     assert "removed_test:obsolete_case" in repairs
 
 
+def test_repair_candidate_overlay_accepts_idempotent_named_tombstones(tmp_path):
+    artifact_root = tmp_path / "generated"
+    rulespec_file = artifact_root / "section.yaml"
+    artifact_root.mkdir()
+    rulespec_file.write_text(
+        "format: rulespec/v1\nrules:\n  - name: obsolete\n    repair_remove: true\n",
+        encoding="utf-8",
+    )
+    rulespec_file.with_suffix(".test.yaml").write_text(
+        "- name: obsolete_case\n  repair_remove: true\n",
+        encoding="utf-8",
+    )
+    candidate = ValidationRetryCandidate(
+        rulespec="format: rulespec/v1\nrules: []\n",
+        tests="[]\n",
+        allowed_missing_rule_removals=("obsolete",),
+        allowed_missing_test_removals=("obsolete_case",),
+    )
+
+    repairs = evals_module._overlay_validation_retry_candidate(
+        rulespec_file,
+        artifact_root=artifact_root,
+        candidate=candidate,
+    )
+
+    assert yaml.safe_load(rulespec_file.read_text(encoding="utf-8"))["rules"] == []
+    assert (
+        yaml.safe_load(
+            rulespec_file.with_suffix(".test.yaml").read_text(encoding="utf-8")
+        )
+        == []
+    )
+    assert repairs == ("removed_rule:obsolete", "removed_test:obsolete_case")
+
+
 def test_repair_tombstone_survives_materialization_before_overlay(tmp_path):
     artifact_root = tmp_path / "generated"
     rulespec_file = artifact_root / "regulations" / "section.yaml"

@@ -26934,6 +26934,43 @@ def _encode_validation_retry_context(
         raise RuntimeError(
             "Immediately preceding validator-rejected candidate is unavailable"
         )
+    if initial_retry_candidate is not None:
+
+        def named_items(content: str, *, tests: bool) -> set[str]:
+            try:
+                payload = yaml.safe_load(content)
+            except (yaml.YAMLError, RecursionError):
+                return set()
+            if tests:
+                items = payload.get("cases") if isinstance(payload, dict) else payload
+            else:
+                items = payload.get("rules") if isinstance(payload, dict) else None
+            if not isinstance(items, list):
+                return set()
+            return {
+                item["name"]
+                for item in items
+                if isinstance(item, dict) and isinstance(item.get("name"), str)
+            }
+
+        initial_rule_names = named_items(initial_retry_candidate.rulespec, tests=False)
+        current_rule_names = named_items(candidate.rulespec, tests=False)
+        initial_test_names = (
+            named_items(initial_retry_candidate.tests, tests=True)
+            if initial_retry_candidate.tests is not None
+            else set()
+        )
+        current_test_names = (
+            named_items(candidate.tests, tests=True)
+            if candidate.tests is not None
+            else set()
+        )
+        candidate = ValidationRetryCandidate(
+            candidate.rulespec,
+            candidate.tests,
+            tuple(sorted(initial_rule_names - current_rule_names)),
+            tuple(sorted(initial_test_names - current_test_names)),
+        )
     return _encode_validation_retry_feedback(prior_attempts), candidate
 
 
