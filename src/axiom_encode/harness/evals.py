@@ -16301,6 +16301,8 @@ def _normalize_test_periods_to_effective_dates(
     def normalize_case(case: object) -> object:
         if not isinstance(case, dict):
             return case
+        if _is_exact_repair_removal_marker(case):
+            return case
         normalized_case = _repair_misindented_period_mapping_fields(case)
         if granularity == "Year" and effective_date is not None:
             normalized_case["period"] = _normalize_annual_test_period_value(
@@ -16364,6 +16366,17 @@ def _normalize_test_periods_to_effective_dates(
         )
 
     return normalized
+
+
+def _is_exact_repair_removal_marker(item: object) -> bool:
+    """Recognize the only transient deletion marker admitted by repair overlays."""
+
+    return (
+        isinstance(item, dict)
+        and set(item) == {"name", "repair_remove"}
+        and isinstance(item.get("name"), str)
+        and item.get("repair_remove") is True
+    )
 
 
 def _repair_misindented_period_mapping_fields(case: dict[str, Any]) -> dict[str, Any]:
@@ -16804,10 +16817,7 @@ def _merge_named_yaml_items(
             raise ValueError(f"generated {label} contains duplicate name `{name}`")
         generated_names.add(name)
         if "repair_remove" in item:
-            if (
-                set(item) != {"name", "repair_remove"}
-                or item["repair_remove"] is not True
-            ):
+            if not _is_exact_repair_removal_marker(item):
                 raise ValueError(
                     f"generated {label} removal marker for `{name}` must contain "
                     "only name and repair_remove: true"

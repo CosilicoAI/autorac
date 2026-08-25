@@ -994,7 +994,8 @@ def test_repair_tombstone_survives_materialization_before_overlay(tmp_path):
             "    kind: parameter\n"
             "    dtype: Count\n"
             "    versions: [{effective_from: '2026-01-01', formula: 1}]\n"
-        )
+        ),
+        tests=("- name: obsolete_case\n  period: 2026-01\n  input: {}\n  output: {}\n"),
     )
     response = (
         "=== FILE: section.yaml ===\n"
@@ -1002,6 +1003,9 @@ def test_repair_tombstone_survives_materialization_before_overlay(tmp_path):
         "rules:\n"
         "  - name: obsolete\n"
         "    repair_remove: true\n"
+        "=== FILE: section.test.yaml ===\n"
+        "- name: obsolete_case\n"
+        "  repair_remove: true\n"
     )
 
     assert evals_module._materialize_eval_artifact(
@@ -1010,6 +1014,10 @@ def test_repair_tombstone_survives_materialization_before_overlay(tmp_path):
         artifact_root=artifact_root,
     )
     assert "repair_remove: true" in rulespec_file.read_text(encoding="utf-8")
+    test_file = rulespec_file.with_suffix(".test.yaml")
+    assert yaml.safe_load(test_file.read_text(encoding="utf-8")) == [
+        {"name": "obsolete_case", "repair_remove": True}
+    ]
 
     repairs = evals_module._overlay_validation_retry_candidate(
         rulespec_file,
@@ -1018,7 +1026,8 @@ def test_repair_tombstone_survives_materialization_before_overlay(tmp_path):
     )
 
     assert yaml.safe_load(rulespec_file.read_text(encoding="utf-8"))["rules"] == []
-    assert repairs == ("removed_rule:obsolete",)
+    assert yaml.safe_load(test_file.read_text(encoding="utf-8")) == []
+    assert repairs == ("removed_rule:obsolete", "removed_test:obsolete_case")
 
 
 @pytest.mark.parametrize(
