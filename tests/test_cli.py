@@ -15022,6 +15022,36 @@ rules:
         assert feedback == ("missing required witness",)
         assert candidate is initial
 
+    def test_encode_retry_allows_repeating_cross_run_tombstones(self):
+        import axiom_encode.cli as cli_module
+
+        initial = cli_module.ValidationRetryCandidate(
+            rulespec=(
+                "format: rulespec/v1\nrules:\n"
+                "  - name: obsolete\n    kind: derived\n    versions: []\n"
+            ),
+            tests="- name: obsolete_case\n  input: {}\n  output: {}\n",
+        )
+        rejected = cli_module.ValidationRetryCandidate(
+            rulespec="format: rulespec/v1\nrules: []\n",
+            tests="[]\n",
+        )
+        failed_attempt = cli_module._FailedEncodeAttempt(
+            result=SimpleNamespace(metrics=SimpleNamespace()),
+            error="remaining validation issue",
+            candidate=rejected,
+            validation_issues=("remaining validation issue",),
+        )
+
+        _, candidate = cli_module._encode_validation_retry_context(
+            [failed_attempt],
+            initial_retry_candidate=initial,
+        )
+
+        assert candidate is not None
+        assert candidate.allowed_missing_rule_removals == ("obsolete",)
+        assert candidate.allowed_missing_test_removals == ("obsolete_case",)
+
     def test_encode_replaces_cross_run_candidate_after_in_run_rejection(self, tmp_path):
         candidate_root = tmp_path / "preserved-candidate"
         candidate_path = Path("statutes/26/1/j/2.yaml")

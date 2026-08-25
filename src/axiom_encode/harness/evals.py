@@ -166,6 +166,8 @@ class ValidationRetryCandidate:
 
     rulespec: str
     tests: str | None = None
+    allowed_missing_rule_removals: tuple[str, ...] = ()
+    allowed_missing_test_removals: tuple[str, ...] = ()
     rulespec_sha256: str = field(init=False)
     tests_sha256: str | None = field(init=False)
 
@@ -174,6 +176,18 @@ class ValidationRetryCandidate:
             raise ValueError("Validation retry candidate RuleSpec must be non-empty")
         if self.tests is not None and not isinstance(self.tests, str):
             raise TypeError("Validation retry candidate tests must be text or None")
+        for label, names in (
+            ("rule", self.allowed_missing_rule_removals),
+            ("companion test", self.allowed_missing_test_removals),
+        ):
+            if (
+                not isinstance(names, tuple)
+                or any(not isinstance(name, str) or not name for name in names)
+                or len(set(names)) != len(names)
+            ):
+                raise ValueError(
+                    f"Allowed missing {label} removals must be unique non-empty names"
+                )
         rulespec_bytes = self.rulespec.encode("utf-8")
         tests_bytes = self.tests.encode("utf-8") if self.tests is not None else b""
         if len(rulespec_bytes) > VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES:
@@ -16807,6 +16821,7 @@ def _merge_named_yaml_items(
     preserved: object,
     *,
     label: str,
+    allowed_missing_removals: Sequence[str] = (),
 ) -> tuple[list[object], list[str], list[str]]:
     """Restore omitted hash-bound items while allowing explicit replacements."""
 
@@ -16844,7 +16859,9 @@ def _merge_named_yaml_items(
             generated_items.append(item)
             generated_names.add(name)
             restored.append(name)
-    unknown_removals = sorted(removed_names - preserved_names)
+    unknown_removals = sorted(
+        removed_names - preserved_names - set(allowed_missing_removals)
+    )
     if unknown_removals:
         raise ValueError(
             f"generated {label} removal marker names no preserved item: "
@@ -16929,7 +16946,10 @@ def _overlay_validation_retry_candidate(
 
     generated_rules = generated.get("rules")
     rules, restored_rules, removed_rules = _merge_named_yaml_items(
-        generated_rules, preserved.get("rules"), label="rules"
+        generated_rules,
+        preserved.get("rules"),
+        label="rules",
+        allowed_missing_removals=candidate.allowed_missing_rule_removals,
     )
     generated["rules"] = rules
     generated_rule_names = {
@@ -17028,7 +17048,10 @@ def _overlay_validation_retry_candidate(
         if generated_wrapper != preserved_wrapper and test_file.exists():
             raise ValueError("repair overlay cannot change companion test container")
         merged_tests, restored_tests, removed_tests = _merge_named_yaml_items(
-            generated_cases, preserved_cases, label="companion tests"
+            generated_cases,
+            preserved_cases,
+            label="companion tests",
+            allowed_missing_removals=candidate.allowed_missing_test_removals,
         )
         merged_test_payload: object = (
             {"cases": merged_tests} if preserved_wrapper else merged_tests
