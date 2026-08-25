@@ -365,7 +365,8 @@ def test_rejects_aggregate_boolean_for_same_source_spouse_credit_gates():
         "spouse_blindness_credit_conditions_hold",
     )
     assert any(
-        "declare every local fact in the module's top-level `inputs` list" in issue
+        "declare every local fact in the RuleSpec document-root `inputs` list"
+        in issue
         for issue in result.issues
     )
     assert any(
