@@ -160,6 +160,10 @@ EvalOracleMode = Literal["none", "policyengine"]
 EvalFailureKind = Literal["timeout", "validation", "error"]
 
 
+class _PreservedRepairOverlayError(ValueError):
+    """The retained retry candidate cannot serve as an overlay base."""
+
+
 @dataclass(frozen=True)
 class ValidationRetryCandidate:
     """One rejected generated pair retained as bounded retry-edit context."""
@@ -8831,29 +8835,71 @@ def _run_single_eval(
             required_test_case_contracts=required_test_case_contracts,
         )
     )
+    overlay_validation_issue: str | None = None
     if (
         wrote_artifact
         and validation_retry_candidate is not None
         and not repair_candidate_tests_only
     ):
-        overlay_repairs = _overlay_validation_retry_candidate(
-            output_file,
-            artifact_root=artifact_root,
-            candidate=validation_retry_candidate,
-        )
-        if overlay_repairs:
-            print("  repair_candidate_overlay:" + ",".join(overlay_repairs))
-        materialized_paths = frozenset(
-            set(materialized_paths)
-            | {
+        try:
+            overlay_repairs = _overlay_validation_retry_candidate(
                 output_file,
-                *(
-                    {_rulespec_test_path(output_file)}
-                    if validation_retry_candidate.tests is not None
-                    else set()
-                ),
-            }
-        )
+                artifact_root=artifact_root,
+                candidate=validation_retry_candidate,
+            )
+        except _PreservedRepairOverlayError as exc:
+            # Do not restore an unusable base, but also do not accept this
+            # attempt: repair prompts may emit partial artifacts. Retaining the
+            # new output lets the next bounded attempt recover from a parseable
+            # base, while the explicit feedback requires a complete replacement.
+            overlay_validation_issue = (
+                "Retained repair candidate is unusable; emit a complete "
+                f"replacement: {exc}"
+            )
+            print(f"  repair_candidate_overlay_base_skipped:{exc}")
+        except ValueError as exc:
+            # An overlay failure is an ordinary validator rejection, not an
+            # encoder crash. Restore the retained candidate before validation
+            # so malformed or duplicate partial output cannot replace the
+            # healthier candidate used by later bounded attempts.
+            overlay_validation_issue = f"Repair candidate overlay failed: {exc}"
+            print(f"  repair_candidate_overlay_skipped:{exc}")
+            _clear_eval_target_artifacts(output_file, artifact_root)
+            _write_eval_artifact_text(
+                output_file,
+                validation_retry_candidate.rulespec,
+                artifact_root,
+            )
+            restored_paths = {output_file}
+            if validation_retry_candidate.tests is not None:
+                restored_test_file = _rulespec_test_path(output_file)
+                _write_eval_artifact_text(
+                    restored_test_file,
+                    validation_retry_candidate.tests,
+                    artifact_root,
+                )
+                restored_paths.add(restored_test_file)
+            materialized_paths = frozenset(
+                (
+                    set(materialized_paths)
+                    - {output_file, _rulespec_test_path(output_file)}
+                )
+                | restored_paths
+            )
+        else:
+            if overlay_repairs:
+                print("  repair_candidate_overlay:" + ",".join(overlay_repairs))
+            materialized_paths = frozenset(
+                set(materialized_paths)
+                | {
+                    output_file,
+                    *(
+                        {_rulespec_test_path(output_file)}
+                        if validation_retry_candidate.tests is not None
+                        else set()
+                    ),
+                }
+            )
     wrote_artifact = wrote_artifact and output_file in materialized_paths
     if wrote_artifact:
         eval_root = Path(output_root) / runner.name
@@ -8896,10 +8942,16 @@ def _run_single_eval(
             replacement_overlay_scope=replacement_overlay_scope,
             allow_artifact_repairs=not repair_candidate_tests_only,
         )
+    if overlay_validation_issue is not None and metrics is not None:
+        metrics.ci_pass = False
+        if overlay_validation_issue not in metrics.ci_issues:
+            metrics.ci_issues.append(overlay_validation_issue)
     validation_error = _eval_artifact_validation_error(
         metrics,
         require_policyengine=oracle == "policyengine",
     )
+    if overlay_validation_issue is not None and validation_error is None:
+        validation_error = "Generated RuleSpec failed CI validation"
     outcome = _eval_result_outcome(
         response,
         wrote_artifact=wrote_artifact,
@@ -16955,6 +17007,68 @@ def _normalize_repair_deferred_source_roots(
     return normalized, repairs
 
 
+def _repair_overlay_candidate_base_issue(
+    candidate: ValidationRetryCandidate,
+) -> str | None:
+    """Return why a retained candidate cannot safely receive partial overlays."""
+
+    try:
+        preserved = yaml.safe_load(candidate.rulespec)
+    except (UnicodeError, yaml.YAMLError, RecursionError) as exc:
+        return f"preserved repair overlay RuleSpec must be valid UTF-8 YAML: {exc}"
+    if not isinstance(preserved, dict):
+        return "preserved repair overlay RuleSpec must be a YAML mapping"
+
+    imports = preserved.get("imports", [])
+    if not isinstance(imports, list) or any(
+        not isinstance(import_target, str) for import_target in imports
+    ):
+        return "preserved repair overlay imports must be a list of strings"
+    preserved_rules = preserved.get("rules")
+    if not isinstance(preserved_rules, list):
+        return "preserved repair overlay rules must be a list"
+    try:
+        _merge_named_yaml_items([], preserved_rules, label="rules")
+    except ValueError as exc:
+        return str(exc)
+
+    module = preserved.get("module")
+    if isinstance(module, dict):
+        deferred_outputs = module.get("deferred_outputs", [])
+        if not isinstance(deferred_outputs, list):
+            return "preserved repair overlay deferred outputs must be a list"
+        seen_outputs: set[str] = set()
+        for item in deferred_outputs:
+            if not isinstance(item, dict) or not isinstance(item.get("output"), str):
+                return "preserved deferred outputs must name an output"
+            output = item["output"]
+            if output in seen_outputs:
+                return (
+                    f"preserved deferred outputs contains duplicate output `{output}`"
+                )
+            seen_outputs.add(output)
+
+    if candidate.tests is None:
+        return None
+    try:
+        preserved_tests = yaml.safe_load(candidate.tests)
+    except (UnicodeError, yaml.YAMLError, RecursionError) as exc:
+        return f"preserved repair overlay tests must be valid UTF-8 YAML: {exc}"
+    if isinstance(preserved_tests, dict):
+        if set(preserved_tests) != {"cases"}:
+            return "preserved companion test mapping must contain cases"
+        preserved_cases = preserved_tests["cases"]
+    else:
+        preserved_cases = preserved_tests
+    if not isinstance(preserved_cases, list):
+        return "preserved companion test cases must be a list"
+    try:
+        _merge_named_yaml_items([], preserved_cases, label="companion tests")
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def _overlay_validation_retry_candidate(
     rulespec_file: Path,
     *,
@@ -16963,13 +17077,22 @@ def _overlay_validation_retry_candidate(
 ) -> tuple[str, ...]:
     """Overlay partial repair output onto its integrity-bound prior candidate."""
 
+    base_issue = _repair_overlay_candidate_base_issue(candidate)
+    if base_issue is not None:
+        raise _PreservedRepairOverlayError(base_issue)
     try:
         generated = yaml.safe_load(rulespec_file.read_text(encoding="utf-8"))
-        preserved = yaml.safe_load(candidate.rulespec)
     except (OSError, UnicodeError, yaml.YAMLError, RecursionError) as exc:
-        raise ValueError("repair overlay RuleSpec must be valid UTF-8 YAML") from exc
-    if not isinstance(generated, dict) or not isinstance(preserved, dict):
-        raise ValueError("repair overlay RuleSpec must be a YAML mapping")
+        raise ValueError(
+            "generated repair overlay RuleSpec must be valid UTF-8 YAML"
+        ) from exc
+    preserved = yaml.safe_load(candidate.rulespec)
+    if not isinstance(generated, dict):
+        raise ValueError("generated repair overlay RuleSpec must be a YAML mapping")
+    if not isinstance(preserved, dict):
+        raise _PreservedRepairOverlayError(
+            "preserved repair overlay RuleSpec must be a YAML mapping"
+        )
 
     repairs: list[str] = []
     generated_imports = generated.get("imports", [])

@@ -1,0 +1,1 @@
+Keep bounded encoder repairs running when a generated retry cannot be overlaid onto its retained candidate, so duplicate names or malformed YAML become validator feedback instead of aborting the remaining attempts.
