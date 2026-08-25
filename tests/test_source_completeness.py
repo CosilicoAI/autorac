@@ -5883,6 +5883,29 @@ def test_percentage_boundary_comparison_uses_resolved_case_scale():
         extract_numeric_occurrences=extractor,
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
+    qualified_source = source.removesuffix(".") + ", based on household size."
+    qualified_boundary = extractor(qualified_source)[0]
+    qualified_interval = completeness_module._formula_interval_from_text(
+        qualified_source,
+        extract_numeric_occurrences=extractor,
+    )
+    assert qualified_interval is not None
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= poverty_rate * household_size",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=qualified_boundary,
+        source_text=qualified_source,
+        formula_environment={
+            "assistance": 5.2,
+            "household_size": 4,
+            "poverty_rate": 1.3,
+        },
+        source_interval=qualified_interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
 
     multi_amount_source = (
         "The poverty guideline is updated, and assistance does not exceed "
@@ -31550,6 +31573,9 @@ def test_and_or_in_legal_prose_is_not_treated_as_division():
     )
 
     assert "divide" not in completeness_module._formula_operation_kinds(source)
+    assert "divide" not in completeness_module._formula_operation_kinds(
+        "The agency must notify the alien and / or household representative."
+    )
     assert "divide" in completeness_module._formula_operation_kinds("income / 2")
     assert "divide" in completeness_module._formula_operation_kinds("$5/person")
 
@@ -32701,6 +32727,11 @@ def test_generic_at_least_one_criterion_chapeau_accepts_descendant_selector():
         source,
         "member_owns_luxury_car",
         supporting_texts=("A member is admitted as a refugee.",),
+    )
+    assert not completeness_module._source_exception_selector_is_relevant(
+        source,
+        "member_owns_luxury_car",
+        supporting_texts=("The household owns a car.",),
     )
     assert completeness_module._source_exception_selector_is_relevant(
         "At least one of the conditions applies: refugee status.",

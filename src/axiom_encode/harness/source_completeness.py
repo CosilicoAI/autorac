@@ -17508,6 +17508,7 @@ def _formula_operation_kinds(text: str) -> set[str]:
         return parsed_operations
     operations: set[str] = set()
     lowered_text = text.lower()
+    arithmetic_text = re.sub(r"\band\s*/\s*or\b", "and or", lowered_text)
     operation_patterns = {
         "add": (
             r"(?:\+|\bplus\b|\bsumme\b|\bsum\s+of\b|\bzuzüglich\b|"
@@ -17542,7 +17543,7 @@ def _formula_operation_kinds(text: str) -> set[str]:
     operations.update(
         operation
         for operation, pattern in operation_patterns.items()
-        if re.search(pattern, lowered_text, flags=re.IGNORECASE)
+        if re.search(pattern, arithmetic_text, flags=re.IGNORECASE)
     )
     return operations
 
@@ -21244,7 +21245,7 @@ def _source_percentage_base_matches(
 
     trailing_text = source_text[boundary.end :]
     explicit_base = re.match(
-        r"\s*%?\s+of\b(?P<base>[^.;:]{1,160})",
+        r"\s*%?\s+of\b(?P<base>[^,.;:]{1,160})",
         trailing_text,
         flags=re.IGNORECASE,
     )
@@ -23809,11 +23810,10 @@ def _source_selector_distinctive_concept_matches(
         and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
         and token not in _SOURCE_SELECTOR_GENERIC_ENTITY_TOKENS
     )
-    return bool(distinctive_tokens) and bool(
-        _source_selector_concept_matches(
-            _collapse_text(text).lower(),
-            "_".join(distinctive_tokens),
-        )
+    collapsed = _collapse_text(text).lower()
+    return bool(distinctive_tokens) and all(
+        re.search(rf"\b{re.escape(token)}\w*", collapsed) is not None
+        for token in distinctive_tokens
     )
 
 
