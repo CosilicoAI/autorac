@@ -5867,6 +5867,49 @@ def test_percentage_boundary_comparison_uses_resolved_case_scale():
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
 
+    multi_amount_source = (
+        "The poverty guideline is updated, and assistance does not exceed "
+        "130 percent of earned income."
+    )
+    multi_amount_boundary = extractor(multi_amount_source)[0]
+    multi_amount_interval = completeness_module._formula_interval_from_text(
+        multi_amount_source,
+        extract_numeric_occurrences=extractor,
+    )
+    assert multi_amount_interval is not None
+    assert completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= earned_income * poverty_rate",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=multi_amount_boundary,
+        source_text=multi_amount_source,
+        formula_environment={
+            "assistance": 26_000,
+            "earned_income": 20_000,
+            "poverty_rate": 1.3,
+        },
+        source_interval=multi_amount_interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= poverty_guideline * poverty_rate",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=multi_amount_boundary,
+        source_text=multi_amount_source,
+        formula_environment={
+            "assistance": 26_000,
+            "poverty_guideline": 20_000,
+            "poverty_rate": 1.3,
+        },
+        source_interval=multi_amount_interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
 
 @pytest.mark.parametrize("floor_expression", ("bracket_floor", "5000"))
 def test_progressive_max_clamp_binds_exact_source_lower_boundary(
@@ -32632,6 +32675,24 @@ def test_inability_or_unwillingness_is_active_missing_documentation_condition():
     assert completeness_module._source_exception_selector_active_value(
         source,
         "alien_status_documentation_missing_or_unwilling",
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "selector"),
+    (
+        ("When the person is unwilling to provide documentation.", "is_unwilling"),
+        ("When the person is unable to work.", "is_unable"),
+        ("When the person indicates inability to work.", "has_inability"),
+    ),
+)
+def test_negative_condition_name_is_active_when_source_uses_same_condition(
+    source: str,
+    selector: str,
+):
+    assert completeness_module._source_exception_selector_active_value(
+        source,
+        selector,
     )
 
 

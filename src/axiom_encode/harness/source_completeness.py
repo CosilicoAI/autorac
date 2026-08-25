@@ -21182,9 +21182,10 @@ def _formula_node_boundary_value(
                 and not base_names.intersection(boundary_names)
                 and source_text is not None
                 and any(
-                    _source_selector_concept_matches(
-                        _collapse_text(source_text).lower(),
-                        _normalized_selector_name(base_name),
+                    _source_percentage_base_matches(
+                        source_text,
+                        boundary=boundary,
+                        base_name=base_name,
                     )
                     for base_name in base_names
                 )
@@ -21228,6 +21229,31 @@ def _formula_node_boundary_value(
             )
         ),
         None,
+    )
+
+
+def _source_percentage_base_matches(
+    source_text: str,
+    *,
+    boundary: NumericOccurrenceLike,
+    base_name: str,
+) -> bool:
+    """Require an explicit ``percent of`` base when the source provides one."""
+
+    trailing_text = source_text[boundary.end :]
+    explicit_base = re.match(
+        r"\s+of\b(?P<base>[^.;:]{1,160})",
+        trailing_text,
+        flags=re.IGNORECASE,
+    )
+    searchable_text = (
+        explicit_base.group("base") if explicit_base is not None else source_text
+    )
+    return bool(
+        _source_selector_concept_matches(
+            _collapse_text(searchable_text).lower(),
+            _normalized_selector_name(base_name),
+        )
     )
 
 
@@ -24165,6 +24191,10 @@ def _selector_identifier_negation_count(normalized_name: str) -> int:
             "no",
             "non",
             "not",
+            "inability",
+            "unable",
+            "unwilling",
+            "unwillingness",
             "without",
         }
         for token in normalized_name.split("_")
