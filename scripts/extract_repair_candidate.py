@@ -174,9 +174,7 @@ def _retained_candidate(
     retained_paths = {path for path in files if path.startswith(f"{root}/")}
     expected_paths = {issues_path, candidate_path, tests_path}
     if retained_paths and retained_paths != expected_paths:
-        raise ValueError(
-            "retained repair candidate must bind exactly three files"
-        )
+        raise ValueError("retained repair candidate must bind exactly three files")
     if issues_path not in files:
         return None
     try:
@@ -208,9 +206,7 @@ def _retained_candidate(
         or SHA256_PATTERN.fullmatch(metadata["tests_sha256"]) is None
     ):
         raise ValueError("retained repair candidate metadata is invalid")
-    candidate = _verified_generated_file(
-        bundle, members, files, candidate_path
-    )
+    candidate = _verified_generated_file(bundle, members, files, candidate_path)
     tests = _verified_generated_file(
         bundle,
         members,
@@ -270,9 +266,7 @@ def _repair_lane_for_atomic_source(
                 "atomic_source_input"
             ) from exc
         if split != expected:
-            raise ValueError(
-                "repair artifact metadata mismatch: atomic_source_input"
-            )
+            raise ValueError("repair artifact metadata mismatch: atomic_source_input")
         return "target-preflight" if expected["source_bundle"] else "target"
     if expected != {
         "canonical_refresh_bundle": [],
@@ -342,9 +336,7 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
                 raise ValueError(
                     f"repair artifact is not a compatible single-target run: {field}"
                 )
-        repair_lane = _repair_lane_for_atomic_source(
-            metadata, args.atomic_source_json
-        )
+        repair_lane = _repair_lane_for_atomic_source(metadata, args.atomic_source_json)
         if metadata.get("workflow_run_attempt") != 1:
             raise ValueError("repair artifact must come from workflow attempt 1")
         if metadata.get("failed_steps") != ["encode_apply"]:
@@ -395,9 +387,7 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
         if retained is None:
             candidate_path = f"{repair_lane}/{runner}/{expected_module}"
             test_path = candidate_path.removesuffix(".yaml") + ".test.yaml"
-            candidate = _verified_generated_file(
-                bundle, members, files, candidate_path
-            )
+            candidate = _verified_generated_file(bundle, members, files, candidate_path)
             tests = _verified_generated_file(bundle, members, files, test_path)
         else:
             candidate, tests = retained

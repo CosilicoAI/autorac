@@ -1269,6 +1269,15 @@ _SOURCE_SELECTOR_TOKEN_STOPWORDS = frozenset(
         "without",
     }
 )
+_SOURCE_SELECTOR_GENERIC_ENTITY_TOKENS = frozenset(
+    {"alien", "applicant", "household", "individual", "member", "person"}
+)
+_SOURCE_GENERIC_NUMERIC_NAME_TOKENS = frozenset({"amount", "value"})
+_SOURCE_ACRONYM_EXPANSIONS = {
+    "fpl": ("federal", "poverty", "level"),
+    "lpr": ("lawful", "permanent", "resident"),
+    "ssn": ("social", "security", "number"),
+}
 _NEGATIVE_NONAPPLICABILITY_LANGUAGE = re.compile(
     r"\b(?:"
     r"(?:shall|does)\s+not\s+apply|"
@@ -12871,7 +12880,7 @@ def _source_proposition_bounds(text: str, start: int, end: int) -> tuple[int, in
     boundaries.extend(
         match.end()
         for match in re.finditer(
-            r";|[.!?](?=\s+(?:[A-Z(]|\d+\s*[.)]))",
+            r";|[.!?:](?=\s+(?:[A-Z(]|\d+\s*[.)]|\d+\s+(?:After|For)\b))",
             text,
         )
     )
@@ -14936,6 +14945,7 @@ def _companion_test_issues(
         )
         missing_exception_branches = _unwitnessed_exception_branches(
             paired_exception_branches,
+            principal_rules=principal_rules,
             principal_rule_paths=principal_rule_paths,
             toggled_exception_selectors=toggled_exception_selectors,
             extract_numeric_occurrences=extract_numeric_occurrences,
@@ -17504,6 +17514,7 @@ def _formula_operation_kinds(text: str) -> set[str]:
         return parsed_operations
     operations: set[str] = set()
     lowered_text = text.lower()
+    arithmetic_text = re.sub(r"\band\s*/\s*or\b", "and or", lowered_text)
     operation_patterns = {
         "add": (
             r"(?:\+|\bplus\b|\bsumme\b|\bsum\s+of\b|\bzuzüglich\b|"
@@ -17531,14 +17542,14 @@ def _formula_operation_kinds(text: str) -> set[str]:
             r"\b(?:doppelte|zweifache|dreifache|twice)\b)"
         ),
         "divide": (
-            r"(?:/|\bgeteilt\b|\bteilen\b|\bdivided\b|"
+            r"(?:(?<!\band)/(?!or\b)|\bgeteilt\b|\bteilen\b|\bdivided\b|"
             r"\bhälfte\b|\bhalbier\w*\b|\bhalbierung\b|\bhalf\s+of\b)"
         ),
     }
     operations.update(
         operation
         for operation, pattern in operation_patterns.items()
-        if re.search(pattern, lowered_text, flags=re.IGNORECASE)
+        if re.search(pattern, arithmetic_text, flags=re.IGNORECASE)
     )
     return operations
 
@@ -20512,6 +20523,13 @@ def _branch_boundary_test_witnesses(
             )
             if execution is None:
                 continue
+            execution_environment = _case_formula_identifier_environment(
+                case,
+                formula_environment=formula_environment or {},
+                dependency_environment=dependency_environment,
+            )
+            if execution_environment is None:
+                continue
             for (
                 controller_rule,
                 controller_execution,
@@ -20533,8 +20551,10 @@ def _branch_boundary_test_witnesses(
                     and _formula_execution_binds_boundary(
                         controller_execution,
                         boundary,
+                        source_text=authoritative_numeric_recall_text(branch.text),
                         input_names=input_names,
                         formula_environment=(controller_execution.constant_environment),
+                        evaluation_environment=execution_environment,
                         source_bound_constant_occurrences=(
                             source_bound_constant_occurrences or {}
                         ),
@@ -20646,8 +20666,10 @@ def _formula_execution_binds_boundary(
     execution: _FormulaExecution,
     boundary: NumericOccurrenceLike,
     *,
+    source_text: str,
     input_names: set[str],
     formula_environment: dict[str, Any],
+    evaluation_environment: dict[str, Any] | None = None,
     source_bound_constant_occurrences: dict[str, tuple[NumericOccurrenceLike, ...]],
     source_interval: _NumericInterval | None,
     source_boolean_polarity: int,
@@ -20679,6 +20701,8 @@ def _formula_execution_binds_boundary(
             continue
         checks.extend((selector, True) for selector in step.selectors)
     checks.append((execution.leaf, source_boolean_polarity < 0))
+    resolved_environment = dict(formula_environment)
+    resolved_environment.update(evaluation_environment or {})
     return any(
         _formula_text_has_boundary_comparison(
             text,
@@ -20686,7 +20710,8 @@ def _formula_execution_binds_boundary(
             input_names=input_names,
             boundary_names=boundary_names,
             boundary=boundary,
-            formula_environment=formula_environment,
+            source_text=source_text,
+            formula_environment=resolved_environment,
             source_bound_boundary_names=source_bound_boundary_names,
             source_bound_constant_occurrences=source_bound_constant_occurrences,
             source_interval=source_interval,
@@ -20704,6 +20729,7 @@ def _formula_text_has_boundary_comparison(
     input_names: set[str],
     boundary_names: set[str],
     boundary: NumericOccurrenceLike,
+    source_text: str | None = None,
     formula_environment: dict[str, Any],
     source_interval: _NumericInterval | None,
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
@@ -20740,6 +20766,7 @@ def _formula_text_has_boundary_comparison(
                     boundary_node,
                     boundary_names=boundary_names,
                     boundary=boundary,
+                    source_text=source_text,
                     formula_environment=formula_environment,
                     extract_numeric_occurrences=extract_numeric_occurrences,
                     numeric_value_is_grounded=numeric_value_is_grounded,
@@ -21136,6 +21163,7 @@ def _formula_node_boundary_value(
     *,
     boundary_names: set[str],
     boundary: NumericOccurrenceLike,
+    source_text: str | None = None,
     formula_environment: dict[str, Any],
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
     numeric_value_is_grounded: NumericGroundingPredicate,
@@ -21144,6 +21172,43 @@ def _formula_node_boundary_value(
         value = formula_environment.get(node.id)
         if _rulespec_runtime_decimal(value) is not None:
             return float(value)
+    node_names = {
+        candidate.id for candidate in ast.walk(node) if isinstance(candidate, ast.Name)
+    }
+    boundary_factor: ast.AST | None = None
+    if node_names and node_names.issubset(boundary_names):
+        boundary_factor = node
+    elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+        for candidate, base in ((node.left, node.right), (node.right, node.left)):
+            candidate_names = {
+                name.id for name in ast.walk(candidate) if isinstance(name, ast.Name)
+            }
+            base_names = {
+                name.id for name in ast.walk(base) if isinstance(name, ast.Name)
+            }
+            if (
+                candidate_names
+                and candidate_names.issubset(boundary_names)
+                and isinstance(base, ast.Name)
+                and not base_names.intersection(boundary_names)
+                and boundary.has_rate_context
+                and source_text is not None
+                and _source_percentage_base_matches(
+                    source_text,
+                    boundary=boundary,
+                    base_name=base.id,
+                )
+            ):
+                boundary_factor = candidate
+                break
+    if boundary_factor is not None:
+        value = _evaluate_condition_expression(boundary_factor, formula_environment)
+        numeric_value = _rulespec_runtime_decimal(value)
+        if numeric_value is not None and numeric_value_is_grounded(
+            float(numeric_value),
+            (boundary,),
+        ):
+            return float(numeric_value)
     if (
         isinstance(node, ast.Constant)
         and isinstance(
@@ -21174,6 +21239,49 @@ def _formula_node_boundary_value(
         ),
         None,
     )
+
+
+def _source_percentage_base_matches(
+    source_text: str,
+    *,
+    boundary: NumericOccurrenceLike,
+    base_name: str,
+) -> bool:
+    """Require an explicit ``percent of`` base when the source provides one."""
+
+    trailing_text = source_text[boundary.end :]
+    explicit_base = re.match(
+        r"\s*%?\s+of\b(?P<base>[^,.;:]{1,160}?)"
+        r"(?=\s+\b(?:after|before|less|minus|plus|subtract\w*|add\w*|"
+        r"reduc\w*|increas\w*)\b|[,.;:]|$)",
+        trailing_text,
+        flags=re.IGNORECASE,
+    )
+    if explicit_base is None:
+        return False
+    searchable_text = explicit_base.group("base")
+    collapsed = _collapse_text(searchable_text).lower()
+    concept_tokens = tuple(
+        token
+        for token in _normalized_selector_name(base_name).split("_")
+        if (len(token) >= 4 or token in _SOURCE_ACRONYM_EXPANSIONS)
+        and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
+        and token not in _SOURCE_SELECTOR_GENERIC_ENTITY_TOKENS
+        and token not in _SOURCE_GENERIC_NUMERIC_NAME_TOKENS
+    )
+    return bool(concept_tokens) and all(
+        _source_concept_token_matches(collapsed, token) for token in concept_tokens
+    )
+
+
+def _source_concept_token_matches(text: str, token: str) -> bool:
+    expansion = _SOURCE_ACRONYM_EXPANSIONS.get(token)
+    if expansion is not None:
+        return all(
+            re.search(rf"\b{re.escape(part)}\w*", text) is not None
+            for part in expansion
+        )
+    return re.search(rf"\b{re.escape(token)}\w*", text) is not None
 
 
 def _source_interval_and_polarity_for_boundary(
@@ -23214,6 +23322,7 @@ def _rounding_source_formula_branches(
 def _unwitnessed_exception_branches(
     exception_branches: Sequence[SourceStructureBranch],
     *,
+    principal_rules: dict[str, dict[str, Any]],
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
     toggled_exception_selectors: set[_ExceptionWitness],
     extract_numeric_occurrences: NumericOccurrenceExtractor,
@@ -23221,6 +23330,7 @@ def _unwitnessed_exception_branches(
     candidate_witnesses = {
         branch: _exception_witnesses_for_branch(
             branch,
+            principal_rules=principal_rules,
             principal_rule_paths=principal_rule_paths,
             toggled_exception_selectors=toggled_exception_selectors,
             extract_numeric_occurrences=extract_numeric_occurrences,
@@ -23286,6 +23396,7 @@ def _unconditional_nonapplicability_witnesses(
 def _exception_witnesses_for_branch(
     branch: SourceStructureBranch,
     *,
+    principal_rules: dict[str, dict[str, Any]],
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
     toggled_exception_selectors: set[_ExceptionWitness],
     extract_numeric_occurrences: NumericOccurrenceExtractor,
@@ -23303,7 +23414,7 @@ def _exception_witnesses_for_branch(
     requirement = _source_exception_effect_requirement(branch.text)
     condition_text = _source_exception_condition_text(branch.text)
     numeric_interval = _formula_interval_from_text(
-        authoritative_numeric_recall_text(branch.text),
+        authoritative_numeric_recall_text(condition_text),
         extract_numeric_occurrences=extract_numeric_occurrences,
     )
     return {
@@ -23318,7 +23429,14 @@ def _exception_witnesses_for_branch(
             )
             if witness.numeric_transition is not None
             else (
-                numeric_interval is None
+                (
+                    numeric_interval is None
+                    or not _selector_targets_numeric_condition(
+                        condition_text,
+                        witness.selector_name,
+                        numeric_interval=numeric_interval,
+                    )
+                )
                 and witness.active_value
                 == _source_exception_selector_active_value(
                     condition_text,
@@ -23329,9 +23447,60 @@ def _exception_witnesses_for_branch(
         and _source_exception_selector_is_relevant(
             condition_text,
             witness.selector_name,
+            supporting_texts=tuple(
+                excerpt
+                for _citation_path, excerpt in _rule_source_excerpts(
+                    principal_rules[witness.rule_name]
+                )
+            ),
         )
-        and _exception_witness_satisfies_requirement(witness, requirement)
+        and _exception_witness_satisfies_requirement(
+            witness,
+            requirement,
+            rule=principal_rules[witness.rule_name],
+        )
     }
+
+
+def _selector_targets_numeric_condition(
+    text: str,
+    selector_name: str,
+    *,
+    numeric_interval: _NumericInterval,
+) -> bool:
+    """Identify a Boolean selector that merely restates a numeric predicate."""
+
+    normalized_name = _normalized_selector_name(selector_name)
+    selector_tokens = set(normalized_name.split("_"))
+    numeric_selector_tokens = _FORMULA_NUMERIC_OPERAND_HEADS | {
+        "age",
+        "day",
+        "days",
+        "month",
+        "months",
+        "year",
+        "years",
+    }
+    if not selector_tokens & numeric_selector_tokens:
+        return False
+    boundary_end = max(
+        boundary.end
+        for boundary in (numeric_interval.lower, numeric_interval.upper)
+        if boundary is not None
+    )
+    matches = tuple(_source_selector_concept_matches(text, normalized_name))
+    if any(
+        match.start() > boundary_end
+        and re.search(
+            r"\b(?:unless|except(?:\s+when)?|au(?:ß|ss)er|es\s+sei\s+denn)\b",
+            text[boundary_end : match.start()],
+            flags=re.IGNORECASE,
+        )
+        is not None
+        for match in matches
+    ):
+        return False
+    return bool(matches)
 
 
 def _source_exception_condition_text(text: str) -> str:
@@ -23581,6 +23750,79 @@ def _source_negative_effect_matches(text: str) -> tuple[re.Match[str], ...]:
     )
 
 
+def _source_negative_output_predicate_matches(
+    text: str,
+) -> tuple[re.Match[str], ...]:
+    """Match a negative legal effect, excluding negative subject modifiers."""
+
+    return tuple(
+        re.finditer(
+            r"\b(?:must|shall|will|is|are|becomes?)\s+(?:be\s+)?"
+            r"(?:(?:an?|the)\s+)?"
+            r"(?:ineligible|excluded|disqualified|unqualified)\b|"
+            r"\b(?:must|shall|will)\s+classif\w*[^.;]{0,80}\bas\s+"
+            r"(?:an?\s+)?(?:ineligible|excluded|disqualified|unqualified)\b|"
+            r"\b(?:must|shall|will|is|are)\s+(?:be\s+)?"
+            r"(?:classif\w*\s+as|deem\w*(?:\s+as)?|treat\w*(?:\s+as)?)\s+"
+            r"(?:an?\s+)?(?:ineligible|excluded|disqualified|unqualified)\b|"
+            r"\b(?:shall|does|is|are|will)\s+not\s+(?:be\s+)?"
+            r"(?:apply|eligible|qualified|allowed|entitled)\b|"
+            r"\bnicht\s+berechtigt\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _described_output_clause(text: str) -> str:
+    """Return the main output clause without a subordinate condition."""
+
+    normalized = " ".join(text.split())
+    leading_condition = re.match(
+        r"^(?:if|when|unless|except\s+when)\b[^,;]*[,;]\s*(?P<output>.+)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if leading_condition is not None:
+        return leading_condition.group("output")
+    trailing_condition = re.search(
+        r"\b(?:if|when|unless|except\s+when)\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if trailing_condition is not None:
+        return normalized[: trailing_condition.start()].strip()
+    return normalized
+
+
+def _rule_has_negative_output_semantics(
+    rule: Mapping[str, Any] | None,
+    *,
+    fallback_name: str,
+) -> bool:
+    """Infer polarity from the described output, or a predicate-shaped name."""
+
+    description = str(rule.get("description") or "").strip() if rule else ""
+    if description:
+        output_clause = _described_output_clause(description)
+        negative_output = bool(_source_negative_output_predicate_matches(output_clause))
+        positive_output = bool(_source_positive_effect_matches(output_clause))
+        if negative_output or positive_output:
+            return negative_output and not positive_output
+    name = str(rule.get("name") or fallback_name) if rule else fallback_name
+    normalized_name = re.sub(r"[^a-z0-9]+", "_", name.casefold()).strip("_")
+    name_tokens = normalized_name.split("_")
+    negative_predicates = {"disqualified", "excluded", "ineligible", "unqualified"}
+    return any(
+        token in negative_predicates
+        and (
+            index + 1 == len(name_tokens)
+            or name_tokens[index + 1] not in _SOURCE_SELECTOR_GENERIC_ENTITY_TOKENS
+        )
+        for index, token in enumerate(name_tokens)
+    )
+
+
 def _exception_reverses_negative_proposition(text: str) -> bool:
     reversal = re.search(
         r"\b(?:außer|ausser|es\s+sei\s+denn|unless|except)\b",
@@ -23596,6 +23838,7 @@ def _exception_reverses_negative_proposition(text: str) -> bool:
             r"\bfindet\s+keine\s+anwendung\b|"
             r"\b(?:does|shall)\s+not\s+apply\b|"
             r"\b(?:is|are)\s+not\s+(?:eligible|qualified|entitled)\b|"
+            r"\bno\b[^.;]{0,80}\b(?:is|are)\s+(?:eligible|qualified|entitled)\b|"
             r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\bkein(?:e|en|em|er|es)?\s+(?:anspruch|berechtigung)\b",
             proposition,
@@ -23605,18 +23848,52 @@ def _exception_reverses_negative_proposition(text: str) -> bool:
     )
 
 
-def _source_exception_selector_is_relevant(text: str, name: str) -> bool:
+def _source_exception_selector_is_relevant(
+    text: str,
+    name: str,
+    *,
+    supporting_texts: Sequence[str] = (),
+) -> bool:
     """Reject formula toggles with no semantic link to the source exception."""
 
     normalized_name = _normalized_selector_name(name)
     collapsed = _collapse_text(text).lower()
     if _source_selector_concept_matches(collapsed, normalized_name):
         return True
+    if re.search(
+        r"\b(?:at\s+least\s+one|one\s+or\s+more)\b[^.;]{0,80}"
+        r"\b(?:criteria|conditions|requirements)\b",
+        collapsed,
+    ):
+        return any(
+            _source_selector_distinctive_concept_matches(
+                supporting_text,
+                normalized_name,
+            )
+            for supporting_text in supporting_texts
+        )
     return any(
         len(token) >= 4
         and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
         and re.search(rf"\b{re.escape(token)}\w*", collapsed) is not None
         for token in normalized_name.split("_")
+    )
+
+
+def _source_selector_distinctive_concept_matches(
+    text: str,
+    normalized_name: str,
+) -> bool:
+    distinctive_tokens = tuple(
+        token
+        for token in normalized_name.split("_")
+        if (len(token) >= 4 or token in _SOURCE_ACRONYM_EXPANSIONS)
+        and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
+        and token not in _SOURCE_SELECTOR_GENERIC_ENTITY_TOKENS
+    )
+    collapsed = _collapse_text(text).lower()
+    return bool(distinctive_tokens) and all(
+        _source_concept_token_matches(collapsed, token) for token in distinctive_tokens
     )
 
 
@@ -24027,65 +24304,108 @@ def _source_selector_concept_polarity(
     for match in _source_selector_concept_matches(text, normalized_name):
         before = text[max(0, match.start() - 48) : match.start()]
         after = text[match.end() : min(len(text), match.end() + 48)]
-        negative = bool(
+        inherently_negative = bool(
             re.fullmatch(
-                r"(?:ineligible|disqualified|unqualified)",
+                r"(?:ineligible|disqualified|unqualified|inability|unable|"
+                r"unwilling|unwillingness)",
                 match.group(0),
                 flags=re.IGNORECASE,
             )
-            or re.search(
-                r"\b(?:kein(?:e|en|em|er|es)?|fehlend\w*|ohne|mangels|"
-                r"no|without|lack(?:ing)?(?:\s+of)?|absence\s+of)"
-                r"\b[^.;]{0,40}$|"
-                r"\b(?:nicht|not)\s+(?:\w+\s+){0,1}$",
-                before,
+        )
+        explicit_prefix = re.search(
+            r"\b(?:kein(?:e|en|em|er|es)?|fehlend\w*|ohne|mangels|"
+            r"no|without|lack(?:ing)?(?:\s+of)?|absence\s+of|nicht|not)\b"
+            r"(?P<scope>[^.;,:]{0,80})$",
+            before,
+            flags=re.IGNORECASE,
+        )
+        prefix_scope = explicit_prefix.group("scope") if explicit_prefix else ""
+        prefix_crosses_predicate = bool(
+            re.search(
+                r"\b(?:although|because|but|except|if|unless|when|while)\b|"
+                r"\b(?:and|or|und|oder)\b\s+"
+                r"(?:(?:the|a|an|der|die|das|ein(?:e|en|em|er|es)?)\s+)?"
+                r"(?:\w+\s+){0,3}"
+                r"(?:is|are|was|were|has|have|does|do|shall|must|can|"
+                r"ist|sind|hat|haben)\b",
+                prefix_scope,
                 flags=re.IGNORECASE,
             )
+            or (
+                inherently_negative
+                and re.search(
+                    r"\b(?:and|or|und|oder)\b",
+                    prefix_scope,
+                    flags=re.IGNORECASE,
+                )
+                is not None
+            )
+        )
+        explicitly_negated = bool(
+            (explicit_prefix is not None and not prefix_crosses_predicate)
             or re.match(
-                r"[^.;]{0,40}\b(?:fehlt|fehlen|nicht\s+(?:vorhanden|"
+                r"\s+(?:fehlt|fehlen|nicht\s+(?:vorhanden|"
                 r"gegeben)|liegt\s+nicht\s+vor|is\s+not\s+present|"
                 r"is\s+absent)\b",
                 after,
                 flags=re.IGNORECASE,
             )
         )
+        negative = inherently_negative != explicitly_negated
         polarities.add(-1 if negative else 1)
     return next(iter(polarities)) if len(polarities) == 1 else None
 
 
 def _selector_identifier_negation_count(normalized_name: str) -> int:
-    count = sum(
+    tokens = normalized_name.split("_")
+    explicit_negation_count = sum(
         token
         in {
-            "absent",
-            "lacking",
-            "missing",
             "no",
             "non",
             "not",
             "without",
         }
-        for token in normalized_name.split("_")
+        for token in tokens
     )
-    count += sum(
-        marker in normalized_name.split("_")
-        for marker in {"disqualified", "ineligible", "unqualified"}
+    has_negative_state = any(
+        token
+        in {
+            "absent",
+            "disqualified",
+            "inability",
+            "ineligible",
+            "lacking",
+            "missing",
+            "unable",
+            "unqualified",
+            "unwilling",
+            "unwillingness",
+        }
+        for token in tokens
     )
-    return count
+    return explicit_negation_count + int(has_negative_state)
 
 
 def _exception_witness_satisfies_requirement(
     witness: _ExceptionWitness,
     requirement: str,
+    *,
+    rule: Mapping[str, Any] | None = None,
 ) -> bool:
+    negative_output = _rule_has_negative_output_semantics(
+        rule,
+        fallback_name=witness.rule_name,
+    )
+    effective_blocks = witness.blocks != negative_output
     if requirement == "zero":
         return witness.zeroes
     if requirement == "enable":
-        return (witness.boolean_effect and not witness.blocks) or (
+        return (witness.boolean_effect and not effective_blocks) or (
             not witness.boolean_effect
         )
     if requirement == "exclude":
-        return witness.blocks or not witness.boolean_effect
+        return effective_blocks or not witness.boolean_effect
     return True
 
 

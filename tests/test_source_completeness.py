@@ -2273,6 +2273,48 @@ def test_later_independent_condition_in_same_sentence_does_not_contaminate():
     assert not _has_issue(result, "source-explicit-conditions")
 
 
+def test_proposition_bounds_split_bare_footnote_before_following_sentence():
+    source = (
+        "A battered alien is exempt when the agency approves the case. 3 "
+        "After 12 months, deeming stops if a court recognizes the battery and "
+        "the alien lives apart."
+    )
+    excerpt = "the agency approves the case"
+    start = source.index(excerpt)
+    end = start + len(excerpt)
+
+    proposition_start, proposition_end = completeness_module._source_proposition_bounds(
+        source,
+        start,
+        end,
+    )
+
+    assert source[proposition_start:proposition_end] == (
+        "A battered alien is exempt when the agency approves the case."
+    )
+
+
+def test_proposition_bounds_split_chapeau_before_labeled_children():
+    source = (
+        "A qualified alien is immediately eligible if the individual meets one "
+        "criterion: (A) The alien has qualifying quarters. (B) The alien is a refugee."
+    )
+    excerpt = "meets one criterion"
+    start = source.index(excerpt)
+    end = start + len(excerpt)
+
+    proposition_start, proposition_end = completeness_module._source_proposition_bounds(
+        source,
+        start,
+        end,
+    )
+
+    assert source[proposition_start:proposition_end] == (
+        "A qualified alien is immediately eligible if the individual meets one "
+        "criterion:"
+    )
+
+
 def test_elided_subject_later_condition_does_not_contaminate_atomic_proposition():
     source = (
         "A credit applies if certification status holds, and is refundable if "
@@ -5763,6 +5805,304 @@ def test_progressive_min_clamp_binds_matching_subtracted_offset():
         formula_environment={"rate": 0.02, "lower_bound": 100, "ceiling": 500},
         source_interval=interval,
         extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+
+def test_percentage_boundary_comparison_uses_resolved_case_scale():
+    source = "Assistance does not exceed 130 percent of the poverty guideline."
+    extractor = functools.partial(
+        extract_typed_numeric_inventory_occurrences_from_text,
+        profile="legacy",
+    )
+    boundary = extractor(source)[0]
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=extractor,
+    )
+
+    assert interval is not None
+    assert completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= poverty_guideline * poverty_rate",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=boundary,
+        source_text=source,
+        formula_environment={
+            "assistance": 26_000,
+            "poverty_guideline": 20_000,
+            "poverty_rate": 1.3,
+        },
+        source_interval=interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= poverty_rate + 999999",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=boundary,
+        source_text=source,
+        formula_environment={"assistance": 26_000, "poverty_rate": 1.3},
+        source_interval=interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= unrelated_amount * poverty_rate",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=boundary,
+        source_text=source,
+        formula_environment={
+            "assistance": 26_000,
+            "unrelated_amount": 20_000,
+            "poverty_rate": 1.3,
+        },
+        source_interval=interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= poverty_rate * (poverty_guideline + unrelated_amount)",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=boundary,
+        source_text=source,
+        formula_environment={
+            "assistance": 26_000,
+            "poverty_guideline": 20_000,
+            "poverty_rate": 1.3,
+            "unrelated_amount": 1,
+        },
+        source_interval=interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    qualified_source = source.removesuffix(".") + ", based on household size."
+    qualified_boundary = extractor(qualified_source)[0]
+    qualified_interval = completeness_module._formula_interval_from_text(
+        qualified_source,
+        extract_numeric_occurrences=extractor,
+    )
+    assert qualified_interval is not None
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= poverty_rate * household_size",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=qualified_boundary,
+        source_text=qualified_source,
+        formula_environment={
+            "assistance": 5.2,
+            "household_size": 4,
+            "poverty_rate": 1.3,
+        },
+        source_interval=qualified_interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    multi_amount_source = (
+        "The poverty guideline is updated, and assistance does not exceed "
+        "130 percent of earned income."
+    )
+    multi_amount_boundary = extractor(multi_amount_source)[0]
+    multi_amount_interval = completeness_module._formula_interval_from_text(
+        multi_amount_source,
+        extract_numeric_occurrences=extractor,
+    )
+    assert multi_amount_interval is not None
+    assert completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= earned_income * poverty_rate",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=multi_amount_boundary,
+        source_text=multi_amount_source,
+        formula_environment={
+            "assistance": 26_000,
+            "earned_income": 20_000,
+            "poverty_rate": 1.3,
+        },
+        source_interval=multi_amount_interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    for conventional_base in ("earned_income_amount", "household_earned_income"):
+        assert completeness_module._formula_text_has_boundary_comparison(
+            f"assistance <= {conventional_base} * poverty_rate",
+            allow_complement_relation=False,
+            input_names={"assistance"},
+            boundary_names={"poverty_rate"},
+            boundary=multi_amount_boundary,
+            source_text=multi_amount_source,
+            formula_environment={
+                "assistance": 26_000,
+                conventional_base: 20_000,
+                "poverty_rate": 1.3,
+            },
+            source_interval=multi_amount_interval,
+            extract_numeric_occurrences=extractor,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+        )
+
+    fpl_source = "Assistance does not exceed 130 percent of the federal poverty level."
+    fpl_boundary = extractor(fpl_source)[0]
+    fpl_interval = completeness_module._formula_interval_from_text(
+        fpl_source,
+        extract_numeric_occurrences=extractor,
+    )
+    assert fpl_interval is not None
+    assert completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= fpl * poverty_rate",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=fpl_boundary,
+        source_text=fpl_source,
+        formula_environment={
+            "assistance": 26_000,
+            "fpl": 20_000,
+            "poverty_rate": 1.3,
+        },
+        source_interval=fpl_interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    unlinked_source = (
+        "The poverty guideline is updated. Assistance does not exceed 130 percent."
+    )
+    unlinked_boundary = extractor(unlinked_source)[0]
+    unlinked_interval = completeness_module._formula_interval_from_text(
+        "Assistance does not exceed 130 percent.",
+        extract_numeric_occurrences=extractor,
+    )
+    assert unlinked_interval is not None
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= poverty_guideline * poverty_rate",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=unlinked_boundary,
+        source_text=unlinked_source,
+        formula_environment={
+            "assistance": 26_000,
+            "poverty_guideline": 20_000,
+            "poverty_rate": 1.3,
+        },
+        source_interval=unlinked_interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= poverty_guideline * poverty_rate",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=multi_amount_boundary,
+        source_text=multi_amount_source,
+        formula_environment={
+            "assistance": 26_000,
+            "poverty_guideline": 20_000,
+            "poverty_rate": 1.3,
+        },
+        source_interval=multi_amount_interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    for wrong_base in ("unearned_income", "other_income"):
+        assert not completeness_module._formula_text_has_boundary_comparison(
+            f"assistance <= {wrong_base} * poverty_rate",
+            allow_complement_relation=False,
+            input_names={"assistance"},
+            boundary_names={"poverty_rate"},
+            boundary=multi_amount_boundary,
+            source_text=multi_amount_source,
+            formula_environment={
+                "assistance": 26_000,
+                wrong_base: 20_000,
+                "poverty_rate": 1.3,
+            },
+            source_interval=multi_amount_interval,
+            extract_numeric_occurrences=extractor,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+        )
+
+    trailing_amount_source = (
+        "Assistance does not exceed 130 percent of earned income after "
+        "subtracting unearned income."
+    )
+    trailing_amount_boundary = extractor(trailing_amount_source)[0]
+    assert completeness_module._source_percentage_base_matches(
+        trailing_amount_source,
+        boundary=trailing_amount_boundary,
+        base_name="earned_income",
+    )
+    assert not completeness_module._source_percentage_base_matches(
+        trailing_amount_source,
+        boundary=trailing_amount_boundary,
+        base_name="unearned_income",
+    )
+
+    symbolic_source = multi_amount_source.replace("130 percent", "130%")
+    symbolic_boundary = extractor(symbolic_source)[0]
+    symbolic_interval = completeness_module._formula_interval_from_text(
+        symbolic_source,
+        extract_numeric_occurrences=extractor,
+    )
+    assert symbolic_interval is not None
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= poverty_guideline * poverty_rate",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=symbolic_boundary,
+        source_text=symbolic_source,
+        formula_environment={
+            "assistance": 26_000,
+            "poverty_guideline": 20_000,
+            "poverty_rate": 1.3,
+        },
+        source_interval=symbolic_interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    labeled_source = f"(1) {multi_amount_source}"
+    cleaned_labeled_source = authoritative_numeric_recall_text(labeled_source)
+    labeled_boundary = extractor(cleaned_labeled_source)[0]
+    assert not completeness_module._source_percentage_base_matches(
+        cleaned_labeled_source,
+        boundary=labeled_boundary,
+        base_name="poverty_guideline",
+    )
+
+    amount_source = "Assistance does not exceed $100 when income is reported."
+    amount_boundary = extractor(amount_source)[0]
+    amount_interval = completeness_module._formula_interval_from_text(
+        amount_source,
+        extract_numeric_occurrences=extractor,
+    )
+    assert amount_interval is not None
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= income * assistance_limit",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"assistance_limit"},
+        boundary=amount_boundary,
+        source_text=amount_source,
+        formula_environment={
+            "assistance": 100,
+            "income": 2,
+            "assistance_limit": 100,
+        },
+        source_interval=amount_interval,
+        extract_numeric_occurrences=extractor,
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
 
@@ -20825,6 +21165,19 @@ def test_en_us_state_code_citations_are_structural_for_numeric_recall():
     assert inventory == []
 
 
+def test_section_symbol_decimal_citation_is_not_numeric_recall():
+    cleaned = authoritative_numeric_recall_text(
+        "Determine remaining household eligibility under § 273.11(c); "
+        "a 500 dollar cap applies."
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        cleaned,
+        profile="legacy",
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [(500.0, "500")]
+
+
 def test_louisiana_revised_statutes_citations_are_structural_for_numeric_recall():
     source = (
         "The amount is determined under R.S. 47:32. Notwithstanding R.S.\n"
@@ -30031,6 +30384,7 @@ def test_exception_branch_accepts_principal_rule_grounded_to_descendant():
 
     candidates = completeness_module._exception_witnesses_for_branch(
         branch,
+        principal_rules={"low_income_credit_amount": {}},
         principal_rule_paths={
             "low_income_credit_amount": {("a", "1", "a", "i")},
         },
@@ -30089,6 +30443,7 @@ def test_numeric_transition_propagates_through_asserted_judgment_dependency():
 
     candidates = completeness_module._exception_witnesses_for_branch(
         branch,
+        principal_rules=principal_rules,
         principal_rule_paths={
             "low_income_applies": {("a", "1", "b")},
             "low_income_credit_amount": {("a", "1", "a", "i")},
@@ -31293,6 +31648,20 @@ def test_ordinary_language_is_not_a_formal_structural_reference(text: str):
     assert not completeness_module._source_has_formal_cross_reference(text)
 
 
+def test_and_or_in_legal_prose_is_not_treated_as_division():
+    source = (
+        "The agency must explain the determination to the alien and/or household "
+        "representative."
+    )
+
+    assert "divide" not in completeness_module._formula_operation_kinds(source)
+    assert "divide" not in completeness_module._formula_operation_kinds(
+        "The agency must notify the alien and / or household representative."
+    )
+    assert "divide" in completeness_module._formula_operation_kinds("income / 2")
+    assert "divide" in completeness_module._formula_operation_kinds("$5/person")
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -32355,6 +32724,450 @@ rules:
     result = _analyze(content, source, test_cases=cases)
 
     assert _has_issue(result, "exception", "test") is expected_issue
+
+
+def test_boolean_unless_exception_can_witness_numeric_trigger_clause():
+    source = (
+        "(1) Residency is presumed interrupted if absence is more than 6 months "
+        "unless the resident presents evidence of intent to resume residency."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/1
+rules:
+  - name: absence_month_limit
+    kind: parameter
+    dtype: Count
+    source: us-zz/statute/1(1)
+    versions: [{formula: 6}]
+  - name: residency_interruption_presumed
+    kind: derived
+    dtype: Judgment
+    source: us-zz/statute/1(1)
+    versions:
+      - formula: 'months_absent > absence_month_limit and not evidence_of_intent_to_resume_residency'
+"""
+    cases = [
+        {
+            "name": "presumption applies",
+            "input": {
+                "months_absent": 7,
+                "evidence_of_intent_to_resume_residency": False,
+            },
+            "output": {"residency_interruption_presumed": True},
+        },
+        {
+            "name": "resume evidence blocks presumption",
+            "input": {
+                "months_absent": 7,
+                "evidence_of_intent_to_resume_residency": True,
+            },
+            "output": {"residency_interruption_presumed": False},
+        },
+    ]
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-zz/statute/1",
+        test_cases=cases,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "exceptions or applicability", "paired")
+
+
+def test_boolean_selector_cannot_replace_numeric_exception_evidence():
+    source = "Applicant is ineligible if income is more than 100 dollars."
+    branch = completeness_module.SourceStructureBranch(
+        ("1",), "sentence", "1", source, 0, len(source)
+    )
+    witness = completeness_module._ExceptionWitness(
+        rule_name="applicant_ineligible",
+        selector_name="income_more_than_limit",
+        active_value=True,
+        blocks=False,
+        boolean_effect=True,
+        zeroes=False,
+        numeric_transition=None,
+        relational_transitions=(),
+        case_pair_identity=(1, 2),
+    )
+
+    assert not completeness_module._exception_witnesses_for_branch(
+        branch,
+        principal_rules={
+            "applicant_ineligible": {
+                "name": "applicant_ineligible",
+                "description": "Whether the applicant is ineligible.",
+            }
+        },
+        principal_rule_paths={"applicant_ineligible": {("1",)}},
+        toggled_exception_selectors={witness},
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+
+def test_no_person_eligible_unless_status_is_an_enabling_exception():
+    source = "No person is eligible unless that person is a citizen."
+
+    assert completeness_module._source_exception_effect_requirement(source) == "enable"
+
+
+def test_generic_at_least_one_criterion_chapeau_accepts_descendant_selector():
+    source = "The person is eligible if the person meets at least one of the criteria."
+
+    assert completeness_module._source_exception_selector_is_relevant(
+        source,
+        "member_is_refugee",
+        supporting_texts=(
+            "An alien admitted as a refugee under section 207 of the INA",
+        ),
+    )
+    assert not completeness_module._source_exception_selector_is_relevant(
+        source,
+        "owns_luxury_car",
+        supporting_texts=(
+            "An alien admitted as a refugee under section 207 of the INA",
+        ),
+    )
+    assert not completeness_module._source_exception_selector_is_relevant(
+        source,
+        "member_owns_luxury_car",
+        supporting_texts=("A member is admitted as a refugee.",),
+    )
+    assert not completeness_module._source_exception_selector_is_relevant(
+        source,
+        "member_owns_luxury_car",
+        supporting_texts=("The household owns a car.",),
+    )
+    assert completeness_module._source_exception_selector_is_relevant(
+        "At least one of the conditions applies: refugee status.",
+        "member_is_refugee",
+    )
+    assert completeness_module._source_exception_selector_is_relevant(
+        source,
+        "member_is_lpr",
+        supporting_texts=("The alien is a lawful permanent resident.",),
+    )
+    assert completeness_module._source_exception_selector_is_relevant(
+        source,
+        "member_has_ssn",
+        supporting_texts=("The member has a Social Security number.",),
+    )
+
+
+def test_true_ineligibility_output_witnesses_exclusion_effect():
+    witness = completeness_module._ExceptionWitness(
+        rule_name="person_ineligible_after_consent_failure",
+        selector_name="person_failed_to_provide_consent",
+        active_value=True,
+        blocks=False,
+        boolean_effect=True,
+        zeroes=False,
+        numeric_transition=None,
+        relational_transitions=(),
+        case_pair_identity=(1, 2),
+    )
+
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={
+            "description": "The agency must classify the person as an ineligible alien."
+        },
+    )
+    assert not completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "enable",
+        rule={
+            "description": "The agency must classify the person as an ineligible alien."
+        },
+    )
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={"description": "The person must be classified as an ineligible alien."},
+    )
+    for description in (
+        "The person shall be deemed ineligible.",
+        "The person is deemed ineligible.",
+        "The person must be treated as ineligible.",
+        "The person must be ineligible.",
+        "The applicant is an ineligible alien.",
+        "The applicant becomes an excluded member.",
+    ):
+        assert completeness_module._exception_witness_satisfies_requirement(
+            witness,
+            "exclude",
+            rule={"description": description},
+        )
+
+
+def test_undescribed_negative_rule_name_controls_output_polarity():
+    witness = completeness_module._ExceptionWitness(
+        rule_name="alien_status_documentation_ineligible",
+        selector_name="documentation_missing_or_unwilling",
+        active_value=True,
+        blocks=False,
+        boolean_effect=True,
+        zeroes=False,
+        numeric_transition=None,
+        relational_transitions=(),
+        case_pair_identity=(1, 2),
+    )
+
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={"name": "alien_status_documentation_ineligible"},
+    )
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={"name": "alien_status_ineligible_after_consent_failure"},
+    )
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={"name": "entire_household_ineligible_pending_sponsor_verification"},
+    )
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={"name": "person_ineligible_for_benefits"},
+    )
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={"name": "person_ineligible_under_section_1"},
+    )
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={
+            "name": "person_ineligible",
+            "description": "Whether this rule applies to the person.",
+        },
+    )
+
+
+def test_positive_rule_description_controls_negative_source_excerpt_polarity():
+    witness = completeness_module._ExceptionWitness(
+        rule_name="person_eligible",
+        selector_name="person_is_citizen",
+        active_value=True,
+        blocks=False,
+        boolean_effect=True,
+        zeroes=False,
+        numeric_transition=None,
+        relational_transitions=(),
+        case_pair_identity=(1, 2),
+    )
+    rule = {
+        "description": "Whether the person is eligible.",
+        "metadata": {
+            "proof": {
+                "atoms": [
+                    {
+                        "path": "versions[0].formula",
+                        "citation_path": CORPUS_CITATION_PATH,
+                        "excerpt": (
+                            "A person is ineligible unless that person is a citizen."
+                        ),
+                    }
+                ]
+            }
+        },
+    }
+
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "enable",
+        rule=rule,
+    )
+
+
+def test_proof_excerpt_does_not_define_undescribed_rule_output_polarity():
+    witness = completeness_module._ExceptionWitness(
+        rule_name="eligible",
+        selector_name="disqualification_applies",
+        active_value=True,
+        blocks=True,
+        boolean_effect=True,
+        zeroes=False,
+        numeric_transition=None,
+        relational_transitions=(),
+        case_pair_identity=(1, 2),
+    )
+    rule = {
+        "metadata": {
+            "proof": {
+                "atoms": [
+                    {
+                        "path": "versions[0].formula",
+                        "source": {
+                            "corpus_citation_path": CORPUS_CITATION_PATH,
+                            "excerpt": (
+                                "The claimant is not eligible if a "
+                                "disqualification applies."
+                            ),
+                        },
+                    }
+                ]
+            }
+        }
+    }
+
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule=rule,
+    )
+
+
+def test_negative_subject_modifier_does_not_invert_positive_output_effect():
+    witness = completeness_module._ExceptionWitness(
+        rule_name="ineligible_person_receives_notice",
+        selector_name="notice_required",
+        active_value=True,
+        blocks=False,
+        boolean_effect=True,
+        zeroes=False,
+        numeric_transition=None,
+        relational_transitions=(),
+        case_pair_identity=(1, 2),
+    )
+
+    assert not completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={"description": "Whether the ineligible person receives a notice."},
+    )
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "enable",
+        rule={"description": "Whether the ineligible person receives a notice."},
+    )
+
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "enable",
+        rule={
+            "description": "Whether a notice is required when the person is ineligible."
+        },
+    )
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "enable",
+        rule={"name": "ineligible_person_receives_notice"},
+    )
+
+
+def test_inability_or_unwillingness_is_active_missing_documentation_condition():
+    source = (
+        "When a person indicates inability or unwillingness to provide "
+        "documentation of alien status, the person is ineligible."
+    )
+
+    assert completeness_module._source_exception_selector_active_value(
+        source,
+        "alien_status_documentation_missing_or_unwilling",
+    )
+    assert completeness_module._source_exception_selector_active_value(
+        source,
+        "has_inability_or_unwillingness",
+    )
+    assert completeness_module._source_exception_selector_active_value(
+        "When the person is unable or unwilling to provide documentation.",
+        "is_unable_or_unwilling",
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "selector"),
+    (
+        ("When the person is unwilling to provide documentation.", "is_unwilling"),
+        ("When the person is unable to work.", "is_unable"),
+        ("When the person indicates inability to work.", "has_inability"),
+        (
+            "The person has no income and is unwilling to provide documentation.",
+            "is_unwilling",
+        ),
+        ("There is no job, and the person is unable to work.", "is_unable"),
+    ),
+)
+def test_negative_condition_name_is_active_when_source_uses_same_condition(
+    source: str,
+    selector: str,
+):
+    assert completeness_module._source_exception_selector_active_value(
+        source,
+        selector,
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "selector"),
+    (
+        (
+            "When there is an absence of any reasonably available documentation.",
+            "documentation_missing",
+        ),
+        ("When the person has no income or resources.", "resources_missing"),
+    ),
+)
+def test_qualified_or_coordinated_negation_controls_selector_polarity(
+    source: str,
+    selector: str,
+):
+    assert completeness_module._source_exception_selector_active_value(
+        source,
+        selector,
+    )
+
+
+def test_only_numeric_selector_names_restate_compound_numeric_condition():
+    source = "Income is more than 100 dollars and the applicant is disabled."
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert completeness_module._selector_targets_numeric_condition(
+        source,
+        "income_more_than_limit",
+        numeric_interval=interval,
+    )
+    assert not completeness_module._selector_targets_numeric_condition(
+        source,
+        "applicant_is_disabled",
+        numeric_interval=interval,
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "selector"),
+    (
+        ("When the person is not unwilling to provide documentation.", "is_unwilling"),
+        ("When the person is not unable to work.", "is_unable"),
+        ("When no applicant has inability to work.", "has_inability"),
+    ),
+)
+def test_explicit_negation_reverses_inherently_negative_condition(
+    source: str,
+    selector: str,
+):
+    assert not completeness_module._source_exception_selector_active_value(
+        source,
+        selector,
+    )
 
 
 def test_numeric_input_change_cannot_hide_identical_exception_branches():
