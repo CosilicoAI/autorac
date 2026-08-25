@@ -847,6 +847,7 @@ def test_retry_candidate_formatter_explicitly_handles_missing_tests():
 
     assert "No companion test file was present" in section
     assert "you may omit unchanged named rules" in section
+    assert "`repair_remove: true`" in section
 
 
 def test_repair_candidate_overlay_restores_omitted_named_items(tmp_path):
@@ -924,6 +925,140 @@ def test_repair_candidate_overlay_restores_omitted_named_items(tmp_path):
     assert "rule:omitted" in repairs
     assert "test:preserved_case" in repairs
     assert "resolved_deferred_output:us:section#added" in repairs
+
+
+def test_repair_candidate_overlay_removes_explicit_named_tombstones(tmp_path):
+    artifact_root = tmp_path / "generated"
+    rulespec_file = artifact_root / "regulations" / "section.yaml"
+    rulespec_file.parent.mkdir(parents=True)
+    rulespec_file.write_text(
+        "format: rulespec/v1\n"
+        "rules:\n"
+        "  - name: obsolete\n"
+        "    repair_remove: true\n"
+        "  - name: retained\n"
+        "    kind: parameter\n"
+        "    dtype: Count\n"
+        "    versions: [{effective_from: '2026-01-01', formula: 2}]\n",
+        encoding="utf-8",
+    )
+    rulespec_file.with_suffix(".test.yaml").write_text(
+        "- name: obsolete_case\n  repair_remove: true\n"
+        "- name: retained_case\n  period: 2026-01\n  input: {}\n  output: {}\n",
+        encoding="utf-8",
+    )
+    candidate = ValidationRetryCandidate(
+        rulespec=(
+            "format: rulespec/v1\n"
+            "rules:\n"
+            "  - name: obsolete\n"
+            "    kind: parameter\n"
+            "    dtype: Count\n"
+            "    versions: [{effective_from: '2026-01-01', formula: 1}]\n"
+            "  - name: retained\n"
+            "    kind: parameter\n"
+            "    dtype: Count\n"
+            "    versions: [{effective_from: '2026-01-01', formula: 1}]\n"
+        ),
+        tests=(
+            "- name: obsolete_case\n  period: 2026-01\n  input: {}\n  output: {}\n"
+            "- name: retained_case\n  period: 2026-01\n  input: {}\n  output: {}\n"
+        ),
+    )
+
+    repairs = evals_module._overlay_validation_retry_candidate(
+        rulespec_file,
+        artifact_root=artifact_root,
+        candidate=candidate,
+    )
+
+    payload = yaml.safe_load(rulespec_file.read_text(encoding="utf-8"))
+    assert [rule["name"] for rule in payload["rules"]] == ["retained"]
+    assert "repair_remove" not in rulespec_file.read_text(encoding="utf-8")
+    tests = yaml.safe_load(
+        rulespec_file.with_suffix(".test.yaml").read_text(encoding="utf-8")
+    )
+    assert [case["name"] for case in tests] == ["retained_case"]
+    assert "removed_rule:obsolete" in repairs
+    assert "removed_test:obsolete_case" in repairs
+
+
+def test_repair_tombstone_survives_materialization_before_overlay(tmp_path):
+    artifact_root = tmp_path / "generated"
+    rulespec_file = artifact_root / "regulations" / "section.yaml"
+    candidate = ValidationRetryCandidate(
+        rulespec=(
+            "format: rulespec/v1\n"
+            "rules:\n"
+            "  - name: obsolete\n"
+            "    kind: parameter\n"
+            "    dtype: Count\n"
+            "    versions: [{effective_from: '2026-01-01', formula: 1}]\n"
+        )
+    )
+    response = (
+        "=== FILE: section.yaml ===\n"
+        "format: rulespec/v1\n"
+        "rules:\n"
+        "  - name: obsolete\n"
+        "    repair_remove: true\n"
+    )
+
+    assert evals_module._materialize_eval_artifact(
+        response,
+        rulespec_file,
+        artifact_root=artifact_root,
+    )
+    assert "repair_remove: true" in rulespec_file.read_text(encoding="utf-8")
+
+    repairs = evals_module._overlay_validation_retry_candidate(
+        rulespec_file,
+        artifact_root=artifact_root,
+        candidate=candidate,
+    )
+
+    assert yaml.safe_load(rulespec_file.read_text(encoding="utf-8"))["rules"] == []
+    assert repairs == ("removed_rule:obsolete",)
+
+
+@pytest.mark.parametrize(
+    "marker,match",
+    [
+        ({"name": "obsolete", "repair_remove": False}, "repair_remove: true"),
+        (
+            {"name": "obsolete", "repair_remove": True, "kind": "derived"},
+            "only name and repair_remove",
+        ),
+        ({"name": "unknown", "repair_remove": True}, "no preserved item"),
+    ],
+)
+def test_repair_candidate_overlay_rejects_invalid_tombstones(
+    tmp_path, marker, match
+):
+    artifact_root = tmp_path / "generated"
+    rulespec_file = artifact_root / "section.yaml"
+    artifact_root.mkdir()
+    rulespec_file.write_text(
+        yaml.safe_dump({"format": "rulespec/v1", "rules": [marker]}),
+        encoding="utf-8",
+    )
+    candidate = ValidationRetryCandidate(
+        rulespec=(
+            "format: rulespec/v1\n"
+            "rules:\n"
+            "  - name: obsolete\n"
+            "    kind: parameter\n"
+            "    dtype: Count\n"
+            "    versions: [{effective_from: '2026-01-01', formula: 1}]\n"
+        )
+    )
+
+    with pytest.raises(ValueError, match=match):
+        evals_module._overlay_validation_retry_candidate(
+            rulespec_file,
+            artifact_root=artifact_root,
+            candidate=candidate,
+        )
 
 
 def test_repair_candidate_overlay_normalizes_destination_root_deferrals(tmp_path):

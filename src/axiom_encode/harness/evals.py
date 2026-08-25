@@ -9854,7 +9854,11 @@ companion test file required by the task and deterministic validation.
             "you may omit unchanged named rules, imports, deferred outputs, and "
             "named companion cases. The encoder overlays those omitted items from "
             "the hash-bound candidate before validation. Re-emit the complete item "
-            "only when changing or replacing it; never emit prose or patch syntax.\n"
+            "only when changing or replacing it. To remove an obsolete named rule "
+            "or companion case from this rejected candidate, emit an exact YAML "
+            "item containing only `name: <existing name>` and `repair_remove: true`; "
+            "the encoder removes that marker before validation. Never emit prose "
+            "or patch syntax.\n"
         )
     )
     return f"""
@@ -16784,19 +16788,30 @@ def _merge_named_yaml_items(
     preserved: object,
     *,
     label: str,
-) -> tuple[list[object], list[str]]:
+) -> tuple[list[object], list[str], list[str]]:
     """Restore omitted hash-bound items while allowing explicit replacements."""
 
-    generated_items = list(generated) if isinstance(generated, list) else []
+    raw_generated_items = list(generated) if isinstance(generated, list) else []
     preserved_items = list(preserved) if isinstance(preserved, list) else []
+    generated_items: list[object] = []
     generated_names: set[str] = set()
-    for item in generated_items:
+    removed_names: set[str] = set()
+    for item in raw_generated_items:
         if not isinstance(item, dict) or not isinstance(item.get("name"), str):
             raise ValueError(f"generated {label} items must have string names")
         name = item["name"]
         if name in generated_names:
             raise ValueError(f"generated {label} contains duplicate name `{name}`")
         generated_names.add(name)
+        if "repair_remove" in item:
+            if set(item) != {"name", "repair_remove"} or item["repair_remove"] is not True:
+                raise ValueError(
+                    f"generated {label} removal marker for `{name}` must contain "
+                    "only name and repair_remove: true"
+                )
+            removed_names.add(name)
+            continue
+        generated_items.append(item)
     preserved_names: set[str] = set()
     restored: list[str] = []
     for item in preserved_items:
@@ -16810,7 +16825,13 @@ def _merge_named_yaml_items(
             generated_items.append(item)
             generated_names.add(name)
             restored.append(name)
-    return generated_items, restored
+    unknown_removals = sorted(removed_names - preserved_names)
+    if unknown_removals:
+        raise ValueError(
+            f"generated {label} removal marker names no preserved item: "
+            + ", ".join(f"`{name}`" for name in unknown_removals)
+        )
+    return generated_items, restored, sorted(removed_names)
 
 
 def _normalize_repair_deferred_source_roots(
@@ -16888,16 +16909,17 @@ def _overlay_validation_retry_candidate(
         generated["imports"] = imports
 
     generated_rules = generated.get("rules")
-    generated_rule_names = (
-        {item.get("name") for item in generated_rules if isinstance(item, dict)}
-        if isinstance(generated_rules, list)
-        else set()
-    )
-    rules, restored_rules = _merge_named_yaml_items(
+    rules, restored_rules, removed_rules = _merge_named_yaml_items(
         generated_rules, preserved.get("rules"), label="rules"
     )
     generated["rules"] = rules
+    generated_rule_names = {
+        item["name"]
+        for item in rules
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
     repairs.extend(f"rule:{name}" for name in restored_rules)
+    repairs.extend(f"removed_rule:{name}" for name in removed_rules)
 
     generated_module = generated.get("module")
     preserved_module = preserved.get("module")
@@ -16986,7 +17008,7 @@ def _overlay_validation_retry_candidate(
             preserved_cases = preserved_tests
         if generated_wrapper != preserved_wrapper and test_file.exists():
             raise ValueError("repair overlay cannot change companion test container")
-        merged_tests, restored_tests = _merge_named_yaml_items(
+        merged_tests, restored_tests, removed_tests = _merge_named_yaml_items(
             generated_cases, preserved_cases, label="companion tests"
         )
         merged_test_payload: object = (
@@ -16998,6 +17020,7 @@ def _overlay_validation_retry_candidate(
             artifact_root,
         )
         repairs.extend(f"test:{name}" for name in restored_tests)
+        repairs.extend(f"removed_test:{name}" for name in removed_tests)
 
     _write_eval_artifact_text(
         rulespec_file,
