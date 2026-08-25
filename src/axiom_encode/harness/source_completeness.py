@@ -23727,9 +23727,9 @@ def _rule_has_negative_output_semantics(
     description = str(rule.get("description") or "").strip() if rule else ""
     if description:
         output_clause = _described_output_clause(description)
-        return bool(_source_negative_output_predicate_matches(output_clause)) and not bool(
-            _source_positive_effect_matches(output_clause)
-        )
+        return bool(
+            _source_negative_output_predicate_matches(output_clause)
+        ) and not bool(_source_positive_effect_matches(output_clause))
     name = str(rule.get("name") or fallback_name) if rule else fallback_name
     normalized_name = re.sub(r"[^a-z0-9]+", "_", name.casefold()).strip("_")
     return bool(
