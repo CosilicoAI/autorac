@@ -6033,6 +6033,22 @@ def test_percentage_boundary_comparison_uses_resolved_case_scale():
             numeric_value_is_grounded=numeric_value_is_grounded,
         )
 
+    trailing_amount_source = (
+        "Assistance does not exceed 130 percent of earned income after "
+        "subtracting unearned income."
+    )
+    trailing_amount_boundary = extractor(trailing_amount_source)[0]
+    assert completeness_module._source_percentage_base_matches(
+        trailing_amount_source,
+        boundary=trailing_amount_boundary,
+        base_name="earned_income",
+    )
+    assert not completeness_module._source_percentage_base_matches(
+        trailing_amount_source,
+        boundary=trailing_amount_boundary,
+        base_name="unearned_income",
+    )
+
     symbolic_source = multi_amount_source.replace("130 percent", "130%")
     symbolic_boundary = extractor(symbolic_source)[0]
     symbolic_interval = completeness_module._formula_interval_from_text(
@@ -32764,6 +32780,37 @@ rules:
     )
 
     assert not _has_issue(result, "exceptions or applicability", "paired")
+
+
+def test_boolean_selector_cannot_replace_numeric_exception_evidence():
+    source = "Applicant is ineligible if income is more than 100 dollars."
+    branch = completeness_module.SourceStructureBranch(
+        ("1",), "sentence", "1", source, 0, len(source)
+    )
+    witness = completeness_module._ExceptionWitness(
+        rule_name="applicant_ineligible",
+        selector_name="income_more_than_limit",
+        active_value=True,
+        blocks=False,
+        boolean_effect=True,
+        zeroes=False,
+        numeric_transition=None,
+        relational_transitions=(),
+        case_pair_identity=(1, 2),
+    )
+
+    assert not completeness_module._exception_witnesses_for_branch(
+        branch,
+        principal_rules={
+            "applicant_ineligible": {
+                "name": "applicant_ineligible",
+                "description": "Whether the applicant is ineligible.",
+            }
+        },
+        principal_rule_paths={"applicant_ineligible": {("1",)}},
+        toggled_exception_selectors={witness},
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
 
 
 def test_no_person_eligible_unless_status_is_an_enabling_exception():

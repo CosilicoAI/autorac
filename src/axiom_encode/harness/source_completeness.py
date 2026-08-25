@@ -21251,7 +21251,9 @@ def _source_percentage_base_matches(
 
     trailing_text = source_text[boundary.end :]
     explicit_base = re.match(
-        r"\s*%?\s+of\b(?P<base>[^,.;:]{1,160})",
+        r"\s*%?\s+of\b(?P<base>[^,.;:]{1,160}?)"
+        r"(?=\s+\b(?:after|before|less|minus|plus|subtract\w*|add\w*|"
+        r"reduc\w*|increas\w*)\b|[,.;:]|$)",
         trailing_text,
         flags=re.IGNORECASE,
     )
@@ -23411,6 +23413,10 @@ def _exception_witnesses_for_branch(
     }
     requirement = _source_exception_effect_requirement(branch.text)
     condition_text = _source_exception_condition_text(branch.text)
+    numeric_interval = _formula_interval_from_text(
+        authoritative_numeric_recall_text(condition_text),
+        extract_numeric_occurrences=extract_numeric_occurrences,
+    )
     return {
         witness
         for witness in toggled_exception_selectors
@@ -23423,7 +23429,15 @@ def _exception_witnesses_for_branch(
             )
             if witness.numeric_transition is not None
             else (
-                witness.active_value
+                (
+                    numeric_interval is None
+                    or not _selector_targets_numeric_condition(
+                        condition_text,
+                        witness.selector_name,
+                        numeric_interval=numeric_interval,
+                    )
+                )
+                and witness.active_value
                 == _source_exception_selector_active_value(
                     condition_text,
                     witness.selector_name,
@@ -23446,6 +23460,35 @@ def _exception_witnesses_for_branch(
             rule=principal_rules[witness.rule_name],
         )
     }
+
+
+def _selector_targets_numeric_condition(
+    text: str,
+    selector_name: str,
+    *,
+    numeric_interval: _NumericInterval,
+) -> bool:
+    """Identify a Boolean selector that merely restates a numeric predicate."""
+
+    boundary_end = max(
+        boundary.end
+        for boundary in (numeric_interval.lower, numeric_interval.upper)
+        if boundary is not None
+    )
+    normalized_name = _normalized_selector_name(selector_name)
+    matches = tuple(_source_selector_concept_matches(text, normalized_name))
+    if any(
+        match.start() > boundary_end
+        and re.search(
+            r"\b(?:unless|except(?:\s+when)?|au(?:ß|ss)er|es\s+sei\s+denn)\b",
+            text[boundary_end : match.start()],
+            flags=re.IGNORECASE,
+        )
+        is not None
+        for match in matches
+    ):
+        return False
+    return bool(matches)
 
 
 def _source_exception_condition_text(text: str) -> str:
