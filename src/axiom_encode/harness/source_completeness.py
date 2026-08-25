@@ -23733,12 +23733,15 @@ def _rule_has_negative_output_semantics(
         ) and not bool(_source_positive_effect_matches(output_clause))
     name = str(rule.get("name") or fallback_name) if rule else fallback_name
     normalized_name = re.sub(r"[^a-z0-9]+", "_", name.casefold()).strip("_")
-    return bool(
-        re.search(
-            r"(?:^|_)(?:ineligible|excluded|disqualified|unqualified)"
-            r"(?:$|_(?:after|because|due|following|from|pending|until|when)(?:_|$))",
-            normalized_name,
+    name_tokens = normalized_name.split("_")
+    negative_predicates = {"disqualified", "excluded", "ineligible", "unqualified"}
+    return any(
+        token in negative_predicates
+        and (
+            index + 1 == len(name_tokens)
+            or name_tokens[index + 1] not in _SOURCE_SELECTOR_GENERIC_ENTITY_TOKENS
         )
+        for index, token in enumerate(name_tokens)
     )
 
 
@@ -24224,14 +24227,16 @@ def _source_selector_concept_polarity(
     for match in _source_selector_concept_matches(text, normalized_name):
         before = text[max(0, match.start() - 48) : match.start()]
         after = text[match.end() : min(len(text), match.end() + 48)]
-        negative = bool(
+        inherently_negative = bool(
             re.fullmatch(
                 r"(?:ineligible|disqualified|unqualified|inability|unable|"
                 r"unwilling|unwillingness)",
                 match.group(0),
                 flags=re.IGNORECASE,
             )
-            or re.search(
+        )
+        explicitly_negated = bool(
+            re.search(
                 r"\b(?:kein(?:e|en|em|er|es)?|fehlend\w*|ohne|mangels|"
                 r"no|without|lack(?:ing)?(?:\s+of)?|absence\s+of)"
                 r"\b[^.;]{0,40}$|"
@@ -24247,6 +24252,7 @@ def _source_selector_concept_polarity(
                 flags=re.IGNORECASE,
             )
         )
+        negative = inherently_negative != explicitly_negated
         polarities.add(-1 if negative else 1)
     return next(iter(polarities)) if len(polarities) == 1 else None
 

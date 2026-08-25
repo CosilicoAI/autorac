@@ -32796,6 +32796,16 @@ def test_undescribed_negative_rule_name_controls_output_polarity():
         "exclude",
         rule={"name": "entire_household_ineligible_pending_sponsor_verification"},
     )
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={"name": "person_ineligible_for_benefits"},
+    )
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={"name": "person_ineligible_under_section_1"},
+    )
 
 
 def test_positive_rule_description_controls_negative_source_excerpt_polarity():
@@ -32903,6 +32913,11 @@ def test_negative_subject_modifier_does_not_invert_positive_output_effect():
             "description": "Whether a notice is required when the person is ineligible."
         },
     )
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "enable",
+        rule={"name": "ineligible_person_receives_notice"},
+    )
 
 
 def test_inability_or_unwillingness_is_active_missing_documentation_condition():
@@ -32930,6 +32945,24 @@ def test_negative_condition_name_is_active_when_source_uses_same_condition(
     selector: str,
 ):
     assert completeness_module._source_exception_selector_active_value(
+        source,
+        selector,
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "selector"),
+    (
+        ("When the person is not unwilling to provide documentation.", "is_unwilling"),
+        ("When the person is not unable to work.", "is_unable"),
+        ("When no applicant has inability to work.", "has_inability"),
+    ),
+)
+def test_explicit_negation_reverses_inherently_negative_condition(
+    source: str,
+    selector: str,
+):
+    assert not completeness_module._source_exception_selector_active_value(
         source,
         selector,
     )
