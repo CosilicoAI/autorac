@@ -13951,7 +13951,8 @@ def _opaque_same_source_condition_input_issues(
         "exact authoritative source clause to too few terminal local inputs or "
         f"canonical imports: {'; '.join(rendered)}. Encode the source-stated facts "
         "as distinct local inputs or canonical imports, declare every local fact "
-        "in the module's top-level `inputs` list, combine them in a "
+        "in the RuleSpec document-root `inputs` list (a sibling of `module` and "
+        "`rules`, never nested under `module`), combine them in a "
         "source-proved derived Judgment, and test each gate. Reserve aggregate "
         "boundary statuses for source-atomic or externally determined conditions."
     ]

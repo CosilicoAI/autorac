@@ -850,6 +850,62 @@ def test_retry_candidate_formatter_explicitly_handles_missing_tests():
     assert "`repair_remove: true`" in section
 
 
+def test_main_normalizer_lifts_inputs_misnested_under_module(tmp_path):
+    normalized = evals_module._normalize_main_eval_content(
+        """format: rulespec/v1
+module:
+  description: generated module
+  inputs:
+    - name: battery_is_recognized_by_uscis
+      entity: Person
+      dtype: Boolean
+      period: Month
+rules: []
+""",
+        target_path=tmp_path / "section.yaml",
+        single_amount_table_slice=False,
+    )
+
+    payload = yaml.safe_load(normalized)
+    assert "inputs" not in payload["module"]
+    assert payload["inputs"] == [
+        {
+            "name": "battery_is_recognized_by_uscis",
+            "entity": "Person",
+            "dtype": "Boolean",
+            "period": "Month",
+        }
+    ]
+
+
+def test_main_normalizer_merges_module_inputs_with_root_contract(tmp_path):
+    normalized = evals_module._normalize_main_eval_content(
+        """format: rulespec/v1
+module:
+  inputs:
+    - name: battery_is_recognized_by_uscis
+      entity: Person
+      dtype: Boolean
+      period: Month
+inputs:
+  - name: battery_is_recognized_by_court
+    entity: Person
+    dtype: Boolean
+    period: Month
+rules: []
+""",
+        target_path=tmp_path / "section.yaml",
+        single_amount_table_slice=False,
+    )
+
+    payload = yaml.safe_load(normalized)
+    assert "inputs" not in payload["module"]
+    assert [item["name"] for item in payload["inputs"]] == [
+        "battery_is_recognized_by_court",
+        "battery_is_recognized_by_uscis",
+    ]
+
+
 def test_repair_candidate_overlay_restores_omitted_named_items(tmp_path):
     artifact_root = tmp_path / "generated"
     rulespec_file = artifact_root / "regulations" / "section.yaml"

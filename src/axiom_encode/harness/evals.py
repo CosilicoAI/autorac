@@ -10935,7 +10935,7 @@ RuleSpec requirements:
   amounts described by that upstream source.
 - If an upstream output is already executable, do not replace it with a local
   placeholder fact or compatibility alias.
-- Do not encode simple unary factual inputs as `kind: data_relation` rules. If a formula needs a local true/false fact, reference a descriptive bare fact name in the formula, declare that fact in the module's top-level `inputs` list with its `entity`, `dtype`, and `period`, and put that fact in tests as `{target_ref_prefix + "#input.<fact>" if target_ref_prefix else "<jurisdiction>:<path>#input.<fact>"}`.
+- Do not encode simple unary factual inputs as `kind: data_relation` rules. If a formula needs a local true/false fact, reference a descriptive bare fact name in the formula, declare that fact in the RuleSpec document-root `inputs` list (a sibling of `module` and `rules`, never nested under `module`) with its `entity`, `dtype`, and `period`, and put that fact in tests as `{target_ref_prefix + "#input.<fact>" if target_ref_prefix else "<jurisdiction>:<path>#input.<fact>"}`.
 - Use `kind: data_relation` only for structural runtime predicates with explicit `data_relation.predicate`, `data_relation.arity`, and `data_relation.arguments`.
 - If the requested source text includes a limitation, cap, exception, or
   cross-referenced subparagraph that changes the final exported amount, the
@@ -15475,6 +15475,49 @@ def _normalize_rulespec_content(content: str) -> str:
     return stripped + ("\n" if stripped else "")
 
 
+def _repair_misplaced_module_inputs(content: str) -> tuple[str, tuple[str, ...]]:
+    """Lift generated ``module.inputs`` to the RuleSpec document root."""
+
+    try:
+        payload = yaml.safe_load(content)
+    except (yaml.YAMLError, RecursionError):
+        return content, ()
+    if not isinstance(payload, dict):
+        return content, ()
+    module = payload.get("module")
+    if not isinstance(module, dict) or not isinstance(module.get("inputs"), list):
+        return content, ()
+    nested_inputs = module.pop("inputs")
+    root_inputs = payload.get("inputs")
+    if root_inputs is None:
+        inputs = list(nested_inputs)
+    elif isinstance(root_inputs, list):
+        inputs = list(root_inputs)
+        root_names = {
+            item["name"]
+            for item in root_inputs
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        inputs.extend(
+            item
+            for item in nested_inputs
+            if not (
+                isinstance(item, dict)
+                and isinstance(item.get("name"), str)
+                and item["name"] in root_names
+            )
+        )
+    else:
+        return content, ()
+    payload["inputs"] = inputs
+    names = tuple(
+        item["name"]
+        for item in nested_inputs
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    )
+    return yaml.safe_dump(payload, sort_keys=False).strip() + "\n", names
+
+
 def _normalize_main_eval_content(
     content: str,
     *,
@@ -15487,6 +15530,7 @@ def _normalize_main_eval_content(
         raise ValueError("RuleSpec artifacts must use canonical .yaml paths")
     content = _clean_generated_file_content(content)
     normalized = _normalize_rulespec_content(content)
+    normalized, _lifted_inputs = _repair_misplaced_module_inputs(normalized)
     normalized, _repaired_rules = repair_source_table_band_scalar_parameters(
         normalized,
         source_text=source_text,
