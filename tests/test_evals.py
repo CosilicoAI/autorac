@@ -918,6 +918,15 @@ def test_repair_candidate_overlay_restores_omitted_named_items(tmp_path):
         "      reason: new\n"
         "imports:\n"
         "  - us:source#new\n"
+        "inputs:\n"
+        "  - name: existing_changed_input\n"
+        "    entity: Person\n"
+        "    dtype: Boolean\n"
+        "    period: Month\n"
+        "  - name: added_input\n"
+        "    entity: Person\n"
+        "    dtype: Boolean\n"
+        "    period: Month\n"
         "rules:\n"
         "  - name: existing_changed\n"
         "    kind: parameter\n"
@@ -944,6 +953,15 @@ def test_repair_candidate_overlay_restores_omitted_named_items(tmp_path):
             "      reason: replaced by the generated rule\n"
             "imports:\n"
             "  - us:source#preserved\n"
+            "inputs:\n"
+            "  - name: existing_changed_input\n"
+            "    entity: Person\n"
+            "    dtype: Boolean\n"
+            "    period: Year\n"
+            "  - name: omitted_input\n"
+            "    entity: Person\n"
+            "    dtype: Integer\n"
+            "    period: Month\n"
             "rules:\n"
             "  - name: existing_changed\n"
             "    kind: parameter\n"
@@ -969,6 +987,13 @@ def test_repair_candidate_overlay_restores_omitted_named_items(tmp_path):
     rules = {rule["name"]: rule for rule in payload["rules"]}
     assert rules["existing_changed"]["versions"][0]["formula"] == 2
     assert set(rules) == {"existing_changed", "added", "omitted"}
+    inputs = {item["name"]: item for item in payload["inputs"]}
+    assert set(inputs) == {
+        "existing_changed_input",
+        "added_input",
+        "omitted_input",
+    }
+    assert inputs["existing_changed_input"]["period"] == "Month"
     assert payload["imports"] == ["us:source#new", "us:source#preserved"]
     assert {item["output"] for item in payload["module"]["deferred_outputs"]} == {
         "us:section#new_deferred",
@@ -979,8 +1004,41 @@ def test_repair_candidate_overlay_restores_omitted_named_items(tmp_path):
     )
     assert {case["name"] for case in tests} == {"added_case", "preserved_case"}
     assert "rule:omitted" in repairs
+    assert "input:omitted_input" in repairs
     assert "test:preserved_case" in repairs
     assert "resolved_deferred_output:us:section#added" in repairs
+
+
+def test_repair_candidate_overlay_rejects_input_removal(tmp_path):
+    artifact_root = tmp_path / "generated"
+    rulespec_file = artifact_root / "regulations" / "section.yaml"
+    rulespec_file.parent.mkdir(parents=True)
+    rulespec_file.write_text(
+        "format: rulespec/v1\n"
+        "inputs:\n"
+        "  - name: required_fact\n"
+        "    repair_remove: true\n"
+        "rules: []\n",
+        encoding="utf-8",
+    )
+    candidate = ValidationRetryCandidate(
+        rulespec=(
+            "format: rulespec/v1\n"
+            "inputs:\n"
+            "  - name: required_fact\n"
+            "    entity: Person\n"
+            "    dtype: Boolean\n"
+            "    period: Month\n"
+            "rules: []\n"
+        )
+    )
+
+    with pytest.raises(ValueError, match="cannot remove retained inputs"):
+        evals_module._overlay_validation_retry_candidate(
+            rulespec_file,
+            artifact_root=artifact_root,
+            candidate=candidate,
+        )
 
 
 def test_repair_candidate_overlay_removes_explicit_named_tombstones(tmp_path):
