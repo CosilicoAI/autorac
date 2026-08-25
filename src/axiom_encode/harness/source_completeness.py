@@ -23793,9 +23793,10 @@ def _rule_has_negative_output_semantics(
     description = str(rule.get("description") or "").strip() if rule else ""
     if description:
         output_clause = _described_output_clause(description)
-        return bool(
-            _source_negative_output_predicate_matches(output_clause)
-        ) and not bool(_source_positive_effect_matches(output_clause))
+        negative_output = bool(_source_negative_output_predicate_matches(output_clause))
+        positive_output = bool(_source_positive_effect_matches(output_clause))
+        if negative_output or positive_output:
+            return negative_output and not positive_output
     name = str(rule.get("name") or fallback_name) if rule else fallback_name
     normalized_name = re.sub(r"[^a-z0-9]+", "_", name.casefold()).strip("_")
     name_tokens = normalized_name.split("_")
@@ -24303,13 +24304,13 @@ def _source_selector_concept_polarity(
             re.search(
                 r"\b(?:kein(?:e|en|em|er|es)?|fehlend\w*|ohne|mangels|"
                 r"no|without|lack(?:ing)?(?:\s+of)?|absence\s+of)"
-                r"\b[^.;]{0,40}$|"
+                r"\b\s+(?:(?!(?:and|or|und|oder)\b)\w+\s+){0,2}$|"
                 r"\b(?:nicht|not)\s+(?:\w+\s+){0,1}$",
                 before,
                 flags=re.IGNORECASE,
             )
             or re.match(
-                r"[^.;]{0,40}\b(?:fehlt|fehlen|nicht\s+(?:vorhanden|"
+                r"\s+(?:fehlt|fehlen|nicht\s+(?:vorhanden|"
                 r"gegeben)|liegt\s+nicht\s+vor|is\s+not\s+present|"
                 r"is\s+absent)\b",
                 after,

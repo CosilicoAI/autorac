@@ -32947,6 +32947,14 @@ def test_undescribed_negative_rule_name_controls_output_polarity():
         "exclude",
         rule={"name": "person_ineligible_under_section_1"},
     )
+    assert completeness_module._exception_witness_satisfies_requirement(
+        witness,
+        "exclude",
+        rule={
+            "name": "person_ineligible",
+            "description": "Whether this rule applies to the person.",
+        },
+    )
 
 
 def test_positive_rule_description_controls_negative_source_excerpt_polarity():
@@ -33087,6 +33095,11 @@ def test_inability_or_unwillingness_is_active_missing_documentation_condition():
         ("When the person is unwilling to provide documentation.", "is_unwilling"),
         ("When the person is unable to work.", "is_unable"),
         ("When the person indicates inability to work.", "has_inability"),
+        (
+            "The person has no income and is unwilling to provide documentation.",
+            "is_unwilling",
+        ),
+        ("There is no job, and the person is unable to work.", "is_unable"),
     ),
 )
 def test_negative_condition_name_is_active_when_source_uses_same_condition(
