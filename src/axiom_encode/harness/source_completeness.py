@@ -14936,6 +14936,7 @@ def _companion_test_issues(
         )
         missing_exception_branches = _unwitnessed_exception_branches(
             paired_exception_branches,
+            principal_rules=principal_rules,
             principal_rule_paths=principal_rule_paths,
             toggled_exception_selectors=toggled_exception_selectors,
             extract_numeric_occurrences=extract_numeric_occurrences,
@@ -21155,14 +21156,29 @@ def _formula_node_boundary_value(
         value = formula_environment.get(node.id)
         if _rulespec_runtime_decimal(value) is not None:
             return float(value)
-    boundary_nodes = [
-        candidate
-        for candidate in ast.walk(node)
-        if {name.id for name in ast.walk(candidate) if isinstance(name, ast.Name)}
-        & boundary_names
-    ]
-    for candidate in reversed(boundary_nodes):
-        value = _evaluate_condition_expression(candidate, formula_environment)
+    node_names = {
+        candidate.id for candidate in ast.walk(node) if isinstance(candidate, ast.Name)
+    }
+    boundary_factor: ast.AST | None = None
+    if node_names and node_names.issubset(boundary_names):
+        boundary_factor = node
+    elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+        for candidate, base in ((node.left, node.right), (node.right, node.left)):
+            candidate_names = {
+                name.id for name in ast.walk(candidate) if isinstance(name, ast.Name)
+            }
+            base_names = {
+                name.id for name in ast.walk(base) if isinstance(name, ast.Name)
+            }
+            if (
+                candidate_names
+                and candidate_names.issubset(boundary_names)
+                and not base_names.intersection(boundary_names)
+            ):
+                boundary_factor = candidate
+                break
+    if boundary_factor is not None:
+        value = _evaluate_condition_expression(boundary_factor, formula_environment)
         numeric_value = _rulespec_runtime_decimal(value)
         if numeric_value is not None and numeric_value_is_grounded(
             float(numeric_value),
@@ -23239,6 +23255,7 @@ def _rounding_source_formula_branches(
 def _unwitnessed_exception_branches(
     exception_branches: Sequence[SourceStructureBranch],
     *,
+    principal_rules: dict[str, dict[str, Any]],
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
     toggled_exception_selectors: set[_ExceptionWitness],
     extract_numeric_occurrences: NumericOccurrenceExtractor,
@@ -23246,6 +23263,7 @@ def _unwitnessed_exception_branches(
     candidate_witnesses = {
         branch: _exception_witnesses_for_branch(
             branch,
+            principal_rules=principal_rules,
             principal_rule_paths=principal_rule_paths,
             toggled_exception_selectors=toggled_exception_selectors,
             extract_numeric_occurrences=extract_numeric_occurrences,
@@ -23311,6 +23329,7 @@ def _unconditional_nonapplicability_witnesses(
 def _exception_witnesses_for_branch(
     branch: SourceStructureBranch,
     *,
+    principal_rules: dict[str, dict[str, Any]],
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
     toggled_exception_selectors: set[_ExceptionWitness],
     extract_numeric_occurrences: NumericOccurrenceExtractor,
@@ -23349,8 +23368,18 @@ def _exception_witnesses_for_branch(
         and _source_exception_selector_is_relevant(
             condition_text,
             witness.selector_name,
+            supporting_texts=tuple(
+                excerpt
+                for _citation_path, excerpt in _rule_source_excerpts(
+                    principal_rules[witness.rule_name]
+                )
+            ),
         )
-        and _exception_witness_satisfies_requirement(witness, requirement)
+        and _exception_witness_satisfies_requirement(
+            witness,
+            requirement,
+            rule=principal_rules[witness.rule_name],
+        )
     }
 
 
@@ -23626,7 +23655,12 @@ def _exception_reverses_negative_proposition(text: str) -> bool:
     )
 
 
-def _source_exception_selector_is_relevant(text: str, name: str) -> bool:
+def _source_exception_selector_is_relevant(
+    text: str,
+    name: str,
+    *,
+    supporting_texts: Sequence[str] = (),
+) -> bool:
     """Reject formula toggles with no semantic link to the source exception."""
 
     normalized_name = _normalized_selector_name(name)
@@ -23636,7 +23670,13 @@ def _source_exception_selector_is_relevant(text: str, name: str) -> bool:
         r"\b(?:criteria|conditions|requirements)\b",
         collapsed,
     ):
-        return True
+        return any(
+            _source_selector_concept_matches(
+                _collapse_text(supporting_text).lower(),
+                normalized_name,
+            )
+            for supporting_text in supporting_texts
+        )
     if _source_selector_concept_matches(collapsed, normalized_name):
         return True
     return any(
@@ -24105,26 +24145,23 @@ def _selector_identifier_negation_count(normalized_name: str) -> int:
 def _exception_witness_satisfies_requirement(
     witness: _ExceptionWitness,
     requirement: str,
+    *,
+    rule: Mapping[str, Any] | None = None,
 ) -> bool:
-    rule_name_tokens = _normalized_selector_name(witness.rule_name).split("_")
-    output_negation_count = sum(
-        token
-        in {
-            "absent",
-            "disqualified",
-            "ineligible",
-            "lacking",
-            "missing",
-            "no",
-            "non",
-            "not",
-            "unqualified",
-            "without",
-        }
-        for index, token in enumerate(rule_name_tokens)
-        if index > 0 or len(rule_name_tokens) == 1
+    semantic_texts = (
+        (
+            str(rule.get("description") or ""),
+            *(excerpt for _citation_path, excerpt in _rule_source_excerpts(rule)),
+        )
+        if rule is not None
+        else ()
     )
-    effective_blocks = witness.blocks != bool(output_negation_count % 2)
+    negative_output = any(
+        _source_negative_effect_matches(text) for text in semantic_texts if text
+    ) and not any(
+        _source_positive_effect_matches(text) for text in semantic_texts if text
+    )
+    effective_blocks = witness.blocks != negative_output
     if requirement == "zero":
         return witness.zeroes
     if requirement == "enable":

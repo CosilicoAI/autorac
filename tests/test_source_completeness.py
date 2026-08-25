@@ -5837,6 +5837,17 @@ def test_percentage_boundary_comparison_uses_resolved_case_scale():
         extract_numeric_occurrences=extractor,
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "assistance <= poverty_rate + 999999",
+        allow_complement_relation=False,
+        input_names={"assistance"},
+        boundary_names={"poverty_rate"},
+        boundary=boundary,
+        formula_environment={"assistance": 26_000, "poverty_rate": 1.3},
+        source_interval=interval,
+        extract_numeric_occurrences=extractor,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
 
 
 @pytest.mark.parametrize("floor_expression", ("bracket_floor", "5000"))
@@ -30116,6 +30127,7 @@ def test_exception_branch_accepts_principal_rule_grounded_to_descendant():
 
     candidates = completeness_module._exception_witnesses_for_branch(
         branch,
+        principal_rules={"low_income_credit_amount": {}},
         principal_rule_paths={
             "low_income_credit_amount": {("a", "1", "a", "i")},
         },
@@ -30174,6 +30186,7 @@ def test_numeric_transition_propagates_through_asserted_judgment_dependency():
 
     candidates = completeness_module._exception_witnesses_for_branch(
         branch,
+        principal_rules=principal_rules,
         principal_rule_paths={
             "low_income_applies": {("a", "1", "b")},
             "low_income_credit_amount": {("a", "1", "a", "i")},
@@ -32521,6 +32534,16 @@ def test_generic_at_least_one_criterion_chapeau_accepts_descendant_selector():
     assert completeness_module._source_exception_selector_is_relevant(
         source,
         "member_is_refugee",
+        supporting_texts=(
+            "An alien admitted as a refugee under section 207 of the INA",
+        ),
+    )
+    assert not completeness_module._source_exception_selector_is_relevant(
+        source,
+        "owns_luxury_car",
+        supporting_texts=(
+            "An alien admitted as a refugee under section 207 of the INA",
+        ),
     )
 
 
@@ -32540,10 +32563,12 @@ def test_true_ineligibility_output_witnesses_exclusion_effect():
     assert completeness_module._exception_witness_satisfies_requirement(
         witness,
         "exclude",
+        rule={"description": "The person shall be ineligible."},
     )
     assert not completeness_module._exception_witness_satisfies_requirement(
         witness,
         "enable",
+        rule={"description": "The person shall be ineligible."},
     )
 
 
@@ -32563,10 +32588,12 @@ def test_negative_subject_modifier_does_not_invert_positive_output_effect():
     assert not completeness_module._exception_witness_satisfies_requirement(
         witness,
         "exclude",
+        rule={"description": "Whether the person receives a notice."},
     )
     assert completeness_module._exception_witness_satisfies_requirement(
         witness,
         "enable",
+        rule={"description": "Whether the person receives a notice."},
     )
 
 
