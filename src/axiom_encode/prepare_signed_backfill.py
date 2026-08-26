@@ -1627,12 +1627,14 @@ def _retired_manifest_inventory_without_entry(
         ) from exc
 
     assignments: list[ast.AnnAssign] = []
+    inventory_name_present = False
     for node in ast.walk(module):
         if (
             isinstance(node, ast.AnnAssign)
             and isinstance(node.target, ast.Name)
             and node.target.id == "KNOWN_RETIRED_SCHEMA_MANIFESTS"
         ):
+            inventory_name_present = True
             assignments.append(node)
         elif isinstance(node, ast.Assign) and any(
             isinstance(target, ast.Name)
@@ -1640,6 +1642,14 @@ def _retired_manifest_inventory_without_entry(
             for target in node.targets
         ):
             raise ValueError("retired manifest inventory assignment is not canonical")
+        elif isinstance(node, ast.Name) and node.id == "KNOWN_RETIRED_SCHEMA_MANIFESTS":
+            inventory_name_present = True
+    if not inventory_name_present:
+        if manifest in text:
+            raise ValueError(
+                "retired manifest inventory path is present without an inventory"
+            )
+        return None
     if len(assignments) != 1 or assignments[0] not in module.body:
         raise ValueError(
             "retired manifest inventory lacks one canonical top-level assignment"
