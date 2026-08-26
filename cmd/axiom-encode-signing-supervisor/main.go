@@ -1338,6 +1338,7 @@ func cleanChildEnvironment(
 		"PATH":                    trustedToolDirectory,
 		"PYTHONNOUSERSITE":        "1",
 		"PYTHONSAFEPATH":          "1",
+		"PYTHONUNBUFFERED":        "1",
 		"PYTHONDONTWRITEBYTECODE": "1",
 		"XDG_CONFIG_HOME":         filepath.Join(trustedHome, ".empty-config"),
 		"XDG_DATA_HOME":           filepath.Join(trustedHome, ".empty-data"),

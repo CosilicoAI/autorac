@@ -17556,8 +17556,16 @@ def _formula_operation_kinds(text: str) -> set[str]:
     return operations
 
 
+@functools.lru_cache(maxsize=4096)
 def _explicit_source_arithmetic_topology(text: str) -> Any | None:
-    """Parse the largest complete symbolic expression, including grouping."""
+    """Parse the largest complete symbolic expression, including grouping.
+
+    The scan is quadratic in the number of arithmetic tokens (every token pair
+    is sliced, normalized, and parsed), and source-unit branch texts repeat
+    heavily across rules: one module validation made 12,036 calls over 367
+    distinct texts. Memoization is sound because the function is pure and its
+    result is a nested tuple of immutable scalars that callers only compare.
+    """
 
     tokens = tuple(_SYMBOLIC_ARITHMETIC_TOKEN.finditer(text))
     candidates: list[tuple[int, int, str]] = []
@@ -17590,6 +17598,21 @@ def _explicit_source_arithmetic_topology(text: str) -> Any | None:
     return _formula_arithmetic_topology(expression_text, environment={})
 
 
+# The mapping is constant, but ``str.maketrans`` was rebuilding it on every
+# call: validating one module drove ~6.8M constructions of the same table.
+_SOURCE_ARITHMETIC_TRANSLATION = str.maketrans(
+    {
+        "×": "*",
+        "·": "*",
+        "•": "*",
+        "∗": "*",
+        "∙": "*",
+        "−": "-",
+        "–": "-",
+    }
+)
+
+
 def _normalized_source_arithmetic_expression(text: str) -> str:
     normalized = re.sub(
         r"\d{1,3}(?:[ .]\d{3})+(?:,\d+)?|\d+,\d+",
@@ -17607,19 +17630,7 @@ def _normalized_source_arithmetic_expression(text: str) -> str:
     normalized = re.sub(r"\bplus\b", "+", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"\bminus\b", "-", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"\bmal\b", "*", normalized, flags=re.IGNORECASE)
-    return normalized.translate(
-        str.maketrans(
-            {
-                "×": "*",
-                "·": "*",
-                "•": "*",
-                "∗": "*",
-                "∙": "*",
-                "−": "-",
-                "–": "-",
-            }
-        )
-    )
+    return normalized.translate(_SOURCE_ARITHMETIC_TRANSLATION)
 
 
 def _is_supported_arithmetic_expression(expression: ast.expr) -> bool:
