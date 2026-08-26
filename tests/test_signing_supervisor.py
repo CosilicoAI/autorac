@@ -2004,19 +2004,6 @@ def test_targeted_signed_reencode_shell_steps_have_valid_syntax(tmp_path: Path) 
             subprocess.run(["bash", "-n", str(script)], check=True)
 
 
-def test_targeted_signed_reencode_streams_encode_diagnostics() -> None:
-    workflow = yaml.safe_load(
-        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
-    )
-    step = next(
-        item
-        for item in workflow["jobs"]["encode"]["steps"]
-        if item.get("name") == "Encode, review, validate, and apply"
-    )
-
-    assert step["env"]["PYTHONUNBUFFERED"] == "1"
-
-
 def test_targeted_signed_reencode_only_allows_audited_legacy_index_shrink() -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()

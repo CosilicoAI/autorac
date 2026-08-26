@@ -396,8 +396,9 @@ func TestBrokerAllowsVerificationOnlyButRejectsAliasedSignerDescriptors(t *testi
 func TestCleanChildEnvironmentSetsTrustedRuntimeMarker(t *testing.T) {
 	environment := cleanChildEnvironment(1234, 3, "/opt/axiom-verification", "/root")
 	want := map[string]string{
-		trustedRuntimeEnv: "1",
-		brokerActiveEnv:   "1",
+		trustedRuntimeEnv:  "1",
+		brokerActiveEnv:    "1",
+		"PYTHONUNBUFFERED": "1",
 	}
 	for name, value := range want {
 		expected := name + "=" + value
