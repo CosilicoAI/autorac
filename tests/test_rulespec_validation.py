@@ -6426,7 +6426,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1735"')
+        .startswith('__version__ = "0.2.1736"')
     )
 
 
@@ -6658,13 +6658,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1735"
+    assert encoder_package["version"] == "0.2.1736"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1735"
+    assert project["project"]["version"] == "0.2.1736"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1735"')
+        .startswith('__version__ = "0.2.1736"')
     )
 
 
@@ -6926,13 +6926,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1735"
+    assert encoder_package["version"] == "0.2.1736"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1735"
+    assert project["project"]["version"] == "0.2.1736"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1735"')
+        .startswith('__version__ = "0.2.1736"')
     )
 
 
@@ -18400,6 +18400,550 @@ def test_rulespec_proof_validator_allows_flat_roman_continuation():
 
     assert result.passed is True
     assert result.issues == []
+
+
+_FLAT_FEDERAL_ALPHA_NUMERIC_ROMAN_SOURCE = """(a) First top-level paragraph.
+
+(1) First numeric child under paragraph a.
+
+(i) First Roman child under paragraph a one.
+
+(ii) Second Roman child under paragraph a one.
+
+(b) Second top-level paragraph.
+
+(1) First numeric child under paragraph b.
+
+(i) First Roman child under paragraph b one.
+
+(ii) Second Roman child under paragraph b one.
+
+(iii) Third Roman child under paragraph b one.
+
+(iv) Fourth Roman child under paragraph b one.
+
+(c) Third top-level paragraph.
+
+(2) Second numeric child under paragraph c.
+
+(i) First Roman child under paragraph c two.
+
+(ii) Second Roman child under paragraph c two.
+
+(iii) Third Roman child under paragraph c two.
+
+(iv) Fourth Roman child under paragraph c two.
+
+(3) Third numeric child under paragraph c.
+
+(i) First Roman child under paragraph c three.
+
+(ii) Second Roman child under paragraph c three.
+
+(iii) Third Roman child under paragraph c three.
+
+(iv) Fourth Roman child under paragraph c three.
+"""
+
+
+def test_rulespec_proof_validator_allows_flat_alpha_numeric_roman_excerpt():
+    excerpt = "(iv) Fourth Roman child under paragraph c three."
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 273.4(c)(3)(iv)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={
+            "us-nj/statute/54a:4-7": _FLAT_FEDERAL_ALPHA_NUMERIC_ROMAN_SOURCE,
+        },
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_allows_flat_alpha_siblings_without_children():
+    excerpt = "(iv) Fourth Roman child under paragraph c three."
+    source_text = """(a) First top-level paragraph without children.
+
+(b) Second top-level paragraph without children.
+
+(c) Third top-level paragraph.
+
+(3) Third numeric child under paragraph c.
+
+(i) First Roman child under paragraph c three.
+
+(ii) Second Roman child under paragraph c three.
+
+(iii) Third Roman child under paragraph c three.
+
+(iv) Fourth Roman child under paragraph c three.
+"""
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 273.4(c)(3)(iv)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_clears_stale_flat_alpha_parent():
+    excerpt = "(ii) Second Roman child under paragraph x one."
+    source_text = f"""(a) First top-level paragraph.
+
+(1) Numeric child under paragraph a.
+
+(x) Nonsequential top-level paragraph.
+
+(1) Numeric child under paragraph x.
+
+(i) First Roman child under paragraph x one.
+
+{excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 273.4(a)(1)(ii)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_allows_lone_flat_roman_before_numeric_sibling():
+    excerpt = "(i) Only Roman child under paragraph a one."
+    source_text = f"""(a) First top-level paragraph.
+
+(1) First numeric child under paragraph a.
+
+{excerpt}
+
+(2) Second numeric child under paragraph a.
+
+(b) Second top-level paragraph.
+"""
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 1.2(a)(1)(i)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_allows_terminal_lone_flat_roman():
+    excerpt = "(i) Only terminal Roman child under paragraph a one."
+    source_text = f"""(a) First top-level paragraph.
+
+(1) First numeric child under paragraph a.
+
+{excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 1.2(a)(1)(i)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_allows_lone_flat_roman_before_uppercase_child():
+    excerpt = "(i) Only Roman child before uppercase children."
+    source_text = f"""(a) First top-level paragraph.
+
+(1) First numeric child under paragraph a.
+
+{excerpt}
+
+(A) First uppercase child under the Roman paragraph.
+
+(b) Second top-level paragraph.
+"""
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 1.2(a)(1)(i)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_resumes_after_flat_uppercase_children():
+    excerpt = "(ii) Second Roman child after uppercase children."
+    source_text = f"""(a) First top-level paragraph.
+
+(1) First numeric child under paragraph a.
+
+(i) First Roman child under paragraph a one.
+
+(A) First uppercase child under the Roman paragraph.
+
+(B) Second uppercase child under the Roman paragraph.
+
+{excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 1.2(a)(1)(ii)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_allows_flat_uppercase_roman_sequence():
+    excerpt = "(II) Second uppercase Roman child."
+    source_text = f"""(a) First top-level paragraph.
+
+(1) First numeric child under paragraph a.
+
+(I) First uppercase Roman child.
+
+{excerpt}
+
+(III) Third uppercase Roman child.
+"""
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 1.2(a)(1)(II)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_allows_lone_flat_uppercase_roman():
+    excerpt = "(I) Only uppercase Roman child."
+    source_text = f"""(a) First top-level paragraph.
+
+(1) First numeric child under paragraph a.
+
+{excerpt}
+
+(2) Second numeric child under paragraph a.
+"""
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 1.2(a)(1)(I)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_allows_sequential_flat_alpha_i_parent():
+    excerpt = "(ii) Second Roman child under paragraph i one."
+    source_text = f"""(a) Paragraph a.
+
+(b) Paragraph b.
+
+(c) Paragraph c.
+
+(d) Paragraph d.
+
+(e) Paragraph e.
+
+(f) Paragraph f.
+
+(g) Paragraph g.
+
+(h) Paragraph h.
+
+(1) Numeric child under paragraph h.
+
+(i) Paragraph i.
+
+(1) Numeric child under paragraph i.
+
+(i) First Roman child under paragraph i one.
+
+{excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 1.2(i)(1)(ii)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_preserves_childless_flat_alpha_i_parent():
+    excerpt = "(ii) Second Roman child under paragraph j one."
+    alpha_prefix = "\n\n".join(
+        f"({marker}) Paragraph {marker}." for marker in "abcdefg"
+    )
+    source_text = f"""{alpha_prefix}
+
+(h) Paragraph h.
+
+(1) Numeric child under paragraph h.
+
+(i) Childless paragraph i.
+
+(j) Paragraph j.
+
+(1) Numeric child under paragraph j.
+
+(i) First Roman child under paragraph j one.
+
+{excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 1.2(j)(1)(ii)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_does_not_resume_invalid_flat_alpha_progression():
+    excerpt = "(ii) Second Roman child under later paragraph b one."
+    source_text = f"""(a) First top-level paragraph.
+
+(1) Numeric child under paragraph a.
+
+(x) Unexpected top-level paragraph.
+
+(b) Later paragraph b must not resume the sequence.
+
+(1) Numeric child under later paragraph b.
+
+(i) First Roman child under later paragraph b one.
+
+{excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 1.2(b)(1)(ii)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    "excerpt",
+    [
+        "(iv) Fourth Roman child under paragraph b one.",
+        "(iv) Fourth Roman child under paragraph c two.",
+    ],
+)
+def test_rulespec_proof_validator_rejects_wrong_flat_alpha_numeric_roman_parent(
+    excerpt: str,
+):
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 273.4(c)(3)(iv)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={
+            "us-nj/statute/54a:4-7": _FLAT_FEDERAL_ALPHA_NUMERIC_ROMAN_SOURCE,
+        },
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_does_not_drop_leading_numeric_owner():
+    excerpt = "(i) Roman child under outer one alpha a numeric one."
+    source_text = f"""(1) Outer numeric paragraph.
+
+(a) Alpha child under outer one.
+
+(1) Numeric child under outer one alpha a.
+
+{excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 1.2(a)(1)(i)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_does_not_reparent_uppercase_descendants():
+    excerpt = "(ii) Deep Roman child under uppercase A numeric one."
+    source_text = f"""(a) Alpha parent.
+
+(1) Numeric child under alpha a.
+
+(i) Outer Roman child under alpha a numeric one.
+
+(A) Uppercase child under the outer Roman child.
+
+(1) Numeric child under uppercase A.
+
+(i) First deep Roman child under uppercase A numeric one.
+
+{excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 1.2(a)(1)(ii)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_does_not_reparent_compound_descendants():
+    excerpt = "(ii) Deep Roman child after a compound descendant."
+    source_text = f"""(a) Alpha parent.
+
+(1) Numeric child under alpha a.
+
+(i) Outer Roman child under alpha a numeric one.
+
+(A) Uppercase child under the outer Roman child.
+
+(A) (1) Compound descendant under the uppercase child.
+
+{excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 1.2(a)(1)(ii)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_terminal_alpha_roman_collision():
+    excerpt = "(v) Childless top-level paragraph v."
+    alpha_prefix = "\n\n".join(
+        f"({marker}) Top-level paragraph {marker}."
+        for marker in "abcdefghijklmnopqrstu"
+    )
+    source_text = f"""{alpha_prefix}
+
+(1) Numeric child under paragraph u.
+
+(i) First Roman child under paragraph u one.
+
+(ii) Second Roman child under paragraph u one.
+
+(iii) Third Roman child under paragraph u one.
+
+(iv) Fourth Roman child under paragraph u one.
+
+{excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source="7 CFR 1.2(u)(1)(v)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
 
 
 def test_rulespec_proof_validator_rejects_flat_roman_under_wrong_alpha_parent():

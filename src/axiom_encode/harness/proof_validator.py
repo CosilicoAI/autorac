@@ -1835,6 +1835,212 @@ def _source_flattened_roman_coordinate_occurrences(
             next_roman_value = roman_value + 1
             roman_sequence_established = True
         record_offset += len(record) + len(PROOF_EVIDENCE_SEGMENT_SEPARATOR)
+    occurrences.extend(
+        _source_flattened_alpha_numeric_roman_coordinate_occurrences(source_text)
+    )
+    return list(dict.fromkeys(occurrences))
+
+
+def _source_flattened_alpha_numeric_roman_coordinate_occurrences(
+    source_text: str,
+) -> list[tuple[tuple[str, ...], str, int]]:
+    """Recover flat ``(a) -> (1) -> (i)`` federal-style ownership.
+
+    Flat federal regulation text commonly places every coordinate at the same
+    indentation.  This pass recognizes only alphabetic parents established in
+    ascending order and Roman children established in canonical ascending
+    order.  Those constraints keep an isolated Roman-looking letter or a
+    numeric sibling from being assigned to the claimed parent.
+    """
+    flat_coordinate_token = rf"(?:{_STRUCTURAL_COORDINATE_TOKEN}|[A-Z])"
+    header_pattern = re.compile(
+        r"(?m)^(?P<indent>[ \t]*)(?P<bundle>"
+        rf"(?:\({flat_coordinate_token}\)[ \t]*)+"
+        r")"
+    )
+    coordinate_pattern = re.compile(rf"\((?P<value>{flat_coordinate_token})\)")
+    occurrences: list[tuple[tuple[str, ...], str, int]] = []
+    record_offset = 0
+    for record in source_text.split(PROOF_EVIDENCE_SEGMENT_SEPARATOR):
+        headers = list(header_pattern.finditer(record))
+        baseline_indent = min(
+            (len(header.group("indent").expandtabs(2)) for header in headers),
+            default=None,
+        )
+        baseline_headers = [
+            header
+            for header in headers
+            if baseline_indent is not None
+            and len(header.group("indent").expandtabs(2)) == baseline_indent
+        ]
+        alpha_parent: str | None = None
+        next_alpha = "a"
+        current_chain: tuple[str, str] | None = None
+        next_roman_value = 1
+        roman_sequence_established = False
+        alpha_sequence_started = False
+        leading_numeric_owner_seen = False
+        suspended_chain: tuple[str, str] | None = None
+        suspended_next_roman_value = 1
+        suspended_chain_tainted = False
+        for header_index, header in enumerate(baseline_headers):
+            tokens = [
+                match.group("value")
+                for match in coordinate_pattern.finditer(header.group("bundle"))
+            ]
+            if len(tokens) != 1:
+                if suspended_chain is not None:
+                    suspended_chain_tainted = True
+                alpha_parent = None
+                current_chain = None
+                roman_sequence_established = False
+                continue
+            token = tokens[0]
+            successor_tokens = (
+                [
+                    match.group("value")
+                    for match in coordinate_pattern.finditer(
+                        baseline_headers[header_index + 1].group("bundle")
+                    )
+                ]
+                if header_index + 1 < len(baseline_headers)
+                else []
+            )
+            roman_value = (
+                _canonical_roman_value(token)
+                if re.fullmatch(r"[ivxlcdmIVXLCDM]+", token) is not None
+                else None
+            )
+            successor_roman_value = (
+                _canonical_roman_value(successor_tokens[0])
+                if len(successor_tokens) == 1
+                and re.fullmatch(r"[ivxlcdmIVXLCDM]+", successor_tokens[0]) is not None
+                else None
+            )
+            successor_is_numeric = (
+                len(successor_tokens) == 1 and successor_tokens[0].isdigit()
+            )
+            successor_is_expected_alpha = (
+                len(successor_tokens) == 1
+                and len(successor_tokens[0]) == 1
+                and successor_tokens[0] == next_alpha
+            )
+            ambiguous_single_letter = len(token) == 1 and token.islower()
+            successor_is_next_alpha_after_token = (
+                len(successor_tokens) == 1
+                and len(successor_tokens[0]) == 1
+                and ambiguous_single_letter
+                and successor_tokens[0] == chr(ord(token) + 1)
+            )
+            successor_is_upper_alpha = (
+                len(successor_tokens) == 1
+                and len(successor_tokens[0]) == 1
+                and successor_tokens[0].isupper()
+            )
+            uppercase_roman_transition = (
+                token.isupper()
+                and current_chain is not None
+                and roman_value == next_roman_value
+                and (
+                    len(token) > 1
+                    or successor_roman_value == roman_value + 1
+                    or successor_is_numeric
+                    or successor_is_expected_alpha
+                    or successor_is_upper_alpha
+                    or not successor_tokens
+                )
+            )
+            if token.isupper() and not uppercase_roman_transition:
+                if current_chain is not None and suspended_chain is None:
+                    suspended_chain = current_chain
+                    suspended_next_roman_value = next_roman_value
+                    suspended_chain_tainted = False
+                current_chain = None
+                roman_sequence_established = False
+                continue
+            if suspended_chain is not None and token.isdigit():
+                suspended_chain_tainted = True
+                current_chain = None
+                roman_sequence_established = False
+                continue
+            if suspended_chain is not None and roman_value is not None:
+                if (
+                    not suspended_chain_tainted
+                    and roman_value == suspended_next_roman_value
+                ):
+                    current_chain = suspended_chain
+                    next_roman_value = suspended_next_roman_value
+                suspended_chain = None
+                suspended_chain_tainted = False
+            alpha_transition = (
+                ambiguous_single_letter
+                and token == next_alpha
+                and not (leading_numeric_owner_seen and not alpha_sequence_started)
+                and (
+                    successor_is_numeric
+                    or current_chain is None
+                    or roman_value != next_roman_value
+                    or successor_is_next_alpha_after_token
+                )
+            )
+            roman_transition = (
+                current_chain is not None
+                and roman_value == next_roman_value
+                and not alpha_transition
+                and (
+                    token != next_alpha
+                    or successor_roman_value == roman_value + 1
+                    or successor_is_numeric
+                    or successor_is_upper_alpha
+                )
+                and (
+                    not ambiguous_single_letter
+                    or roman_sequence_established
+                    or successor_roman_value == roman_value + 1
+                    or successor_is_numeric
+                    or successor_is_expected_alpha
+                    or successor_is_upper_alpha
+                    or not successor_tokens
+                )
+            )
+            if alpha_transition:
+                alpha_parent = token
+                suspended_chain = None
+                suspended_chain_tainted = False
+                alpha_sequence_started = True
+                next_alpha = chr(ord(token) + 1)
+                current_chain = None
+                next_roman_value = 1
+                roman_sequence_established = False
+                continue
+            if token.isdigit():
+                if alpha_parent is None and not alpha_sequence_started:
+                    leading_numeric_owner_seen = True
+                current_chain = (
+                    (alpha_parent, token) if alpha_parent is not None else None
+                )
+                next_roman_value = 1
+                roman_sequence_established = False
+                continue
+            if roman_transition:
+                occurrences.append(
+                    (
+                        current_chain,
+                        _canonical_roman_marker(roman_value),
+                        record_offset + header.start("bundle"),
+                    )
+                )
+                next_roman_value = roman_value + 1
+                roman_sequence_established = True
+                continue
+            alpha_parent = None
+            current_chain = None
+            suspended_chain = None
+            suspended_chain_tainted = False
+            roman_sequence_established = False
+            if ambiguous_single_letter:
+                next_alpha = ""
+        record_offset += len(record) + len(PROOF_EVIDENCE_SEGMENT_SEPARATOR)
     return occurrences
 
 
