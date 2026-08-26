@@ -1078,6 +1078,10 @@ jobs:
       - name: Encode, review, validate, and apply
         id: encode_apply
         env:
+          # The encoder prints one summary block per attempt. Buffered, those
+          # blocks only reach the log when the process exits, so a job that is
+          # cancelled at its timeout leaves no record of what it attempted.
+          PYTHONUNBUFFERED: "1"
           AXIOM_ENCODE_APPLY_SIGNING_KEY: ${{ secrets.AXIOM_ENCODE_APPLY_SIGNING_KEY }}
           ATOMIC_SOURCE_JSON: ${{ inputs.source_bundle_json }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

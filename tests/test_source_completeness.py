@@ -4206,6 +4206,20 @@ def test_legal_section_citation_does_not_hide_real_arithmetic_topology():
     assert with_citation == without_citation
 
 
+def test_explicit_source_arithmetic_topology_reuses_pure_parse_result():
+    parser = completeness_module._explicit_source_arithmetic_topology
+    parser.cache_clear()
+    text = "The amount is (income - 500) * 0.04."
+
+    first = parser(text)
+    second = parser(text)
+
+    assert first is not None
+    assert second == first
+    assert parser.cache_info().misses == 1
+    assert parser.cache_info().hits == 1
+
+
 def _al_direct_input_clamp_analysis(test_cases):
     source = "The tax is two percent of taxable income not in excess of $500."
     content = """\
