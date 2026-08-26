@@ -1382,6 +1382,18 @@ def test_reconcile_retired_manifest_inventory_is_noop_without_inventory_symbol(
             "assignment is not canonical",
         ),
         (
+            "from retired_inventory import KNOWN_RETIRED_SCHEMA_MANIFESTS\n",
+            "lacks one canonical top-level assignment",
+        ),
+        (
+            "import retired_inventory as KNOWN_RETIRED_SCHEMA_MANIFESTS\n",
+            "lacks one canonical top-level assignment",
+        ),
+        (
+            "def KNOWN_RETIRED_SCHEMA_MANIFESTS():\n    return frozenset()\n",
+            "lacks one canonical top-level assignment",
+        ),
+        (
             "KNOWN_RETIRED_SCHEMA_MANIFESTS: frozenset[str] = frozenset({\n"
             "    '.axiom/encoding-manifests/us/policies/income_tax/schedule.json',  # stale\n"
             "})\n",
