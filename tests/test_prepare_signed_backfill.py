@@ -1333,6 +1333,29 @@ def test_reconcile_retired_manifest_inventory_is_noop_when_absent(
     }
 
 
+def test_reconcile_retired_manifest_inventory_is_noop_without_inventory_symbol(
+    tmp_path: Path,
+) -> None:
+    repo, target, manifest, inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        inventory_text="KNOWN_ORPHANED_ENCODING_MANIFESTS: list[str] = []\n",
+    )
+    before = inventory.read_bytes()
+
+    assert (
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+        is None
+    )
+    assert inventory.read_bytes() == before
+    assert authorized_changed_paths(repo) == {
+        PurePosixPath(target.relative_to(repo).as_posix()),
+        PurePosixPath(manifest.relative_to(repo).as_posix()),
+    }
+
+
 @pytest.mark.parametrize(
     ("inventory_text", "message"),
     [
@@ -1349,10 +1372,26 @@ def test_reconcile_retired_manifest_inventory_is_noop_when_absent(
             "present outside an exact entry",
         ),
         (
+            "# .axiom/encoding-manifests/us/policies/income_tax/schedule.json\n",
+            "present without an inventory",
+        ),
+        (
             "KNOWN_RETIRED_SCHEMA_MANIFESTS = {\n"
             "    '.axiom/encoding-manifests/us/policies/income_tax/schedule.json',\n"
             "}\n",
             "assignment is not canonical",
+        ),
+        (
+            "from retired_inventory import KNOWN_RETIRED_SCHEMA_MANIFESTS\n",
+            "lacks one canonical top-level assignment",
+        ),
+        (
+            "import retired_inventory as KNOWN_RETIRED_SCHEMA_MANIFESTS\n",
+            "lacks one canonical top-level assignment",
+        ),
+        (
+            "def KNOWN_RETIRED_SCHEMA_MANIFESTS():\n    return frozenset()\n",
+            "lacks one canonical top-level assignment",
         ),
         (
             "KNOWN_RETIRED_SCHEMA_MANIFESTS: frozenset[str] = frozenset({\n"

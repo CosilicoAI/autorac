@@ -7,12 +7,14 @@ import argparse
 import ast
 import contextlib
 import hashlib
+import io
 import json
 import math
 import os
 import re
 import stat
 import subprocess
+import tokenize
 from datetime import date
 from pathlib import Path, PurePosixPath
 
@@ -1626,6 +1628,10 @@ def _retired_manifest_inventory_without_entry(
             "retired manifest inventory is not valid UTF-8 Python"
         ) from exc
 
+    inventory_name_present = any(
+        token.type == tokenize.NAME and token.string == "KNOWN_RETIRED_SCHEMA_MANIFESTS"
+        for token in tokenize.generate_tokens(io.StringIO(text).readline)
+    )
     assignments: list[ast.AnnAssign] = []
     for node in ast.walk(module):
         if (
@@ -1640,6 +1646,12 @@ def _retired_manifest_inventory_without_entry(
             for target in node.targets
         ):
             raise ValueError("retired manifest inventory assignment is not canonical")
+    if not inventory_name_present:
+        if manifest in text:
+            raise ValueError(
+                "retired manifest inventory path is present without an inventory"
+            )
+        return None
     if len(assignments) != 1 or assignments[0] not in module.body:
         raise ValueError(
             "retired manifest inventory lacks one canonical top-level assignment"
