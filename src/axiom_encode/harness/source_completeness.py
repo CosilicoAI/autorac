@@ -21264,7 +21264,7 @@ def _source_percentage_base_matches(
 
     trailing_text = source_text[boundary.end :]
     explicit_base = re.match(
-        r"\s*%?\s+of\b(?P<base>[^,.;:]{1,160}?)"
+        r"\s*(?:%|percent)?\s+of\b(?P<base>[^,.;:]{1,160}?)"
         r"(?=\s+\b(?:after|before|less|minus|plus|subtract\w*|add\w*|"
         r"reduc\w*|increas\w*)\b|[,.;:]|$)",
         trailing_text,

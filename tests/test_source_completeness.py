@@ -6125,6 +6125,29 @@ def test_percentage_boundary_comparison_uses_resolved_case_scale():
     )
 
 
+def test_en_us_spelled_percent_boundary_preserves_explicit_base():
+    source = "Assistance does not exceed 130 percent of the poverty guideline."
+    boundary = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)[0]
+
+    assert boundary.raw == "130"
+    assert completeness_module._source_percentage_base_matches(
+        source,
+        boundary=boundary,
+        base_name="poverty_guideline",
+    )
+
+
+def test_en_us_spelled_percent_boundary_rejects_unrelated_base():
+    source = "Assistance does not exceed 130 percent of the poverty guideline."
+    boundary = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)[0]
+
+    assert not completeness_module._source_percentage_base_matches(
+        source,
+        boundary=boundary,
+        base_name="earned_income",
+    )
+
+
 @pytest.mark.parametrize("floor_expression", ("bracket_floor", "5000"))
 def test_progressive_max_clamp_binds_exact_source_lower_boundary(
     floor_expression: str,
