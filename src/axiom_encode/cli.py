@@ -59005,16 +59005,11 @@ def _sum_attempt_cost(attempts: Sequence[Any], cost_field: str) -> float | None:
 
 def _aggregate_attempt_usage(attempts: Sequence[Any]) -> TokenUsage:
     """Sum token usage across every generation attempt of an encode."""
-
-    def _sum_field(field: str) -> int:
-        return sum(int(getattr(attempt, field, 0) or 0) for attempt in attempts)
-
     return TokenUsage(
-        input_tokens=_sum_field("input_tokens"),
-        output_tokens=_sum_field("output_tokens"),
-        cache_read_tokens=_sum_field("cache_read_tokens"),
-        cache_creation_tokens=_sum_field("cache_creation_tokens"),
-        reasoning_output_tokens=_sum_field("reasoning_output_tokens"),
+        **{
+            field: sum(int(getattr(attempt, field, 0) or 0) for attempt in attempts)
+            for field in _ATTEMPT_TOKEN_FIELDS
+        }
     )
 
 
@@ -59161,11 +59156,11 @@ def _log_eval_session(
         "duration_ms": _sum_attempt_field("duration_ms"),
         "generation_attempt_count": len(attempts),
         "estimated_cost_usd": aggregate_estimated_cost,
-        "input_tokens": _sum_attempt_field("input_tokens"),
-        "output_tokens": _sum_attempt_field("output_tokens"),
-        "cache_read_tokens": _sum_attempt_field("cache_read_tokens"),
-        "cache_creation_tokens": _sum_attempt_field("cache_creation_tokens"),
-        "reasoning_output_tokens": _sum_attempt_field("reasoning_output_tokens"),
+        "input_tokens": aggregate_usage.input_tokens,
+        "output_tokens": aggregate_usage.output_tokens,
+        "cache_read_tokens": aggregate_usage.cache_read_tokens,
+        "cache_creation_tokens": aggregate_usage.cache_creation_tokens,
+        "reasoning_output_tokens": aggregate_usage.reasoning_output_tokens,
         "retrieved_file_count": len(getattr(result, "retrieved_files", []) or []),
         "unexpected_access_count": len(
             getattr(result, "unexpected_accesses", []) or []

@@ -14,7 +14,7 @@ from typing import Optional
 
 from supabase import Client, create_client
 
-from .harness.encoding_db import TokenUsage
+from .harness.encoding_db import RUN_COST_COLUMNS, TokenUsage
 
 ENCODINGS_SCHEMA = "encodings"
 TELEMETRY_SCHEMA = "telemetry"
@@ -164,8 +164,11 @@ def sync_run_to_supabase(
         "synced_at": datetime.now().isoformat(),
         "data_source": data_source,
     }
+    # Ship only ledger fields that were actually measured; omitted fields stay
+    # NULL remotely, so "unknown" never reads as a real zero (manifest-only
+    # runs, for example, carry no telemetry at all).
     tokens = getattr(run, "tokens", None)
-    if isinstance(tokens, TokenUsage):
+    if isinstance(tokens, TokenUsage) and tokens.has_recorded_usage:
         data.update(
             {
                 "input_tokens": tokens.input_tokens,
@@ -173,55 +176,68 @@ def sync_run_to_supabase(
                 "cache_read_tokens": tokens.cache_read_tokens,
                 "cache_creation_tokens": tokens.cache_creation_tokens,
                 "reasoning_output_tokens": tokens.reasoning_output_tokens,
-                "estimated_cost_usd": getattr(run, "estimated_cost_usd", None),
-                "actual_cost_usd": getattr(run, "actual_cost_usd", None),
-                "generation_attempt_count": getattr(
-                    run, "generation_attempt_count", 0
-                ),
             }
         )
+    estimated_cost_usd = getattr(run, "estimated_cost_usd", None)
+    if isinstance(estimated_cost_usd, (int, float)) and not isinstance(
+        estimated_cost_usd, bool
+    ):
+        data["estimated_cost_usd"] = float(estimated_cost_usd)
+    actual_cost_usd = getattr(run, "actual_cost_usd", None)
+    if isinstance(actual_cost_usd, (int, float)) and not isinstance(
+        actual_cost_usd, bool
+    ):
+        data["actual_cost_usd"] = float(actual_cost_usd)
+    generation_attempt_count = getattr(run, "generation_attempt_count", 0)
+    if isinstance(generation_attempt_count, int) and generation_attempt_count > 0:
+        data["generation_attempt_count"] = generation_attempt_count
     if outcome:
         data["outcome"] = outcome
 
     if run.review_results:
         data["scores"] = _review_results_to_scores(run.review_results)
 
-    # Progressive fallbacks keep the sync working against Supabase schemas
-    # that predate the optional column groups.
-    fallback_column_groups = [_RUN_COST_COLUMNS, ("outcome",)]
-    try:
-        result = _upsert_encoding_run(client, data)
+    # Retry with column groups removed only when Supabase reports an unknown
+    # column (a schema that predates a migration). Each tier starts from the
+    # full payload so a missing "outcome" column cannot cost the run its
+    # ledger data, and any non-schema error fails the sync loudly.
+    last_error: Exception | None = None
+    attempted: list[dict] = []
+    for dropped in (
+        (),
+        RUN_COST_COLUMNS,
+        ("outcome",),
+        (*RUN_COST_COLUMNS, "outcome"),
+    ):
+        payload = {key: value for key, value in data.items() if key not in dropped}
+        if any(payload == prior for prior in attempted):
+            continue
+        attempted.append(payload)
+        try:
+            result = _upsert_encoding_run(client, payload)
+        except Exception as e:
+            last_error = e
+            if _is_missing_column_error(e):
+                continue
+            break
+        if dropped:
+            print(
+                f"Synced run {run.id} without {'/'.join(dropped)} "
+                f"after Supabase rejected them: {last_error}"
+            )
         return len(result.data) > 0
-    except Exception as e:
-        fallback_data = dict(data)
-        for column_group in fallback_column_groups:
-            if not any(column in fallback_data for column in column_group):
-                continue
-            for column in column_group:
-                fallback_data.pop(column, None)
-            try:
-                result = _upsert_encoding_run(client, fallback_data)
-                print(
-                    f"Synced run {run.id} without {'/'.join(column_group)} "
-                    f"after Supabase rejected it: {e}"
-                )
-                return len(result.data) > 0
-            except Exception:
-                continue
-        print(f"Error syncing run {run.id}: {e}")
-        return False
+    print(f"Error syncing run {run.id}: {last_error}")
+    return False
 
 
-_RUN_COST_COLUMNS = (
-    "input_tokens",
-    "output_tokens",
-    "cache_read_tokens",
-    "cache_creation_tokens",
-    "reasoning_output_tokens",
-    "estimated_cost_usd",
-    "actual_cost_usd",
-    "generation_attempt_count",
-)
+def _is_missing_column_error(error: Exception) -> bool:
+    """True when a Supabase/PostgREST error reports an unknown column."""
+    text = str(error)
+    return (
+        "PGRST204" in text
+        or "Could not find the" in text
+        or "does not exist" in text
+    )
 
 
 def _upsert_encoding_run(client: Client, data: dict):
@@ -754,20 +770,23 @@ def sync_agent_sessions_to_supabase(
                 for e in events
             ]
 
-            # Upsert session. Retry without the newest token columns so the
-            # sync keeps working against Supabase schemas that predate them.
+            # Upsert session. Retry without the newest token columns only when
+            # Supabase reports an unknown column (a schema that predates
+            # migration 007); any other failure counts the session as failed.
             try:
                 client.schema(TELEMETRY_SCHEMA).table("sdk_sessions").upsert(
                     session_data
                 ).execute()
-            except Exception:
+            except Exception as session_error:
                 fallback_session_data = {
                     key: value
                     for key, value in session_data.items()
                     if key
                     not in ("cache_creation_tokens", "reasoning_output_tokens")
                 }
-                if fallback_session_data == session_data:
+                if fallback_session_data == session_data or not (
+                    _is_missing_column_error(session_error)
+                ):
                     raise
                 client.schema(TELEMETRY_SCHEMA).table("sdk_sessions").upsert(
                     fallback_session_data

@@ -16,6 +16,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
+# Per-run token/cost ledger columns, shared with the Supabase sync so the
+# local schema, the payload, and the fallback ladder cannot drift apart.
+RUN_COST_COLUMNS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+    "reasoning_output_tokens",
+    "estimated_cost_usd",
+    "actual_cost_usd",
+    "generation_attempt_count",
+)
+
 RUN_COLUMNS = (
     "id",
     "timestamp",
@@ -35,15 +48,7 @@ RUN_COLUMNS = (
     "lessons",
     "axiom_encode_version",
     "outcome_json",
-    "input_tokens",
-    "output_tokens",
-    "cache_read_tokens",
-    "cache_creation_tokens",
-    "reasoning_output_tokens",
-    "estimated_cost_usd",
-    "actual_cost_usd",
-    "generation_attempt_count",
-)
+) + RUN_COST_COLUMNS
 
 SESSION_COLUMNS = (
     "id",
@@ -79,11 +84,16 @@ class TokenUsage:
         return self.input_tokens + self.output_tokens
 
     @property
-    def non_cached_input_tokens(self) -> int:
-        """Prompt tokens billed at the standard input rate."""
-        return max(
-            self.input_tokens - self.cache_read_tokens - self.cache_creation_tokens,
-            0,
+    def has_recorded_usage(self) -> bool:
+        """True when any token counter is non-zero (usage was measured)."""
+        return any(
+            (
+                self.input_tokens,
+                self.output_tokens,
+                self.cache_read_tokens,
+                self.cache_creation_tokens,
+                self.reasoning_output_tokens,
+            )
         )
 
 
@@ -486,7 +496,9 @@ class EncodingDB:
                 if col == "axiom_encode_version":
                     col_type = "TEXT DEFAULT ''"
                 elif col == "estimated_cost_usd":
-                    col_type = "REAL DEFAULT 0"
+                    # No default: NULL means "cost unknown", which must stay
+                    # distinguishable from a measured $0.
+                    col_type = "REAL"
                 else:
                     col_type = "INTEGER DEFAULT 0"
                 cursor.execute(f"ALTER TABLE sessions ADD COLUMN {col} {col_type}")
@@ -906,9 +918,10 @@ class EncodingDB:
         cursor.execute(
             """
             INSERT INTO sessions (
-                id, run_id, started_at, model, cwd, event_count, total_tokens, axiom_encode_version
+                id, run_id, started_at, model, cwd, event_count, total_tokens,
+                estimated_cost_usd, axiom_encode_version
             )
-            VALUES (?, ?, ?, ?, ?, 0, 0, ?)
+            VALUES (?, ?, ?, ?, ?, 0, 0, NULL, ?)
         """,
             (
                 session.id,
@@ -1022,6 +1035,10 @@ class EncodingDB:
     @staticmethod
     def _row_to_session(row) -> Session:
         """Convert a SESSION_COLUMNS-ordered row to a Session."""
+        if len(row) != len(SESSION_COLUMNS):
+            raise ValueError(
+                f"Expected {len(SESSION_COLUMNS)} session columns, got {len(row)}"
+            )
         values = dict(zip(SESSION_COLUMNS, row))
         return Session(
             id=values["id"],
@@ -1151,6 +1168,7 @@ class EncodingDB:
     def update_session_tokens(
         self,
         session_id: str,
+        *,
         input_tokens: int = 0,
         output_tokens: int = 0,
         cache_read_tokens: int = 0,
@@ -1163,60 +1181,59 @@ class EncodingDB:
         Token counts add onto whatever the session has already recorded, so
         each pipeline stage (generation, repair, review) can report its own
         usage without clobbering earlier writes. The cost estimate follows
-        the same rule, except that an unknown increment (``None``) poisons
-        the session total to ``None``: a partial sum would read as a real,
-        too-low figure. Once poisoned while tokens are recorded, the total
-        stays ``None``.
+        the same rule, except that a token-spending increment with an unknown
+        cost (``None``) poisons the session total to ``None``: a partial sum
+        would read as a real, too-low figure. A zero-token increment without
+        a cost leaves the total untouched, and once poisoned while tokens are
+        recorded the total stays ``None``. The whole write is one UPDATE so
+        concurrent stages cannot lose each other's cost contribution.
         """
+        increment_token_sum = (
+            input_tokens
+            + output_tokens
+            + cache_read_tokens
+            + cache_creation_tokens
+            + reasoning_output_tokens
+        )
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
         cursor.execute(
             """
-            SELECT total_tokens, estimated_cost_usd,
-                   input_tokens + output_tokens + cache_read_tokens
-                   + cache_creation_tokens + reasoning_output_tokens
-            FROM sessions WHERE id = ?
-        """,
-            (session_id,),
-        )
-        row = cursor.fetchone()
-        if row is None:
-            conn.close()
-            return
-        prior_cost = row[1]
-        prior_token_sum = int(row[2] or 0)
-
-        if estimated_cost_usd is None:
-            new_cost = None
-        elif prior_cost is None and prior_token_sum > 0:
-            # An earlier increment had no cost estimate; keep the total unknown.
-            new_cost = None
-        else:
-            new_cost = float(prior_cost or 0.0) + float(estimated_cost_usd)
-
-        cursor.execute(
-            """
             UPDATE sessions
-            SET input_tokens = input_tokens + ?,
-                output_tokens = output_tokens + ?,
-                cache_read_tokens = cache_read_tokens + ?,
-                cache_creation_tokens = cache_creation_tokens + ?,
-                reasoning_output_tokens = reasoning_output_tokens + ?,
-                total_tokens = total_tokens + ?,
-                estimated_cost_usd = ?
-            WHERE id = ?
+            SET estimated_cost_usd = CASE
+                    WHEN :has_cost = 0 AND :increment_tokens > 0 THEN NULL
+                    WHEN :has_cost = 0 THEN estimated_cost_usd
+                    WHEN estimated_cost_usd IS NULL
+                         AND COALESCE(input_tokens, 0)
+                             + COALESCE(output_tokens, 0)
+                             + COALESCE(cache_read_tokens, 0)
+                             + COALESCE(cache_creation_tokens, 0)
+                             + COALESCE(reasoning_output_tokens, 0) > 0
+                        THEN NULL
+                    ELSE COALESCE(estimated_cost_usd, 0.0) + :cost
+                END,
+                input_tokens = COALESCE(input_tokens, 0) + :input,
+                output_tokens = COALESCE(output_tokens, 0) + :output,
+                cache_read_tokens = COALESCE(cache_read_tokens, 0) + :cache_read,
+                cache_creation_tokens =
+                    COALESCE(cache_creation_tokens, 0) + :cache_creation,
+                reasoning_output_tokens =
+                    COALESCE(reasoning_output_tokens, 0) + :reasoning,
+                total_tokens = COALESCE(total_tokens, 0) + :input + :output
+            WHERE id = :session_id
         """,
-            (
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                cache_creation_tokens,
-                reasoning_output_tokens,
-                input_tokens + output_tokens,
-                new_cost,
-                session_id,
-            ),
+            {
+                "session_id": session_id,
+                "input": input_tokens,
+                "output": output_tokens,
+                "cache_read": cache_read_tokens,
+                "cache_creation": cache_creation_tokens,
+                "reasoning": reasoning_output_tokens,
+                "increment_tokens": increment_token_sum,
+                "has_cost": 0 if estimated_cost_usd is None else 1,
+                "cost": float(estimated_cost_usd or 0.0),
+            },
         )
 
         conn.commit()

@@ -1462,8 +1462,48 @@ class TestSyncRunCostLedger:
         assert payload["cache_creation_tokens"] == 800
         assert payload["reasoning_output_tokens"] == 400
         assert payload["estimated_cost_usd"] == 0.3322
-        assert payload["actual_cost_usd"] is None
+        # Unknown costs are omitted so they stay NULL remotely.
+        assert "actual_cost_usd" not in payload
         assert payload["generation_attempt_count"] == 2
+
+    def test_unmeasured_ledger_fields_stay_absent(self):
+        """A manifest-style run with no telemetry must not publish zeros."""
+        mock_run = self._make_run_with_ledger()
+        from axiom_encode.harness.encoding_db import TokenUsage
+
+        mock_run.tokens = TokenUsage()
+        mock_run.estimated_cost_usd = None
+        mock_run.actual_cost_usd = None
+        mock_run.generation_attempt_count = 0
+
+        mock_client = MagicMock()
+        mock_client.schema.return_value.table.return_value.upsert.return_value.execute.return_value = MagicMock(
+            data=[{"id": "cost-123"}]
+        )
+
+        assert sync_run_to_supabase(mock_run, "ci_only", client=mock_client) is True
+        payload = (
+            mock_client.schema.return_value.table.return_value.upsert.call_args.args[0]
+        )
+        assert "input_tokens" not in payload
+        assert "estimated_cost_usd" not in payload
+        assert "generation_attempt_count" not in payload
+
+    def test_transient_error_does_not_strip_ledger(self):
+        """Non-schema errors fail the sync instead of degrading the payload."""
+        mock_run = self._make_run_with_ledger()
+
+        mock_client = MagicMock()
+        execute = (
+            mock_client.schema.return_value.table.return_value.upsert.return_value.execute
+        )
+        execute.side_effect = Exception("Connection reset by peer")
+
+        assert sync_run_to_supabase(mock_run, "ci_only", client=mock_client) is False
+        upsert_calls = (
+            mock_client.schema.return_value.table.return_value.upsert.call_args_list
+        )
+        assert len(upsert_calls) == 1
 
     def test_retries_without_cost_columns_when_remote_schema_rejects_them(self):
         mock_run = self._make_run_with_ledger()
@@ -1499,6 +1539,7 @@ class TestSyncRunCostLedger:
         execute.side_effect = [
             Exception("Could not find the 'input_tokens' column"),
             Exception("Could not find the 'outcome' column"),
+            Exception("Could not find the 'input_tokens' column"),
             MagicMock(data=[{"id": "cost-123"}]),
         ]
 
@@ -1506,8 +1547,12 @@ class TestSyncRunCostLedger:
         upsert_calls = (
             mock_client.schema.return_value.table.return_value.upsert.call_args_list
         )
-        assert "input_tokens" not in upsert_calls[2].args[0]
+        # Each tier restarts from the full payload, so the outcome-only tier
+        # still carries the cost columns; only the last tier drops both.
+        assert "input_tokens" in upsert_calls[2].args[0]
         assert "outcome" not in upsert_calls[2].args[0]
+        assert "input_tokens" not in upsert_calls[3].args[0]
+        assert "outcome" not in upsert_calls[3].args[0]
 
 
 class TestSyncSessionTokenColumns:
@@ -1596,3 +1641,24 @@ class TestSyncSessionTokenColumns:
         assert "cache_creation_tokens" in upsert_calls[0].args[0]
         assert "cache_creation_tokens" not in upsert_calls[1].args[0]
         assert "reasoning_output_tokens" not in upsert_calls[1].args[0]
+
+    def test_transient_session_error_counts_as_failed(self, tmp_path):
+        """Non-schema errors must not silently degrade the session payload."""
+        db_path = self._make_session_db(tmp_path)
+
+        mock_client = MagicMock()
+        execute = (
+            mock_client.schema.return_value.table.return_value.upsert.return_value.execute
+        )
+        execute.side_effect = Exception("Connection reset by peer")
+
+        with patch("axiom_encode.supabase_sync.ENCODINGS_DB", db_path):
+            result = sync_agent_sessions_to_supabase(
+                client=mock_client, include_all=True
+            )
+        assert result["synced"] == 0
+        assert result["failed"] == 1
+        upsert_calls = (
+            mock_client.schema.return_value.table.return_value.upsert.call_args_list
+        )
+        assert len(upsert_calls) == 1

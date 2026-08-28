@@ -1,19 +1,23 @@
 -- Unified encoding cost ledger: per-run token usage and spend, plus the
 -- session token columns previously dropped by the sync.
+--
+-- Every ledger column is nullable with no default: NULL means "not measured"
+-- (pre-ledger rows, manifest-only reconstructions), which must stay
+-- distinguishable from a measured zero.
 
 ALTER TABLE encodings.encoding_runs
-    ADD COLUMN IF NOT EXISTS input_tokens BIGINT NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS output_tokens BIGINT NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS cache_read_tokens BIGINT NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS cache_creation_tokens BIGINT NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS reasoning_output_tokens BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS input_tokens BIGINT,
+    ADD COLUMN IF NOT EXISTS output_tokens BIGINT,
+    ADD COLUMN IF NOT EXISTS cache_read_tokens BIGINT,
+    ADD COLUMN IF NOT EXISTS cache_creation_tokens BIGINT,
+    ADD COLUMN IF NOT EXISTS reasoning_output_tokens BIGINT,
     ADD COLUMN IF NOT EXISTS estimated_cost_usd NUMERIC,
     ADD COLUMN IF NOT EXISTS actual_cost_usd NUMERIC,
-    ADD COLUMN IF NOT EXISTS generation_attempt_count INTEGER NOT NULL DEFAULT 0;
+    ADD COLUMN IF NOT EXISTS generation_attempt_count INTEGER;
 
 ALTER TABLE telemetry.sdk_sessions
-    ADD COLUMN IF NOT EXISTS cache_creation_tokens BIGINT NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS reasoning_output_tokens BIGINT NOT NULL DEFAULT 0;
+    ADD COLUMN IF NOT EXISTS cache_creation_tokens BIGINT,
+    ADD COLUMN IF NOT EXISTS reasoning_output_tokens BIGINT;
 
 DROP FUNCTION IF EXISTS encodings.get_encoding_runs(INTEGER, INTEGER);
 

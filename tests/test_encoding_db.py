@@ -688,6 +688,33 @@ class TestUpdateSessionTokens:
         assert session.input_tokens == 3000
         assert session.estimated_cost_usd is None
 
+    def test_zero_token_costless_write_preserves_known_cost(self, experiment_db):
+        """A bookkeeping write that spends nothing must not wipe a known cost."""
+        experiment_db.start_session(
+            model="test-model", cwd="/tmp", session_id="preserve-test"
+        )
+
+        experiment_db.update_session_tokens(
+            session_id="preserve-test",
+            input_tokens=1000,
+            output_tokens=500,
+            estimated_cost_usd=0.05,
+        )
+        experiment_db.update_session_tokens(session_id="preserve-test")
+
+        session = experiment_db.get_session("preserve-test")
+        assert session.input_tokens == 1000
+        assert session.estimated_cost_usd == pytest.approx(0.05)
+
+    def test_new_session_cost_starts_unknown(self, experiment_db):
+        """A session that never records usage reports unknown cost, not $0."""
+        experiment_db.start_session(
+            model="test-model", cwd="/tmp", session_id="fresh-test"
+        )
+
+        session = experiment_db.get_session("fresh-test")
+        assert session.estimated_cost_usd is None
+
     def test_missing_session_is_a_no_op(self, experiment_db):
         """Writing to an unknown session id must not raise."""
         experiment_db.update_session_tokens(
