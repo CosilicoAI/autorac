@@ -32011,10 +32011,13 @@ rules:
 
         def reject_last_status(candidate_file, **_kwargs):
             cases = yaml.safe_load(candidate_file.read_text())
-            return ["invalid synthesized case"] if any(
-                "status_63_eligible" in next(iter(case["output"]))
-                for case in cases
-            ) else []
+            return (
+                ["invalid synthesized case"]
+                if any(
+                    "status_63_eligible" in next(iter(case["output"])) for case in cases
+                )
+                else []
+            )
 
         checker = MagicMock(side_effect=reject_last_status)
         repaired = _append_generated_judgment_positive_tests_if_missing(
