@@ -33,7 +33,7 @@ import unicodedata
 from base64 import b64decode, b64encode
 from binascii import Error as BinasciiError
 from calendar import monthrange
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timezone
@@ -17569,6 +17569,9 @@ def _append_generated_derived_output_tests_if_missing(
     return repaired
 
 
+_GENERATED_JUDGMENT_BATCH_CHECK_LIMIT = 50
+
+
 def _append_generated_judgment_positive_tests_if_missing(
     *,
     rules_file: Path | None = None,
@@ -17612,7 +17615,102 @@ def _append_generated_judgment_positive_tests_if_missing(
         and str(rule.get("dtype") or "").strip().lower() == "judgment"
     }
     repaired: list[str] = []
+    batch_attempted_targets: set[str] = set()
+    test_check_count = 0
+
+    def check_candidate(candidate_file: Path) -> list[dict[str, str | None]]:
+        nonlocal test_check_count
+        if test_failure_checker is None:
+            return []
+        if test_check_count >= _GENERATED_JUDGMENT_BATCH_CHECK_LIMIT:
+            return [{"message": "generated Judgment repair check budget exhausted"}]
+        test_check_count += 1
+        return test_failure_checker(
+            candidate_file,
+            root=repo_path,
+            axiom_rules_path=axiom_rules_path,
+        )
+
+    if test_failure_checker is not None:
+        batch_candidates: list[tuple[str, str, dict[str, object]]] = []
+        provisional_names = set(existing_case_names)
+        for target in output_targets:
+            rule_name = target.rsplit("#", 1)[-1]
+            rule = derived_rules_by_target.get(target)
+            versions = rule.get("versions") if isinstance(rule, dict) else None
+            if isinstance(versions, list) and _rule_versions_are_constant_false(
+                versions
+            ):
+                continue
+            if _test_payload_has_rule_output_value(
+                test_payload, rule_name=rule_name, normalized_value="holds"
+            ):
+                continue
+            case_name = _unique_generated_test_name(
+                f"auto_positive_{_safe_test_name(rule_name)}",
+                provisional_names,
+            )
+            synthesized = _build_generated_positive_judgment_case(
+                case_name=case_name,
+                target=f"{target_base}#{rule_name}",
+                target_base=target_base,
+                rule=rule,
+                rules_payload=rules_payload,
+                repo_path=repo_path,
+                rules_by_name=rules_by_name,
+                test_payload=test_payload,
+            )
+            if synthesized is None:
+                continue
+            batch_candidates.append((target, case_name, synthesized))
+            provisional_names.add(case_name)
+
+        if batch_candidates:
+            batch_attempted_targets = {
+                target for target, _name, _case in batch_candidates
+            }
+            pending_batches = deque([batch_candidates])
+            while (
+                pending_batches
+                and test_check_count < _GENERATED_JUDGMENT_BATCH_CHECK_LIMIT
+            ):
+                candidates = pending_batches.popleft()
+                trial_payload = [
+                    *test_payload,
+                    *(case for _target, _name, case in candidates),
+                ]
+                test_file.write_text(
+                    yaml.safe_dump(
+                        trial_payload,
+                        sort_keys=False,
+                        allow_unicode=False,
+                    )
+                )
+                failures = check_candidate(test_file)
+                if not failures:
+                    test_payload = trial_payload
+                    accepted_names = [name for _target, name, _case in candidates]
+                    existing_case_names.update(accepted_names)
+                    repaired.extend(accepted_names)
+                    continue
+                test_file.write_text(
+                    yaml.safe_dump(test_payload, sort_keys=False, allow_unicode=False)
+                )
+                if len(candidates) > 1:
+                    midpoint = len(candidates) // 2
+                    pending_batches.extend(
+                        (candidates[:midpoint], candidates[midpoint:])
+                    )
+
     for target in output_targets:
+        # A failed batch has already been checked above. Once the shared budget
+        # is exhausted, leave rejected targets for model feedback instead of
+        # restarting an unbounded target-by-target engine loop.
+        if (
+            test_check_count >= _GENERATED_JUDGMENT_BATCH_CHECK_LIMIT
+            and target in batch_attempted_targets
+        ):
+            continue
         rule_name = target.rsplit("#", 1)[-1]
         rule = derived_rules_by_target.get(target)
         versions = rule.get("versions") if isinstance(rule, dict) else None
@@ -17644,11 +17742,7 @@ def _append_generated_judgment_positive_tests_if_missing(
                 test_file.write_text(
                     yaml.safe_dump(trial_payload, sort_keys=False, allow_unicode=False)
                 )
-                failures = test_failure_checker(
-                    test_file,
-                    root=repo_path,
-                    axiom_rules_path=axiom_rules_path,
-                )
+                failures = check_candidate(test_file)
                 if not failures:
                     candidate_payload = trial_payload
             else:
@@ -17674,11 +17768,7 @@ def _append_generated_judgment_positive_tests_if_missing(
                 test_file.write_text(
                     yaml.safe_dump(trial_payload, sort_keys=False, allow_unicode=False)
                 )
-                failures = test_failure_checker(
-                    test_file,
-                    root=repo_path,
-                    axiom_rules_path=axiom_rules_path,
-                )
+                failures = check_candidate(test_file)
                 if failures:
                     continue
             candidate_payload = trial_payload

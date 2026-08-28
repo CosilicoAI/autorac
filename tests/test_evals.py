@@ -8927,6 +8927,86 @@ rules: []
             for call in mock_repair.call_args_list
         )
 
+    def test_generated_eval_repair_rounds_are_bounded(self, tmp_path):
+        rulespec_file = tmp_path / "artifact.yaml"
+        rulespec_file.write_text("initial\n")
+        metrics = SimpleNamespace(ci_issues=["repairable"])
+        repair_round = 0
+
+        def change_artifact(**_kwargs):
+            nonlocal repair_round
+            repair_round += 1
+            rulespec_file.write_text(f"repair-{repair_round}\n")
+            return ["companion-test-repair"]
+
+        with (
+            patch(
+                "axiom_encode.harness.evals.evaluate_artifact",
+                return_value=metrics,
+            ) as mock_evaluate,
+            patch(
+                "axiom_encode.harness.evals._apply_generated_eval_repairs",
+                side_effect=change_artifact,
+            ) as mock_repair,
+            patch.object(evals_module, "_GENERATED_EVAL_REPAIR_LIMIT", 3),
+        ):
+            result = _evaluate_generated_artifact_with_repairs(
+                rulespec_file=rulespec_file,
+                policy_repo_root=tmp_path / "rulespec-us",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                source_text="Source body",
+                local_corpus_release=object(),
+            )
+
+        assert result is metrics
+        assert mock_evaluate.call_count == 4
+        assert mock_repair.call_count == 3
+
+    def test_generated_eval_repair_expands_fail_fast_coverage_issues(self, tmp_path):
+        repo_path = _canonical_rulespec_content_root(tmp_path, "us")
+        rulespec_file = repo_path / "statutes" / "7" / "2015" / "f.yaml"
+        test_file = rulespec_file.with_name("f.test.yaml")
+        rulespec_file.parent.mkdir(parents=True)
+        rulespec_file.write_text(
+            """format: rulespec/v1
+rules:
+  - name: refugee_wait_years
+    kind: derived
+    dtype: Integer
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0
+  - name: asylee_wait_years
+    kind: derived
+    dtype: Integer
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0
+"""
+        )
+        test_file.write_text("[]\n")
+
+        repairs = evals_module._apply_generated_eval_repairs(
+            rulespec_file=rulespec_file,
+            policy_repo_root=repo_path,
+            axiom_rules_path=tmp_path / "axiom-rules-engine",
+            issues=[
+                "Derived rule missing companion output coverage: "
+                "`us:statutes/7/2015/f#refugee_wait_years` is not asserted "
+                "by the companion `.test.yaml` file."
+            ],
+            local_corpus_release=object(),
+        )
+
+        assert repairs == [
+            "derived_output:auto_output_refugee_wait_years",
+            "derived_output:auto_output_asylee_wait_years",
+        ]
+        assert [case["name"] for case in yaml.safe_load(test_file.read_text())] == [
+            "auto_output_refugee_wait_years",
+            "auto_output_asylee_wait_years",
+        ]
+
     def test_generated_eval_can_disable_post_materialization_repairs(self, tmp_path):
         metrics = SimpleNamespace(ci_issues=["repairable"])
         with (

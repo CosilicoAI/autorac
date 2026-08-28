@@ -140,6 +140,8 @@ from .validator_pipeline import (
     extract_numeric_occurrences_from_text,
     extract_typed_numeric_inventory_occurrences_from_text,
     find_deferred_output_issues,
+    find_judgment_positive_companion_output_issues,
+    find_missing_derived_companion_output_issues,
     find_ungrounded_numeric_issues_scoped,
     find_unused_import_issues,
     find_unused_modifier_parameter_issues,
@@ -7805,6 +7807,9 @@ def _evaluate_artifact_in_scope(
     )
 
 
+_GENERATED_EVAL_REPAIR_LIMIT = 50
+
+
 def _evaluate_generated_artifact_with_repairs(
     rulespec_file: Path,
     policy_repo_root: Path,
@@ -7826,7 +7831,7 @@ def _evaluate_generated_artifact_with_repairs(
     allow_artifact_repairs: bool = True,
 ) -> EvalArtifactMetrics | None:
     evaluated_states: set[tuple[bytes | None, bytes | None]] = set()
-    while True:
+    for _repair_round in range(_GENERATED_EVAL_REPAIR_LIMIT + 1):
         test_file = _rulespec_test_path(rulespec_file)
         artifact_state = tuple(
             path.read_bytes() if path.exists() else None
@@ -7855,6 +7860,8 @@ def _evaluate_generated_artifact_with_repairs(
         if not allow_artifact_repairs:
             return metrics
         if artifact_state in evaluated_states:
+            return metrics
+        if _repair_round == _GENERATED_EVAL_REPAIR_LIMIT:
             return metrics
         evaluated_states.add(artifact_state)
         repairs = _apply_generated_eval_repairs(
@@ -7936,6 +7943,32 @@ def _apply_generated_eval_repairs(
     test_file = _rulespec_test_path(rulespec_file)
     if relative_output is None or not test_file.exists():
         return repairs
+
+    try:
+        rules_content = rulespec_file.read_text()
+        test_cases = yaml.safe_load(test_file.read_text()) or []
+    except (OSError, ValueError, yaml.YAMLError):
+        return repairs
+    if isinstance(test_cases, list):
+        exhaustive_coverage_issues = [
+            *find_missing_derived_companion_output_issues(
+                rules_content,
+                test_cases,
+                rules_file=rulespec_file,
+                policy_repo_path=policy_repo_root,
+            ),
+            *find_judgment_positive_companion_output_issues(
+                rules_content,
+                test_cases,
+                rules_file=rulespec_file,
+                policy_repo_path=policy_repo_root,
+            ),
+        ]
+        companion_issues.extend(
+            issue
+            for issue in exhaustive_coverage_issues
+            if issue not in companion_issues
+        )
 
     # Reuse the CLI's deterministic companion-test repair helpers lazily to
     # avoid an import cycle: cli imports this module during startup.
