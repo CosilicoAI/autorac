@@ -1415,3 +1415,184 @@ class TestSyncAppliedManifestRuns:
             _apply_manifest_payload(run_id="shared-run"),
         )
         assert run_a_again.id == run_a.id
+
+
+class TestSyncRunCostLedger:
+    """Per-run token/cost fields in the encodings.encoding_runs payload."""
+
+    def _make_run_with_ledger(self):
+        from axiom_encode.harness.encoding_db import TokenUsage
+
+        mock_run = MagicMock()
+        mock_run.id = "cost-123"
+        mock_run.timestamp = datetime.now()
+        mock_run.citation = "26 USC 1"
+        mock_run.file_path = "test.yaml"
+        mock_run.source_text = "source text"
+        mock_run.rulespec_content = ""
+        mock_run.review_results = None
+        mock_run.iterations = []
+        mock_run.tokens = TokenUsage(
+            input_tokens=76_000,
+            output_tokens=3_700,
+            cache_read_tokens=1_200,
+            cache_creation_tokens=800,
+            reasoning_output_tokens=400,
+        )
+        mock_run.estimated_cost_usd = 0.3322
+        mock_run.actual_cost_usd = None
+        mock_run.generation_attempt_count = 2
+        return mock_run
+
+    def test_payload_includes_token_ledger(self):
+        mock_run = self._make_run_with_ledger()
+
+        mock_client = MagicMock()
+        mock_client.schema.return_value.table.return_value.upsert.return_value.execute.return_value = MagicMock(
+            data=[{"id": "cost-123"}]
+        )
+
+        assert sync_run_to_supabase(mock_run, "ci_only", client=mock_client) is True
+        payload = (
+            mock_client.schema.return_value.table.return_value.upsert.call_args.args[0]
+        )
+        assert payload["input_tokens"] == 76_000
+        assert payload["output_tokens"] == 3_700
+        assert payload["cache_read_tokens"] == 1_200
+        assert payload["cache_creation_tokens"] == 800
+        assert payload["reasoning_output_tokens"] == 400
+        assert payload["estimated_cost_usd"] == 0.3322
+        assert payload["actual_cost_usd"] is None
+        assert payload["generation_attempt_count"] == 2
+
+    def test_retries_without_cost_columns_when_remote_schema_rejects_them(self):
+        mock_run = self._make_run_with_ledger()
+        mock_run.outcome = {"final_success": True, "status": "apply_applied"}
+
+        mock_client = MagicMock()
+        execute = (
+            mock_client.schema.return_value.table.return_value.upsert.return_value.execute
+        )
+        execute.side_effect = [
+            Exception("Could not find the 'input_tokens' column"),
+            MagicMock(data=[{"id": "cost-123"}]),
+        ]
+
+        assert sync_run_to_supabase(mock_run, "ci_only", client=mock_client) is True
+        upsert_calls = (
+            mock_client.schema.return_value.table.return_value.upsert.call_args_list
+        )
+        assert "input_tokens" in upsert_calls[0].args[0]
+        assert "input_tokens" not in upsert_calls[1].args[0]
+        assert "estimated_cost_usd" not in upsert_calls[1].args[0]
+        # The outcome column is only stripped by the next fallback tier.
+        assert "outcome" in upsert_calls[1].args[0]
+
+    def test_retries_without_cost_columns_then_outcome(self):
+        mock_run = self._make_run_with_ledger()
+        mock_run.outcome = {"final_success": True, "status": "apply_applied"}
+
+        mock_client = MagicMock()
+        execute = (
+            mock_client.schema.return_value.table.return_value.upsert.return_value.execute
+        )
+        execute.side_effect = [
+            Exception("Could not find the 'input_tokens' column"),
+            Exception("Could not find the 'outcome' column"),
+            MagicMock(data=[{"id": "cost-123"}]),
+        ]
+
+        assert sync_run_to_supabase(mock_run, "ci_only", client=mock_client) is True
+        upsert_calls = (
+            mock_client.schema.return_value.table.return_value.upsert.call_args_list
+        )
+        assert "input_tokens" not in upsert_calls[2].args[0]
+        assert "outcome" not in upsert_calls[2].args[0]
+
+
+class TestSyncSessionTokenColumns:
+    """cache_creation/reasoning token columns in the sdk_sessions payload."""
+
+    def _make_session_db(self, tmp_path):
+        db_path = tmp_path / "encodings.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                started_at TEXT,
+                ended_at TEXT,
+                model TEXT,
+                cwd TEXT,
+                event_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_creation_tokens INTEGER DEFAULT 0,
+                reasoning_output_tokens INTEGER DEFAULT 0,
+                estimated_cost_usd REAL DEFAULT 0
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE session_events (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                sequence INTEGER,
+                timestamp TEXT,
+                event_type TEXT,
+                tool_name TEXT,
+                content TEXT,
+                metadata_json TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO sessions VALUES "
+            "('agent-test-1', '2024-01-01', '2024-01-01', 'opus', '/tmp', 0, "
+            "100, 50, 10, 20, 5, 0.01)"
+        )
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def test_payload_includes_new_token_columns(self, tmp_path):
+        db_path = self._make_session_db(tmp_path)
+
+        mock_client = MagicMock()
+        mock_client.schema.return_value.table.return_value.upsert.return_value.execute.return_value = MagicMock(
+            data=[{"id": "agent-test-1"}]
+        )
+
+        with patch("axiom_encode.supabase_sync.ENCODINGS_DB", db_path):
+            result = sync_agent_sessions_to_supabase(
+                client=mock_client, include_all=True
+            )
+        assert result["synced"] == 1
+        payload = (
+            mock_client.schema.return_value.table.return_value.upsert.call_args.args[0]
+        )
+        assert payload["cache_creation_tokens"] == 20
+        assert payload["reasoning_output_tokens"] == 5
+
+    def test_retries_without_new_token_columns(self, tmp_path):
+        db_path = self._make_session_db(tmp_path)
+
+        mock_client = MagicMock()
+        execute = (
+            mock_client.schema.return_value.table.return_value.upsert.return_value.execute
+        )
+        execute.side_effect = [
+            Exception("Could not find the 'cache_creation_tokens' column"),
+            MagicMock(data=[{"id": "agent-test-1"}]),
+        ]
+
+        with patch("axiom_encode.supabase_sync.ENCODINGS_DB", db_path):
+            result = sync_agent_sessions_to_supabase(
+                client=mock_client, include_all=True
+            )
+        assert result["synced"] == 1
+        assert result["failed"] == 0
+        upsert_calls = (
+            mock_client.schema.return_value.table.return_value.upsert.call_args_list
+        )
+        assert "cache_creation_tokens" in upsert_calls[0].args[0]
+        assert "cache_creation_tokens" not in upsert_calls[1].args[0]
+        assert "reasoning_output_tokens" not in upsert_calls[1].args[0]

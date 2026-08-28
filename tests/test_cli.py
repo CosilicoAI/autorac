@@ -13207,6 +13207,30 @@ class TestCmdEncode:
             ).fetchone()
         assert persisted == (544001, None)
 
+    def test_eval_run_row_persists_token_ledger(self, tmp_path):
+        from axiom_encode.cli import _FailedEncodeAttempt, _log_eval_result
+
+        initial = self._make_eval_result(False)
+        retry = self._make_eval_result(True)
+        db_path = tmp_path / "encodings.db"
+
+        run = _log_eval_result(
+            retry,
+            db_path=db_path,
+            log_issue=False,
+            prior_attempts=[
+                _FailedEncodeAttempt(result=initial, error="validation failed")
+            ],
+        )
+
+        persisted = EncodingDB(db_path).get_run(run.id)
+        assert persisted.generation_attempt_count == 2
+        assert persisted.tokens.input_tokens == 200
+        assert persisted.tokens.output_tokens == 100
+        assert persisted.estimated_cost_usd == pytest.approx(0.02)
+        # Neither attempt reported a provider-billed cost, so it stays unknown.
+        assert persisted.actual_cost_usd is None
+
     @pytest.mark.parametrize(
         ("value", "expected"),
         [(None, "unknown"), (0.0, "$0.0000"), (0.5452, "$0.5452")],

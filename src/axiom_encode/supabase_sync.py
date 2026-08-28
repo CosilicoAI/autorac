@@ -14,6 +14,8 @@ from typing import Optional
 
 from supabase import Client, create_client
 
+from .harness.encoding_db import TokenUsage
+
 ENCODINGS_SCHEMA = "encodings"
 TELEMETRY_SCHEMA = "telemetry"
 
@@ -162,29 +164,64 @@ def sync_run_to_supabase(
         "synced_at": datetime.now().isoformat(),
         "data_source": data_source,
     }
+    tokens = getattr(run, "tokens", None)
+    if isinstance(tokens, TokenUsage):
+        data.update(
+            {
+                "input_tokens": tokens.input_tokens,
+                "output_tokens": tokens.output_tokens,
+                "cache_read_tokens": tokens.cache_read_tokens,
+                "cache_creation_tokens": tokens.cache_creation_tokens,
+                "reasoning_output_tokens": tokens.reasoning_output_tokens,
+                "estimated_cost_usd": getattr(run, "estimated_cost_usd", None),
+                "actual_cost_usd": getattr(run, "actual_cost_usd", None),
+                "generation_attempt_count": getattr(
+                    run, "generation_attempt_count", 0
+                ),
+            }
+        )
     if outcome:
         data["outcome"] = outcome
 
     if run.review_results:
         data["scores"] = _review_results_to_scores(run.review_results)
 
+    # Progressive fallbacks keep the sync working against Supabase schemas
+    # that predate the optional column groups.
+    fallback_column_groups = [_RUN_COST_COLUMNS, ("outcome",)]
     try:
         result = _upsert_encoding_run(client, data)
         return len(result.data) > 0
     except Exception as e:
-        if "outcome" in data:
-            fallback_data = dict(data)
-            fallback_data.pop("outcome", None)
+        fallback_data = dict(data)
+        for column_group in fallback_column_groups:
+            if not any(column in fallback_data for column in column_group):
+                continue
+            for column in column_group:
+                fallback_data.pop(column, None)
             try:
                 result = _upsert_encoding_run(client, fallback_data)
                 print(
-                    f"Synced run {run.id} without outcome metadata after Supabase rejected it: {e}"
+                    f"Synced run {run.id} without {'/'.join(column_group)} "
+                    f"after Supabase rejected it: {e}"
                 )
                 return len(result.data) > 0
             except Exception:
-                pass
+                continue
         print(f"Error syncing run {run.id}: {e}")
         return False
+
+
+_RUN_COST_COLUMNS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+    "reasoning_output_tokens",
+    "estimated_cost_usd",
+    "actual_cost_usd",
+    "generation_attempt_count",
+)
 
 
 def _upsert_encoding_run(client: Client, data: dict):
@@ -694,6 +731,9 @@ def sync_agent_sessions_to_supabase(
                 )
                 or None,
             }
+            for token_column in ("cache_creation_tokens", "reasoning_output_tokens"):
+                if token_column in session_columns:
+                    session_data[token_column] = session[token_column]
 
             # Build events data
             events_data = [
@@ -714,10 +754,24 @@ def sync_agent_sessions_to_supabase(
                 for e in events
             ]
 
-            # Upsert session
-            client.schema(TELEMETRY_SCHEMA).table("sdk_sessions").upsert(
-                session_data
-            ).execute()
+            # Upsert session. Retry without the newest token columns so the
+            # sync keeps working against Supabase schemas that predate them.
+            try:
+                client.schema(TELEMETRY_SCHEMA).table("sdk_sessions").upsert(
+                    session_data
+                ).execute()
+            except Exception:
+                fallback_session_data = {
+                    key: value
+                    for key, value in session_data.items()
+                    if key
+                    not in ("cache_creation_tokens", "reasoning_output_tokens")
+                }
+                if fallback_session_data == session_data:
+                    raise
+                client.schema(TELEMETRY_SCHEMA).table("sdk_sessions").upsert(
+                    fallback_session_data
+                ).execute()
 
             # Upsert events (in batches of 100)
             for i in range(0, len(events_data), 100):

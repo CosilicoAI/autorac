@@ -159,6 +159,7 @@ from .harness.encoding_db import (
     IterationError,
     ReviewResult,
     ReviewResults,
+    TokenUsage,
 )
 from .harness.eval_board import (
     EvalBoardError,
@@ -58973,6 +58974,50 @@ def _rulespec_file_imports_target(
     return False
 
 
+_ATTEMPT_TOKEN_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+    "reasoning_output_tokens",
+)
+
+
+def _sum_attempt_cost(attempts: Sequence[Any], cost_field: str) -> float | None:
+    """Sum a per-attempt cost field, or None if any token-spending attempt lacks it.
+
+    A partial sum would read as a real, too-low figure, so an attempt that
+    consumed tokens without reporting this cost poisons the aggregate.
+    """
+    costs: list[float] = []
+    for attempt in attempts:
+        cost = getattr(attempt, cost_field, None)
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            costs.append(float(cost))
+            continue
+        if any(
+            int(getattr(attempt, field, 0) or 0) > 0
+            for field in _ATTEMPT_TOKEN_FIELDS
+        ):
+            return None
+    return sum(costs) if costs else None
+
+
+def _aggregate_attempt_usage(attempts: Sequence[Any]) -> TokenUsage:
+    """Sum token usage across every generation attempt of an encode."""
+
+    def _sum_field(field: str) -> int:
+        return sum(int(getattr(attempt, field, 0) or 0) for attempt in attempts)
+
+    return TokenUsage(
+        input_tokens=_sum_field("input_tokens"),
+        output_tokens=_sum_field("output_tokens"),
+        cache_read_tokens=_sum_field("cache_read_tokens"),
+        cache_creation_tokens=_sum_field("cache_creation_tokens"),
+        reasoning_output_tokens=_sum_field("reasoning_output_tokens"),
+    )
+
+
 def _log_eval_result(
     result,
     *,
@@ -59039,6 +59084,10 @@ def _log_eval_result(
         rulespec_content=rulespec_content,
         review_results=_review_results_from_eval_metrics(result.metrics),
         axiom_encode_version=__version__,
+        tokens=_aggregate_attempt_usage(attempt_results),
+        estimated_cost_usd=_sum_attempt_cost(attempt_results, "estimated_cost_usd"),
+        actual_cost_usd=_sum_attempt_cost(attempt_results, "actual_cost_usd"),
+        generation_attempt_count=len(attempt_results),
     )
     run.session_id = f"encode-{run.id}"
     db = EncodingDB(db_path)
@@ -59072,27 +59121,7 @@ def _log_eval_session(
     def _sum_attempt_field(field: str) -> int:
         return sum(int(getattr(attempt, field, 0) or 0) for attempt in attempts)
 
-    attempt_costs: list[float] = []
-    estimated_cost_complete = True
-    for attempt in attempts:
-        cost = getattr(attempt, "estimated_cost_usd", None)
-        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
-            attempt_costs.append(float(cost))
-            continue
-        if any(
-            int(getattr(attempt, field, 0) or 0) > 0
-            for field in (
-                "input_tokens",
-                "output_tokens",
-                "cache_read_tokens",
-                "cache_creation_tokens",
-                "reasoning_output_tokens",
-            )
-        ):
-            estimated_cost_complete = False
-    aggregate_estimated_cost = (
-        sum(attempt_costs) if estimated_cost_complete and attempt_costs else None
-    )
+    aggregate_estimated_cost = _sum_attempt_cost(attempts, "estimated_cost_usd")
 
     session = db.start_session(
         model=str(getattr(result, "model", "") or ""),
@@ -59101,12 +59130,14 @@ def _log_eval_session(
         run_id=run.id,
         axiom_encode_version=__version__,
     )
+    aggregate_usage = _aggregate_attempt_usage(attempts)
     db.update_session_tokens(
         session.id,
-        input_tokens=_sum_attempt_field("input_tokens"),
-        output_tokens=_sum_attempt_field("output_tokens"),
-        cache_read_tokens=_sum_attempt_field("cache_read_tokens"),
-        cache_creation_tokens=_sum_attempt_field("cache_creation_tokens"),
+        input_tokens=aggregate_usage.input_tokens,
+        output_tokens=aggregate_usage.output_tokens,
+        cache_read_tokens=aggregate_usage.cache_read_tokens,
+        cache_creation_tokens=aggregate_usage.cache_creation_tokens,
+        reasoning_output_tokens=aggregate_usage.reasoning_output_tokens,
         estimated_cost_usd=aggregate_estimated_cost,
     )
     db.log_event(
