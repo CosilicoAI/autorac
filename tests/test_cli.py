@@ -31929,6 +31929,113 @@ rules:
             not in synthesized["input"]
         )
 
+    def test_judgment_positive_test_repair_validates_synthesized_batch_once(
+        self, tmp_path
+    ):
+        repo_path = _canonical_rulespec_content_root(tmp_path)
+        rules_file = repo_path / "statutes" / "7" / "2015" / "f.yaml"
+        test_file = repo_path / "statutes" / "7" / "2015" / "f.test.yaml"
+        rules_file.parent.mkdir(parents=True)
+        rules_file.write_text(
+            """format: rulespec/v1
+rules:
+  - name: refugee_eligible
+    kind: derived
+    dtype: Judgment
+    versions:
+      - effective_from: '2026-01-01'
+        formula: member_is_refugee
+  - name: asylee_eligible
+    kind: derived
+    dtype: Judgment
+    versions:
+      - effective_from: '2026-01-01'
+        formula: member_is_asylee
+"""
+        )
+        test_file.write_text("[]\n")
+        checker = MagicMock(return_value=[])
+
+        repaired = _append_generated_judgment_positive_tests_if_missing(
+            rules_file=rules_file,
+            test_file=test_file,
+            repo_path=repo_path,
+            axiom_rules_path=tmp_path / "axiom-rules-engine",
+            relative_output=Path("statutes/7/2015/f.yaml"),
+            issues=[
+                "Judgment rule missing positive companion output coverage: "
+                f"`us:statutes/7/2015/f#{name}` is not asserted as `holds` "
+                "by the companion `.test.yaml` file."
+                for name in ("refugee_eligible", "asylee_eligible")
+            ],
+            test_failure_checker=checker,
+        )
+
+        assert repaired == [
+            "auto_positive_refugee_eligible",
+            "auto_positive_asylee_eligible",
+        ]
+        checker.assert_called_once()
+        test_payload = yaml.safe_load(test_file.read_text())
+        assert [case["name"] for case in test_payload] == repaired
+
+    def test_judgment_positive_test_repair_bisects_large_failed_batch(self, tmp_path):
+        repo_path = _canonical_rulespec_content_root(tmp_path)
+        rules_file = repo_path / "statutes" / "7" / "2015" / "f.yaml"
+        test_file = repo_path / "statutes" / "7" / "2015" / "f.test.yaml"
+        rules_file.parent.mkdir(parents=True)
+        rule_names = [f"status_{index:02d}_eligible" for index in range(64)]
+        rules_file.write_text(
+            yaml.safe_dump(
+                {
+                    "format": "rulespec/v1",
+                    "rules": [
+                        {
+                            "name": name,
+                            "kind": "derived",
+                            "dtype": "Judgment",
+                            "versions": [
+                                {
+                                    "effective_from": "2026-01-01",
+                                    "formula": f"member_has_status_{index:02d}",
+                                }
+                            ],
+                        }
+                        for index, name in enumerate(rule_names)
+                    ],
+                },
+                sort_keys=False,
+            )
+        )
+        test_file.write_text("[]\n")
+
+        def reject_last_status(candidate_file, **_kwargs):
+            cases = yaml.safe_load(candidate_file.read_text())
+            return ["invalid synthesized case"] if any(
+                "status_63_eligible" in next(iter(case["output"]))
+                for case in cases
+            ) else []
+
+        checker = MagicMock(side_effect=reject_last_status)
+        repaired = _append_generated_judgment_positive_tests_if_missing(
+            rules_file=rules_file,
+            test_file=test_file,
+            repo_path=repo_path,
+            axiom_rules_path=tmp_path / "axiom-rules-engine",
+            relative_output=Path("statutes/7/2015/f.yaml"),
+            issues=[
+                "Judgment rule missing positive companion output coverage: "
+                f"`us:statutes/7/2015/f#{name}` is not asserted as `holds` "
+                "by the companion `.test.yaml` file."
+                for name in rule_names
+            ],
+            test_failure_checker=checker,
+        )
+
+        assert len(repaired) == 63
+        assert "auto_positive_status_63_eligible" not in repaired
+        assert checker.call_count < 20
+
     def test_judgment_positive_test_repair_strips_country_repo_root(self, tmp_path):
         repo_path = tmp_path / "rulespec-us"
         rules_file = repo_path / "us" / "statutes" / "5" / "5566.yaml"
