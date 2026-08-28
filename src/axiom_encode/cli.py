@@ -33,7 +33,7 @@ import unicodedata
 from base64 import b64decode, b64encode
 from binascii import Error as BinasciiError
 from calendar import monthrange
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timezone
@@ -17616,6 +17616,21 @@ def _append_generated_judgment_positive_tests_if_missing(
     }
     repaired: list[str] = []
     batch_attempted_targets: set[str] = set()
+    test_check_count = 0
+
+    def check_candidate(candidate_file: Path) -> list[dict[str, str | None]]:
+        nonlocal test_check_count
+        if test_failure_checker is None:
+            return []
+        if test_check_count >= _GENERATED_JUDGMENT_BATCH_CHECK_LIMIT:
+            return [{"message": "generated Judgment repair check budget exhausted"}]
+        test_check_count += 1
+        return test_failure_checker(
+            candidate_file,
+            root=repo_path,
+            axiom_rules_path=axiom_rules_path,
+        )
+
     if test_failure_checker is not None:
         batch_candidates: list[tuple[str, str, dict[str, object]]] = []
         provisional_names = set(existing_case_names)
@@ -17654,18 +17669,12 @@ def _append_generated_judgment_positive_tests_if_missing(
             batch_attempted_targets = {
                 target for target, _name, _case in batch_candidates
             }
-            batch_check_count = 0
-
-            def admit_batch(
-                candidates: list[tuple[str, str, dict[str, object]]],
-            ) -> None:
-                nonlocal batch_check_count, test_payload
-                if (
-                    not candidates
-                    or batch_check_count >= _GENERATED_JUDGMENT_BATCH_CHECK_LIMIT
-                ):
-                    return
-                batch_check_count += 1
+            pending_batches = deque([batch_candidates])
+            while (
+                pending_batches
+                and test_check_count < _GENERATED_JUDGMENT_BATCH_CHECK_LIMIT
+            ):
+                candidates = pending_batches.popleft()
                 trial_payload = [
                     *test_payload,
                     *(case for _target, _name, case in candidates),
@@ -17677,34 +17686,28 @@ def _append_generated_judgment_positive_tests_if_missing(
                         allow_unicode=False,
                     )
                 )
-                failures = test_failure_checker(
-                    test_file,
-                    root=repo_path,
-                    axiom_rules_path=axiom_rules_path,
-                )
+                failures = check_candidate(test_file)
                 if not failures:
                     test_payload = trial_payload
                     accepted_names = [name for _target, name, _case in candidates]
                     existing_case_names.update(accepted_names)
                     repaired.extend(accepted_names)
-                    return
+                    continue
                 test_file.write_text(
                     yaml.safe_dump(test_payload, sort_keys=False, allow_unicode=False)
                 )
-                if len(candidates) == 1:
-                    return
-                midpoint = len(candidates) // 2
-                admit_batch(candidates[:midpoint])
-                admit_batch(candidates[midpoint:])
-
-            admit_batch(batch_candidates)
+                if len(candidates) > 1:
+                    midpoint = len(candidates) // 2
+                    pending_batches.extend(
+                        (candidates[:midpoint], candidates[midpoint:])
+                    )
 
     for target in output_targets:
-        # A large failed batch has already been bisected above. Leave any
-        # rejected remainder for the next bounded eval round instead of
+        # A failed batch has already been checked above. Once the shared budget
+        # is exhausted, leave rejected targets for model feedback instead of
         # restarting an unbounded target-by-target engine loop.
         if (
-            len(batch_attempted_targets) > _GENERATED_JUDGMENT_BATCH_CHECK_LIMIT
+            test_check_count >= _GENERATED_JUDGMENT_BATCH_CHECK_LIMIT
             and target in batch_attempted_targets
         ):
             continue
@@ -17739,11 +17742,7 @@ def _append_generated_judgment_positive_tests_if_missing(
                 test_file.write_text(
                     yaml.safe_dump(trial_payload, sort_keys=False, allow_unicode=False)
                 )
-                failures = test_failure_checker(
-                    test_file,
-                    root=repo_path,
-                    axiom_rules_path=axiom_rules_path,
-                )
+                failures = check_candidate(test_file)
                 if not failures:
                     candidate_payload = trial_payload
             else:
@@ -17769,11 +17768,7 @@ def _append_generated_judgment_positive_tests_if_missing(
                 test_file.write_text(
                     yaml.safe_dump(trial_payload, sort_keys=False, allow_unicode=False)
                 )
-                failures = test_failure_checker(
-                    test_file,
-                    root=repo_path,
-                    axiom_rules_path=axiom_rules_path,
-                )
+                failures = check_candidate(test_file)
                 if failures:
                     continue
             candidate_payload = trial_payload
