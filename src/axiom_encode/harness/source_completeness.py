@@ -11958,6 +11958,64 @@ def authoritative_numeric_recall_text(source_text: str) -> str:
     """Remove structural/citation ordinals, never substantive source values."""
 
     cleaned = _strip_terminal_session_law_history(source_text)
+    footnote_definition = re.compile(
+        r"(?P<boundary>(?:^|[.!?])\s*)(?P<marker>[1-9]\d?)"
+        r"(?P<body>\s+[A-Z][^.!?]{0,640}\b"
+        r"(?i:as\s+defined|defined\s+by|see|section)\b[^.!?]{0,640})",
+        flags=re.MULTILINE,
+    )
+    definition_bodies: dict[str, tuple[str, ...]] = {}
+    for definition in footnote_definition.finditer(cleaned):
+        marker = definition.group("marker")
+        body = definition.group("body").lower()
+        definition_bodies[marker] = (
+            *definition_bodies.get(marker, ()),
+            body,
+        )
+
+    def known_guidance_footnote_definition(marker: str, body: str) -> bool:
+        if marker == "1":
+            return (
+                re.match(r"\s*cuban\s+and\s+haitian\s+entrants\b", body) is not None
+                and re.search(r"\bsection\s+501\s*\(e\)", body) is not None
+            )
+        if marker == "2":
+            return (
+                re.match(r"\s*aliens\s+who\s+were\s+qualified\s+aliens\b", body)
+                is not None
+                and re.search(r"\bsection\s+431\b", body) is not None
+                and re.search(r"\bPRWORA\b", body, flags=re.IGNORECASE) is not None
+            )
+        return False
+
+    def known_guidance_footnote(marker: str, label: str) -> bool:
+        expected_label = {"1": "entrants", "2": "prwora"}.get(marker)
+        return expected_label == label.lower() and any(
+            known_guidance_footnote_definition(marker, body)
+            for body in definition_bodies.get(marker, ())
+        )
+
+    def linked_footnote_reference(match: re.Match[str]) -> str:
+        marker = match.group("marker")
+        label = match.group("label")
+        if known_guidance_footnote(marker, label):
+            confirmed_footnote_markers.add(marker)
+            return f"{label}{match.groupdict().get('closing') or ''}"
+        return match.group(0)
+
+    confirmed_footnote_markers: set[str] = set()
+    cleaned = re.sub(
+        r"(?P<label>\b[A-Za-z]{4,})(?P<marker>[1-9]\d?)(?=[,.;])",
+        linked_footnote_reference,
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?P<label>[A-Za-z][A-Za-z0-9.-]{2,})(?P<closing>\))"
+        r"(?P<marker>[1-9]\d?)(?=\s+(?:was|were|is|are|has|have|had)\b)",
+        linked_footnote_reference,
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     cleaned = re.sub(
         r"\b(?:Public\s+Law|P\.?\s*L\.?)\s+\d+\s*[-–—]\s*\d+\b",
         "",
@@ -11969,6 +12027,24 @@ def authoritative_numeric_recall_text(source_text: str) -> str:
         "",
         cleaned,
         flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\b(Attachment)\s+[1-9]\d?\b",
+        r"\1",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = footnote_definition.sub(
+        lambda match: (
+            f"{match.group('boundary')}{match.group('body')}"
+            if match.group("marker") in confirmed_footnote_markers
+            and known_guidance_footnote_definition(
+                match.group("marker"),
+                match.group("body").lower(),
+            )
+            else match.group(0)
+        ),
+        cleaned,
     )
     cleaned = re.sub(
         r"\b\d{1,6}\s+[A-Z][A-Za-z.'’-]*(?:\s+[A-Z][A-Za-z.'’-]*){0,4}\s+"
@@ -23055,6 +23131,8 @@ def _source_exception_requires_paired_witness(
         # A historical comparison explains superseded eligibility; it is not
         # a current selector that companion cases can toggle.
         return False
+    if _source_collective_reference_condition_is_nonlocal(collapsed):
+        return False
     notwithstanding_tail = _louisiana_notwithstanding_reference_tail(collapsed)
     if notwithstanding_tail is not None:
         return _notwithstanding_reference_tail_requires_paired_witness(
@@ -23081,6 +23159,46 @@ def _source_exception_requires_paired_witness(
     ) and _source_reference_reservation_is_only_references(collapsed):
         return False
     return True
+
+
+def _source_collective_reference_condition_is_nonlocal(text: str) -> bool:
+    """Exclude reference-only umbrellas that have no single local selector."""
+
+    collapsed = _collapse_text(text)
+    exemption = re.search(
+        r"\bunless\s+exempted\s+by\s+"
+        r"(?P<authority>[A-Z]{2,}(?:-[A-Z0-9]+)*)\b",
+        collapsed,
+    )
+    if exemption is not None:
+        outside = collapsed[: exemption.start()] + collapsed[exemption.end() :]
+        if not (
+            _source_has_operative_policy_effect(
+                outside,
+                allow_explicit_computation=True,
+            )
+            and re.search(r"\b(?:if|when|unless)\b", outside, flags=re.IGNORECASE)
+        ):
+            return True
+    collective = re.search(
+        r"\b(?:if|when)\b[^.;]{0,180}\bdoes\s+not\s+fall\s+into\s+"
+        r"one\s+of\s+the\s+(?:groups|categories)\s+"
+        r"(?:listed|described)\s+in\s+"
+        r"(?:section|subsection|paragraph|attachment|table)\b"
+        r"[^.;]{0,240}\b(?:no\s+longer\s+eligible|must\s+be\s+removed)\b",
+        collapsed,
+        flags=re.IGNORECASE,
+    )
+    if collective is None:
+        return False
+    outside = collapsed[: collective.start()] + collapsed[collective.end() :]
+    return not (
+        _source_has_operative_policy_effect(
+            outside,
+            allow_explicit_computation=True,
+        )
+        and re.search(r"\b(?:if|when|unless)\b", outside, flags=re.IGNORECASE)
+    )
 
 
 def _source_has_operative_policy_effect(
@@ -24073,6 +24191,7 @@ def _source_negative_effect_matches(text: str) -> tuple[re.Match[str], ...]:
         re.finditer(
             r"\b(?:must|shall|will|may|does|is|are)\s+not\s+(?:be\s+)?"
             r"(?:apply|eligible|qualified|allowed|entitled)\b|"
+            r"\bnot\s+(?:eligible|qualified|allowed|entitled)\b|"
             r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\bnicht\s+berechtigt\b",
             text,
@@ -24305,7 +24424,10 @@ def _source_exception_selector_is_relevant(
 
     normalized_name = _normalized_selector_name(name)
     collapsed = _collapse_text(text).lower()
-    if _source_selector_concept_matches(collapsed, normalized_name):
+    distinctive_tokens = _source_selector_distinctive_tokens(normalized_name)
+    if len(distinctive_tokens) <= 2 and _source_selector_concept_matches(
+        collapsed, normalized_name
+    ):
         return True
     if re.search(
         r"\b(?:at\s+least\s+one|one\s+or\s+more)\b[^.;]{0,80}"
@@ -24331,28 +24453,101 @@ def _source_exception_selector_is_relevant(
             )
             for supporting_text in supporting_texts
         )
-    return any(
-        len(token) >= 4
-        and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
-        and re.search(rf"\b{re.escape(token)}\w*", collapsed) is not None
-        for token in normalized_name.split("_")
-    )
+    return _source_selector_relevance_matches(collapsed, normalized_name)
 
 
-def _source_selector_distinctive_concept_matches(
-    text: str,
-    normalized_name: str,
-) -> bool:
-    distinctive_tokens = tuple(
+def _source_selector_distinctive_tokens(normalized_name: str) -> tuple[str, ...]:
+    """Return the bounded semantic tokens used to link a selector to source."""
+
+    return tuple(
         token
         for token in normalized_name.split("_")
         if (len(token) >= 4 or token in _SOURCE_ACRONYM_EXPANSIONS)
         and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
         and token not in _SOURCE_SELECTOR_GENERIC_ENTITY_TOKENS
     )
+
+
+def _source_selector_token_matches(
+    text: str,
+    token: str,
+    *,
+    selector_tokens: Sequence[str],
+) -> bool:
+    """Match one selector token with bounded inflection and acronym aliases."""
+
+    token_set = set(selector_tokens)
+    if any(
+        set(expansion).issubset(token_set)
+        and token in expansion
+        and re.search(rf"\b{re.escape(acronym)}\b", text, flags=re.IGNORECASE)
+        is not None
+        for acronym, expansion in _SOURCE_ACRONYM_EXPANSIONS.items()
+    ):
+        return True
+    if _source_concept_token_matches(text, token):
+        return True
+
+    stems = {token}
+    if token.endswith("ies") and len(token) > 4:
+        stems.add(f"{token[:-3]}y")
+    if token.endswith("es") and len(token) > 4:
+        stems.update((token[:-1], token[:-2]))
+    elif token.endswith("s") and len(token) > 4:
+        stems.add(token[:-1])
+    if token.endswith("ed") and len(token) > 4:
+        stems.update((token[:-2], token[:-1]))
+    if token.endswith("ing") and len(token) > 5:
+        stems.update((token[:-3], f"{token[:-3]}e"))
+    pattern = "|".join(re.escape(stem) for stem in sorted(stems, key=len, reverse=True))
+    return (
+        re.search(
+            rf"\b(?:{pattern})(?:s|es|ed|ing)?\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _source_selector_relevance_matches(text: str, normalized_name: str) -> bool:
+    """Require a distinctive selector concept, not one generic shared word."""
+
+    tokens = _source_selector_distinctive_tokens(normalized_name)
+    if not tokens:
+        return False
+    token_matches = tuple(
+        _source_selector_token_matches(
+            text,
+            token,
+            selector_tokens=tokens,
+        )
+        for token in tokens
+    )
+    matched = sum(token_matches)
+    if len(tokens) <= 2:
+        return matched == len(tokens)
+    longest_run = 0
+    current_run = 0
+    for token_matches_source in token_matches:
+        current_run = current_run + 1 if token_matches_source else 0
+        longest_run = max(longest_run, current_run)
+    return longest_run >= 3 or matched >= max(2, (3 * len(tokens) + 3) // 4)
+
+
+def _source_selector_distinctive_concept_matches(
+    text: str,
+    normalized_name: str,
+) -> bool:
+    distinctive_tokens = _source_selector_distinctive_tokens(normalized_name)
     collapsed = _collapse_text(text).lower()
     return bool(distinctive_tokens) and all(
-        _source_concept_token_matches(collapsed, token) for token in distinctive_tokens
+        _source_selector_token_matches(
+            collapsed,
+            token,
+            selector_tokens=distinctive_tokens,
+        )
+        for token in distinctive_tokens
     )
 
 
@@ -24360,16 +24555,48 @@ def _source_exception_selector_active_value(text: str, name: str) -> bool:
     """Resolve exception orientation from source wording, not formula output."""
 
     normalized_name = _normalized_selector_name(name)
+    collapsed = _collapse_text(text).lower()
     source_polarity = _source_selector_concept_polarity(
-        _collapse_text(text).lower(),
+        collapsed,
         normalized_name,
     )
+    if source_polarity is None and _source_selector_has_explicitly_negated_action(
+        collapsed,
+        normalized_name,
+    ):
+        source_polarity = -1
     if source_polarity is not None:
         selector_polarity = (
             -1 if _selector_identifier_negation_count(normalized_name) % 2 else 1
         )
         return selector_polarity == source_polarity
     return _exception_selector_semantic_active_value(normalized_name)
+
+
+def _source_selector_has_explicitly_negated_action(
+    text: str,
+    normalized_name: str,
+) -> bool:
+    """Recognize a negated predicate whose action is named by the selector."""
+
+    tokens = _source_selector_distinctive_tokens(normalized_name)
+    negated_actions = re.finditer(
+        r"\b(?:does?|do|did|is|are|was|were|has|have|had|will|shall|must|"
+        r"may|can)\s+not\s+(?:be\s+)?(?P<action>[a-z][a-z'-]*)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return any(
+        any(
+            _source_selector_token_matches(
+                match.group("action"),
+                token,
+                selector_tokens=tokens,
+            )
+            for token in tokens
+        )
+        for match in negated_actions
+    )
 
 
 def _numeric_exception_witness_matches_source(

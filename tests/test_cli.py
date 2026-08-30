@@ -38163,6 +38163,80 @@ rules:
             "end": "2024-08-15",
         }
 
+    def test_repair_generated_month_case_for_midmonth_effective_rule(self, tmp_path):
+        output_root = tmp_path / "out"
+        runner = "openai-gpt-5.6-sol"
+        rules_file = output_root / runner / "policies/usda/fns/alien-status.yaml"
+        test_file = rules_file.with_name("alien-status.test.yaml")
+        rules_file.parent.mkdir(parents=True)
+        rules_file.write_text(
+            """format: rulespec/v1
+rules:
+- name: snap_alien_status_eligible
+  kind: derived
+  entity: Person
+  dtype: Judgment
+  period: Month
+  versions:
+  - effective_from: '2025-07-04'
+    formula: person_is_lawful_permanent_resident
+- name: ordinary_month_rule
+  kind: derived
+  entity: Person
+  dtype: Judgment
+  period: Month
+  versions:
+  - effective_from: '2025-07-01'
+    formula: ordinary_condition
+"""
+        )
+        test_file.write_text(
+            """- name: reported_daily_case
+  period: '2025-07-04'
+  input: {}
+  output:
+    us:policies/usda/fns/alien-status#snap_alien_status_eligible: holds
+- name: midmonth_rule_case
+  period: 2025-07
+  input: {}
+  output:
+    us:policies/usda/fns/alien-status#snap_alien_status_eligible: holds
+- name: ordinary_month_case
+  period: 2025-07
+  input: {}
+  output:
+    us:policies/usda/fns/alien-status#ordinary_month_rule: holds
+- name: external_same_leaf_case
+  period: 2025-07
+  input: {}
+  output:
+    us:other/module#snap_alien_status_eligible: holds
+"""
+        )
+        result = SimpleNamespace(output_file=str(rules_file), runner=runner)
+
+        repaired = _try_repair_generated_day_period_test_shorthands_for_apply(
+            result,
+            output_root=output_root,
+            issues=[
+                "policies/usda/fns/alien-status.yaml: ci: Test case "
+                "`reported_daily_case` period invalid: unsupported period "
+                "shorthand: '2025-07-04'"
+            ],
+        )
+
+        payload = yaml.safe_load(test_file.read_text())
+        assert repaired == ["reported_daily_case", "midmonth_rule_case"]
+        assert payload[0]["period"] == {
+            "period_kind": "custom",
+            "name": "day",
+            "start": "2025-07-04",
+            "end": "2025-07-04",
+        }
+        assert payload[1]["period"] == payload[0]["period"]
+        assert payload[2]["period"] == "2025-07"
+        assert payload[3]["period"] == "2025-07"
+
     def test_unsafe_formula_output_repair_defers_tax_status_components(self, tmp_path):
         output_root = tmp_path / "out"
         rules_file = output_root / "openai-gpt-5.5" / "statutes/26/3402/l.yaml"

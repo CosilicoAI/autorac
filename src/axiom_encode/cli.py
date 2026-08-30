@@ -42835,7 +42835,10 @@ def _try_repair_generated_day_period_test_shorthands_for_apply(
     if not case_periods:
         return []
     try:
-        _relative_generated_output_path(result, output_root=output_root)
+        relative_output = _relative_generated_output_path(
+            result,
+            output_root=output_root,
+        )
     except RuntimeError:
         return []
 
@@ -42843,6 +42846,8 @@ def _try_repair_generated_day_period_test_shorthands_for_apply(
     return _rewrite_generated_day_period_test_shorthands(
         test_file=test_file,
         case_periods=case_periods,
+        rulespec_file=Path(str(getattr(result, "output_file", "") or "")),
+        rulespec_module_path=_generated_rulespec_module_path(relative_output),
     )
 
 
@@ -42859,6 +42864,8 @@ def _rewrite_generated_day_period_test_shorthands(
     *,
     test_file: Path,
     case_periods: dict[str, str],
+    rulespec_file: Path | None = None,
+    rulespec_module_path: str | None = None,
 ) -> list[str]:
     if not test_file.exists():
         return []
@@ -42868,6 +42875,41 @@ def _rewrite_generated_day_period_test_shorthands(
         return []
     if not isinstance(test_cases, list):
         return []
+
+    midmonth_effective_dates: dict[str, tuple[str, ...]] = {}
+    if rulespec_file is not None and rulespec_file.exists():
+        try:
+            rulespec = yaml.safe_load(rulespec_file.read_text()) or {}
+        except (OSError, yaml.YAMLError, ValueError):
+            rulespec = {}
+        rules = rulespec.get("rules") if isinstance(rulespec, dict) else None
+        if isinstance(rules, list):
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+                rule_name = str(rule.get("name") or "").strip()
+                versions = rule.get("versions")
+                if not rule_name or not isinstance(versions, list):
+                    continue
+                dates = tuple(
+                    sorted(
+                        {
+                            effective_from
+                            for version in versions
+                            if isinstance(version, dict)
+                            and (
+                                effective_from := str(
+                                    version.get("effective_from") or ""
+                                ).strip()
+                            )
+                            and _DAY_PERIOD_VALUE_PATTERN.fullmatch(effective_from)
+                            is not None
+                            and not effective_from.endswith("-01")
+                        }
+                    )
+                )
+                if dates:
+                    midmonth_effective_dates[rule_name] = dates
 
     repaired: list[str] = []
     for index, case in enumerate(test_cases):
@@ -42879,10 +42921,32 @@ def _rewrite_generated_day_period_test_shorthands(
             current_day = current_period.isoformat()
         else:
             current_day = str(current_period or "").strip()
-        if _DAY_PERIOD_VALUE_PATTERN.fullmatch(current_day) is None:
-            continue
-        reported_day = case_periods.get(case_name)
-        if reported_day is not None and current_day != reported_day:
+        if _DAY_PERIOD_VALUE_PATTERN.fullmatch(current_day) is not None:
+            reported_day = case_periods.get(case_name)
+            if reported_day is not None and current_day != reported_day:
+                continue
+        elif re.fullmatch(r"\d{4}-\d{2}", current_day):
+            outputs = case.get("output")
+            if not isinstance(outputs, dict):
+                continue
+            output_names = {
+                output_ref_text.rsplit("#", 1)[-1]
+                for output_ref in outputs
+                if "#" in (output_ref_text := str(output_ref))
+                and rulespec_module_path is not None
+                and output_ref_text.split("#", 1)[0].split(":", 1)[-1]
+                == rulespec_module_path
+            }
+            effective_dates = {
+                effective_from
+                for output_name in output_names
+                for effective_from in midmonth_effective_dates.get(output_name, ())
+                if effective_from.startswith(f"{current_day}-")
+            }
+            if not effective_dates:
+                continue
+            current_day = max(effective_dates)
+        else:
             continue
         case["period"] = {
             "period_kind": "custom",
@@ -42898,6 +42962,17 @@ def _rewrite_generated_day_period_test_shorthands(
         yaml.safe_dump(test_cases, sort_keys=False, allow_unicode=False)
     )
     return repaired
+
+
+def _generated_rulespec_module_path(relative_output: Path) -> str | None:
+    """Return the repository-relative module path used by qualified test refs."""
+
+    parts = relative_output.with_suffix("").parts
+    if parts and parts[0] in RULESPEC_ATOMIC_MODULE_ROOTS:
+        return Path(*parts).as_posix()
+    if len(parts) >= 2 and parts[1] in RULESPEC_ATOMIC_MODULE_ROOTS:
+        return Path(*parts[1:]).as_posix()
+    return None
 
 
 def _empty_test_output_case_names_from_issues(issues: list[str]) -> set[str]:

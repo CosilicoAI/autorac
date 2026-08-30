@@ -20822,6 +20822,191 @@ def test_guidance_pdf_structural_numbers_are_not_numeric_recall_values():
     assert values == {18, 65, 120}
 
 
+def test_guidance_attachment_and_footnote_labels_are_not_numeric_recall_values():
+    source = (
+        "Prior to the OBBB, aliens defined by PRWORA)2 were eligible. "
+        "Eligible groups include Cuban and Haitian entrants1, and COFA citizens. "
+        "1 Cuban and Haitian entrants as defined in section 501(e). "
+        "2 Aliens who were qualified aliens as defined by PRWORA section 431 "
+        "of the Act of 1996. "
+        "The chart in Attachment 1 compares eligibility. Attachment 2 provides "
+        "alien-group descriptions. Attachment 2 Alien Group Descriptions."
+    )
+
+    cleaned = authoritative_numeric_recall_text(source)
+    values = {
+        occurrence.value for occurrence in EN_NUMERIC_OCCURRENCE_EXTRACTOR(cleaned)
+    }
+
+    assert values == set()
+
+
+def test_guidance_structural_number_cleanup_preserves_substantive_values():
+    source = (
+        "Attachment 2 explains the policy. A parolee qualifies after at least "
+        "1 year. The benefit is 2 dollars."
+    )
+
+    cleaned = authoritative_numeric_recall_text(source)
+    values = {
+        occurrence.value for occurrence in EN_NUMERIC_OCCURRENCE_EXTRACTOR(cleaned)
+    }
+
+    assert values == {1, 2}
+
+
+def test_guidance_footnote_cleanup_preserves_numbered_rules_and_categories():
+    source = (
+        "2 SNAP units are eligible as defined by section 5. "
+        "Tier2 is eligible for benefits."
+    )
+
+    cleaned = authoritative_numeric_recall_text(source)
+    values = {
+        occurrence.value for occurrence in EN_NUMERIC_OCCURRENCE_EXTRACTOR(cleaned)
+    }
+
+    assert 2 in values
+    assert "Tier2" in cleaned
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "Eligible groups include Entrants2, described below. "
+            "2 SNAP units are eligible as defined by section 5."
+        ),
+        "The category (group)2 is eligible for benefits.",
+    ],
+)
+def test_guidance_unlinked_numbered_categories_are_not_footnotes(source: str):
+    cleaned = authoritative_numeric_recall_text(source)
+    values = {
+        occurrence.value for occurrence in EN_NUMERIC_OCCURRENCE_EXTRACTOR(cleaned)
+    }
+
+    assert 2 in values
+
+
+@pytest.mark.parametrize("label", ["Tier", "Group"])
+def test_guidance_repeated_numbered_category_is_not_a_footnote(label: str):
+    source = (
+        f"{label}2, members receive benefits. "
+        f"2 {label} households are eligible as defined by section 5."
+    )
+
+    cleaned = authoritative_numeric_recall_text(source)
+    values = [
+        occurrence.value for occurrence in EN_NUMERIC_OCCURRENCE_EXTRACTOR(cleaned)
+    ]
+
+    assert values.count(2) == 1
+    assert f"{label}2" in cleaned
+
+
+@pytest.mark.parametrize(
+    "citation",
+    ["section 5(a)", "the Act of 1996"],
+)
+def test_guidance_cited_numbered_category_is_not_a_footnote(citation: str):
+    source = (
+        "Tier2, members receive benefits. "
+        f"2 Tier households are eligible as defined by {citation}."
+    )
+
+    cleaned = authoritative_numeric_recall_text(source)
+    values = [
+        occurrence.value for occurrence in EN_NUMERIC_OCCURRENCE_EXTRACTOR(cleaned)
+    ]
+
+    assert values.count(2) == 1
+    assert "Tier2" in cleaned
+
+
+@pytest.mark.parametrize(
+    ("marker", "reference", "definition"),
+    [
+        (
+            1,
+            "Eligible groups include Cuban and Haitian entrants1.",
+            "1 Cuban and Haitian entrants as defined in section 501(e).",
+        ),
+        (
+            2,
+            "Aliens defined by PRWORA)2 were eligible.",
+            ("2 Aliens who were qualified aliens as defined by PRWORA section 431."),
+        ),
+    ],
+)
+@pytest.mark.parametrize("substantive_first", [False, True])
+def test_guidance_footnote_does_not_hide_same_number_substantive_rule(
+    marker: int,
+    reference: str,
+    definition: str,
+    substantive_first: bool,
+):
+    substantive = f"{marker} SNAP unit is eligible as defined by section 5."
+    blocks = [reference, definition, substantive]
+    if substantive_first:
+        blocks = [substantive, reference, definition]
+
+    cleaned = authoritative_numeric_recall_text(" ".join(blocks))
+    values = [
+        occurrence.value for occurrence in EN_NUMERIC_OCCURRENCE_EXTRACTOR(cleaned)
+    ]
+
+    assert values.count(marker) == 1
+
+
+def test_guidance_lpr_acronym_matches_lawful_permanent_resident_selector():
+    assert completeness_module._source_exception_selector_is_relevant(
+        "unless an LPR.",
+        "person_is_lawful_permanent_resident",
+    )
+
+
+def test_guidance_bare_not_eligible_unless_lpr_has_enabling_polarity():
+    assert (
+        completeness_module._source_exception_effect_requirement(
+            "Conditional Entrants Eligible immediately Not eligible unless an LPR."
+        )
+        == "enable"
+    )
+
+
+def test_guidance_negated_implementation_activates_false_selector_state():
+    condition = (
+        "if the State agency does not implement the new provision in accordance "
+        "with 7 CFR 275.12(d)(2)(vii)(D)."
+    )
+
+    selector = (
+        "state_agency_implemented_new_provision_in_accordance_with_quality_control_rule"
+    )
+    assert completeness_module._source_exception_selector_is_relevant(
+        condition,
+        selector,
+    )
+    assert not completeness_module._source_exception_selector_active_value(
+        condition,
+        selector,
+    )
+
+
+def test_guidance_selector_relevance_rejects_unrelated_shared_eligibility_words():
+    selector = "alien_loses_snap_eligibility_at_recertification_due_to_obbb_changes"
+
+    assert completeness_module._source_exception_selector_is_relevant(
+        "Aliens who lose SNAP eligibility at recertification due to the OBBB changes.",
+        selector,
+    )
+    assert not completeness_module._source_exception_selector_is_relevant(
+        "Aliens continue to be subject to a 5-year waiting period unless exempted.",
+        selector,
+    )
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
@@ -20893,6 +21078,82 @@ def test_obbb_history_with_attached_definition_footnote_is_not_toggleable():
     )
 
     assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "Aliens continue to be subject to a 5-year waiting period, unless "
+            "exempted by PRWORA.3"
+        ),
+        (
+            "If an alien does not fall into one of the groups listed in section "
+            "6(f), the alien is no longer eligible for SNAP."
+        ),
+    ],
+)
+def test_guidance_collective_reference_umbrellas_are_not_local_toggles(source: str):
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "If an alien does not fall into one of the groups listed in section "
+            "6(f), the alien is no longer eligible for SNAP. Applicants are "
+            "eligible if they are citizens."
+        ),
+        (
+            "Aliens remain subject to a waiting period unless exempted by "
+            "PRWORA.3 Applicants are eligible if they are citizens."
+        ),
+        (
+            "Applicants are eligible if they are citizens; if an alien does not "
+            "fall into one of the groups listed in section 6(f), the alien is no "
+            "longer eligible for SNAP."
+        ),
+    ],
+)
+def test_collective_reference_does_not_hide_joined_local_rule(source: str):
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "umbrella",
+    [
+        "Aliens remain subject to a waiting period unless exempted by PRWORA.3",
+        (
+            "If an alien does not fall into one of the groups listed in section "
+            "6(f), the alien is no longer eligible for SNAP."
+        ),
+    ],
+)
+def test_collective_reference_does_not_hide_joined_computation(umbrella: str):
+    computation = "Use 20 percent of income if income exceeds 500."
+
+    assert completeness_module._source_exception_requires_paired_witness(
+        f"{umbrella} {computation}"
+    )
+    assert completeness_module._source_exception_requires_paired_witness(
+        f"{computation}; {umbrella}"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "An applicant is ineligible unless the applicant is under age 18.",
+        "An applicant is ineligible if the applicant is not a citizen.",
+        (
+            "An applicant is ineligible unless exempted by PRWORA if the "
+            "applicant is under age 18."
+        ),
+    ],
+)
+def test_guidance_local_eligibility_conditions_remain_toggleable(source: str):
+    assert completeness_module._source_exception_requires_paired_witness(source)
 
 
 def test_obbb_history_does_not_hide_joined_current_eligibility_selector():
