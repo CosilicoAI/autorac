@@ -22778,6 +22778,120 @@ def test_terminal_alabama_act_and_code_history_is_not_numeric_recall():
     ]
 
 
+ARMENIAN_MINIMUM_WAGE_SOURCE = """\
+Հայաստանի Հանրապետությունում նվազագույն ամսական աշխատավարձը սահմանել 75000 դրամ:
+(1-ին հոդվածը փոփ. 11.11.05 ՀՕ-221-Ն, 28.11.06 ՀՕ-200-Ն,
+05.11.07 ՀՕ-252-Ն, 27.11.08 ՀՕ-200-Ն, 16.11.10 ՀՕ-164-Ն,
+13.11.12 ՀՕ-200-Ն, 20.06.13 ՀՕ-61-Ն, 12.12.13 ՀՕ-187-Ն,
+01.12.14 ՀՕ-205-Ն, 19.11.19 ՀՕ-223-Ն, 07.12.22 ՀՕ-501-Ն)"""
+
+
+def test_terminal_armenian_amendment_history_is_not_numeric_recall():
+    cleaned = authoritative_numeric_recall_text(ARMENIAN_MINIMUM_WAGE_SOURCE)
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        cleaned,
+        profile="legacy",
+    )
+
+    assert cleaned == (
+        "Հայաստանի Հանրապետությունում նվազագույն ամսական աշխատավարձը "
+        "սահմանել 75000 դրամ:"
+    )
+    assert [(item.value, item.raw) for item in inventory] == [(75000.0, "75000")]
+
+
+def test_armenian_history_filter_accepts_arlis_punctuation_variants():
+    source = (
+        "Շահառուին վճարել 500 դրամ:\n"
+        "(147-րդ հոդվածը լրաց․, փոփ․ 07․12․22 ՀՕ-538-Ն)"
+    )
+
+    assert authoritative_numeric_recall_text(source) == "Շահառուին վճարել 500 դրամ:"
+
+
+def test_armenian_history_filter_preserves_later_effective_date_note():
+    effective_date_note = (
+        "(հոդվածը 01.03.23 ՀՕ-101-Ն օրենքի փոփոխության մասով ուժի մեջ է "
+        "մտնում 2024 թվականի հուլիսի 1-ից)"
+    )
+    source = ARMENIAN_MINIMUM_WAGE_SOURCE + "\n" + effective_date_note
+
+    cleaned = authoritative_numeric_recall_text(source)
+
+    assert "ՀՕ-221-Ն" not in cleaned
+    assert effective_date_note in cleaned
+    assert "75000 դրամ" in cleaned
+
+
+def test_armenian_history_filter_keeps_minimum_wage_in_strict_recall():
+    result = _analyze(
+        "format: rulespec/v1\nrules: []\n",
+        ARMENIAN_MINIMUM_WAGE_SOURCE,
+        corpus_citation_path="am/statute/act-172160/article-1",
+        test_cases=[],
+        artifact_numeric_values=(),
+        extract_numeric_occurrences=functools.partial(
+            extract_typed_numeric_inventory_occurrences_from_text,
+            profile="legacy",
+        ),
+    )
+
+    assert _has_issue(result, "numeric-recall", "value 75000")
+    assert not _has_issue(result, "numeric-recall", "value 221")
+    assert not _has_issue(result, "numeric-recall", "value 501")
+
+
+def test_armenian_history_filter_accepts_grounded_minimum_wage_candidate():
+    result = _analyze(
+        """\
+format: rulespec/v1
+rules:
+  - name: minimum_monthly_wage
+    kind: parameter
+    dtype: Money
+    unit: AMD
+    period: Month
+    versions:
+      - effective_from: '0001-01-01'
+        formula: 75000
+""",
+        ARMENIAN_MINIMUM_WAGE_SOURCE,
+        corpus_citation_path="am/statute/act-172160/article-1",
+        test_cases=[],
+        extract_numeric_occurrences=functools.partial(
+            extract_typed_numeric_inventory_occurrences_from_text,
+            profile="legacy",
+        ),
+    )
+
+    assert not _has_issue(result, "numeric-recall")
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        ARMENIAN_MINIMUM_WAGE_SOURCE.removesuffix(")")
+        + ", շահառուին վճարել 500 դրամ)",
+        ARMENIAN_MINIMUM_WAGE_SOURCE
+        + "\nՇահառուին վճարել լրացուցիչ 500 դրամ:",
+    ),
+)
+def test_armenian_history_shape_does_not_hide_operative_amount(source):
+    result = _analyze(
+        "format: rulespec/v1\nrules: []\n",
+        source,
+        corpus_citation_path="am/statute/act-172160/article-1",
+        test_cases=[],
+        artifact_numeric_values=(75000.0,),
+        extract_numeric_occurrences=functools.partial(
+            extract_typed_numeric_inventory_occurrences_from_text,
+            profile="legacy",
+        ),
+    )
+
+    assert _has_issue(result, "numeric-recall", "value 500")
+
+
 @pytest.mark.parametrize(
     "source",
     (

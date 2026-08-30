@@ -2191,6 +2191,21 @@ _ALABAMA_TERMINAL_CODE_HISTORY_ENTRY = re.compile(
     r"\s*\.?\s*",
     flags=re.IGNORECASE,
 )
+_ARMENIAN_AMENDMENT_HISTORY_ARTICLE = re.compile(
+    r"\s*\d+(?:\.\d+)?-(?:ին|րդ)\s+հոդվածը\s+(?P<history>.+?)\s*",
+    flags=re.DOTALL,
+)
+_ARMENIAN_AMENDMENT_HISTORY_ACTION = re.compile(
+    r"(?:փոփ|լրաց|խմբ)(?:[.\u2024])?(?=\s|,|$)",
+)
+_ARMENIAN_AMENDMENT_HISTORY_CITATION = re.compile(
+    r"\d{2}[.\u2024]\d{2}[.\u2024]\d{2,4}\s+ՀՕ?"
+    r"[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d]"
+    r"\d+(?:"
+    r"[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d]"
+    r"\d+)?"
+    r"[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d]Ն",
+)
 _FORMULA_IDENTIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
 
 
@@ -11954,10 +11969,43 @@ def _strip_terminal_session_law_history(source_text: str) -> str:
     return source_text
 
 
+def _strip_standalone_armenian_amendment_history(source_text: str) -> str:
+    """Remove only fully validated standalone ARLIS amendment-history ledgers."""
+
+    def replacement(match: re.Match[str]) -> str:
+        article_history = _ARMENIAN_AMENDMENT_HISTORY_ARTICLE.fullmatch(
+            match.group("body")
+        )
+        if article_history is None:
+            return match.group(0)
+
+        history = article_history.group("history")
+        if (
+            _ARMENIAN_AMENDMENT_HISTORY_ACTION.search(history) is None
+            or _ARMENIAN_AMENDMENT_HISTORY_CITATION.search(history) is None
+        ):
+            return match.group(0)
+
+        residue = _ARMENIAN_AMENDMENT_HISTORY_ACTION.sub("", history)
+        residue = _ARMENIAN_AMENDMENT_HISTORY_CITATION.sub("", residue)
+        if re.sub(r"[\s,;]+", "", residue):
+            # Fail closed when the parenthetical contains anything besides the
+            # article label, amendment actions, dates, and instrument identifiers.
+            return match.group(0)
+        return ""
+
+    return re.sub(
+        r"(?:^|\n)[ \t]*\((?P<body>[^()]*)\)(?=[ \t]*(?:\n|$))",
+        replacement,
+        source_text,
+    )
+
+
 def authoritative_numeric_recall_text(source_text: str) -> str:
     """Remove structural/citation ordinals, never substantive source values."""
 
     cleaned = _strip_terminal_session_law_history(source_text)
+    cleaned = _strip_standalone_armenian_amendment_history(cleaned)
     footnote_definition = re.compile(
         r"(?P<boundary>(?:^|[.!?])\s*)(?P<marker>[1-9]\d?)"
         r"(?P<body>\s+[A-Z][^.!?]{0,640}\b"

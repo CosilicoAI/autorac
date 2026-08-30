@@ -1162,6 +1162,12 @@ _TESTS_PROTOCOL = """- Emit only RuleSpec YAML; use `.test.yaml` companions when
 - When source text uses amendment markup like `[old] new`, treat the bracketed
   value as superseded text. Encode the current unbracketed value/effective date
   unless the task explicitly asks for historical text.
+- Treat a standalone parenthetical that only names the affected article and lists
+  amendment dates and amending-instrument identifiers as editorial provenance,
+  not executable policy. Do not encode its article number, dates, or instrument
+  identifiers as RuleSpec rules or parameters. This exclusion does not cover a
+  parenthetical that states an operative amount, condition, effective date, or
+  transition rule.
 - If a source makes an allowance, deduction, exemption, or eligibility branch
   conditional on billed, paid, incurred, anticipated, or other cost/expense
   facts, encode a positive fact predicate for that source-stated condition.
