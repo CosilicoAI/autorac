@@ -151,7 +151,8 @@ def test_generic_encoder_prompt_adds_completeness_only_when_enabled():
     assert "parameter/helper guards in the\n  single derived formula" in complete_prompt
     assert "omit oracle inputs or expectations" in complete_prompt
     assert "scalar-only source unit may remain parameter-only" in complete_prompt
-    assert "amending-instrument identifiers as editorial provenance" in default_prompt
+    assert "In Armenian ARLIS text" in default_prompt
+    assert "uses an amendment-action abbreviation" in default_prompt
     assert "parenthetical that states an operative amount" in complete_prompt
     assert "single-principal-output case pairs" in complete_prompt
     assert "one large omnibus case" in complete_prompt

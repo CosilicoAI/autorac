@@ -22800,9 +22800,58 @@ def test_terminal_armenian_amendment_history_is_not_numeric_recall():
     assert [(item.value, item.raw) for item in inventory] == [(75000.0, "75000")]
 
 
-def test_armenian_history_filter_accepts_arlis_punctuation_variants():
+@pytest.mark.parametrize(
+    ("article_label", "law_identifier"),
+    (
+        ("147-րդ", "ՀՕ-538-Ն"),
+        ("293․1‑ին", "Հ-538-Ն"),
+    ),
+)
+def test_armenian_history_filter_accepts_arlis_punctuation_variants(
+    article_label,
+    law_identifier,
+):
     source = (
-        "Շահառուին վճարել 500 դրամ:\n(147-րդ հոդվածը լրաց․, փոփ․ 07․12․22 ՀՕ-538-Ն)"
+        f"Շահառուին վճարել 500 դրամ:\n({article_label} հոդվածը լրաց․, "
+        f"փոփ․ 07․12․22 {law_identifier})"
+    )
+
+    assert authoritative_numeric_recall_text(source) == "Շահառուին վճարել 500 դրամ:"
+
+
+def test_armenian_history_filter_accepts_crlf_source_text():
+    source = ARMENIAN_MINIMUM_WAGE_SOURCE.replace("\n", "\r\n")
+
+    assert authoritative_numeric_recall_text(source) == (
+        "Հայաստանի Հանրապետությունում նվազագույն ամսական աշխատավարձը "
+        "սահմանել 75000 դրամ:"
+    )
+
+
+@pytest.mark.parametrize(
+    "parenthetical",
+    (
+        "(1-ին հոդվածը վերանայվել 07.12.22 ՀՕ-538-Ն)",
+        "(1-ին հոդվածը փոփ. 07.12.22 ՀՕ-538-Ն, լրացուցիչ 500 դրամ)",
+    ),
+)
+def test_armenian_history_filter_rejects_unrecognized_ledger_residue(parenthetical):
+    source = f"Շահառուին վճարել 500 դրամ:\n{parenthetical}"
+
+    assert authoritative_numeric_recall_text(source) == source
+
+
+def test_armenian_history_filter_does_not_strip_inline_parenthetical():
+    source = "Շահառուին վճարել 500 դրամ: (1-ին հոդվածը փոփ. 07.12.22 ՀՕ-538-Ն)"
+
+    assert authoritative_numeric_recall_text(source) == source
+
+
+def test_armenian_history_filter_strips_adjacent_standalone_ledgers():
+    source = (
+        "Շահառուին վճարել 500 դրամ:\n"
+        "(1-ին հոդվածը փոփ. 07.12.22 ՀՕ-538-Ն)\n"
+        "(2-րդ հոդվածը խմբ. 08.12.22 ՀՕ-539-Ն)"
     )
 
     assert authoritative_numeric_recall_text(source) == "Շահառուին վճարել 500 դրամ:"

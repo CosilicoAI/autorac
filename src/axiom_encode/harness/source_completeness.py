@@ -2191,20 +2191,22 @@ _ALABAMA_TERMINAL_CODE_HISTORY_ENTRY = re.compile(
     r"\s*\.?\s*",
     flags=re.IGNORECASE,
 )
+_ARMENIAN_AMENDMENT_HISTORY_DASH = (
+    r"[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d]"
+)
 _ARMENIAN_AMENDMENT_HISTORY_ARTICLE = re.compile(
-    r"\s*\d+(?:\.\d+)?-(?:ին|րդ)\s+հոդվածը\s+(?P<history>.+?)\s*",
+    rf"\s*\d+(?:[.\u2024]\d+)?{_ARMENIAN_AMENDMENT_HISTORY_DASH}"
+    r"(?:ին|րդ)\s+հոդվածը\s+(?P<history>.+?)\s*",
     flags=re.DOTALL,
 )
 _ARMENIAN_AMENDMENT_HISTORY_ACTION = re.compile(
     r"(?:փոփ|լրաց|խմբ)(?:[.\u2024])?(?=\s|,|$)",
 )
 _ARMENIAN_AMENDMENT_HISTORY_CITATION = re.compile(
-    r"\d{2}[.\u2024]\d{2}[.\u2024]\d{2,4}\s+ՀՕ?"
-    r"[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d]"
-    r"\d+(?:"
-    r"[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d]"
-    r"\d+)?"
-    r"[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d]Ն",
+    r"\d{2}[.\u2024]\d{2}[.\u2024]\d{2,4}\s+Հ(?:Օ)?"
+    rf"{_ARMENIAN_AMENDMENT_HISTORY_DASH}\d+(?:"
+    rf"{_ARMENIAN_AMENDMENT_HISTORY_DASH}\d+)?"
+    rf"{_ARMENIAN_AMENDMENT_HISTORY_DASH}Ն",
 )
 _FORMULA_IDENTIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
 
@@ -11995,7 +11997,7 @@ def _strip_standalone_armenian_amendment_history(source_text: str) -> str:
         return ""
 
     return re.sub(
-        r"(?:^|\n)[ \t]*\((?P<body>[^()]*)\)(?=[ \t]*(?:\n|$))",
+        r"(?:^|\r?\n)[ \t]*\((?P<body>[^()]*)\)(?=[ \t]*(?:\r?\n|$))",
         replacement,
         source_text,
     )
