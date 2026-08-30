@@ -22802,8 +22802,7 @@ def test_terminal_armenian_amendment_history_is_not_numeric_recall():
 
 def test_armenian_history_filter_accepts_arlis_punctuation_variants():
     source = (
-        "Շահառուին վճարել 500 դրամ:\n"
-        "(147-րդ հոդվածը լրաց․, փոփ․ 07․12․22 ՀՕ-538-Ն)"
+        "Շահառուին վճարել 500 դրամ:\n(147-րդ հոդվածը լրաց․, փոփ․ 07․12․22 ՀՕ-538-Ն)"
     )
 
     assert authoritative_numeric_recall_text(source) == "Շահառուին վճարել 500 դրամ:"
@@ -22870,10 +22869,8 @@ rules:
 @pytest.mark.parametrize(
     "source",
     (
-        ARMENIAN_MINIMUM_WAGE_SOURCE.removesuffix(")")
-        + ", շահառուին վճարել 500 դրամ)",
-        ARMENIAN_MINIMUM_WAGE_SOURCE
-        + "\nՇահառուին վճարել լրացուցիչ 500 դրամ:",
+        ARMENIAN_MINIMUM_WAGE_SOURCE.removesuffix(")") + ", շահառուին վճարել 500 դրամ)",
+        ARMENIAN_MINIMUM_WAGE_SOURCE + "\nՇահառուին վճարել լրացուցիչ 500 դրամ:",
     ),
 )
 def test_armenian_history_shape_does_not_hide_operative_amount(source):
