@@ -21221,6 +21221,20 @@ def test_qualified_alien_description_is_not_predicate_qualification(source: str)
 
 
 @pytest.mark.parametrize(
+    "source",
+    [
+        "Alien Group Description: Cuban entrants if eligible under PRWORA.",
+        (
+            "State agencies must verify immigration status if eligible "
+            "documentation is provided."
+        ),
+    ],
+)
+def test_eligible_condition_or_modifier_is_not_an_eligibility_effect(source: str):
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
     "current_rule",
     [
         "Applicants shall be entitled to assistance if citizens.",
@@ -21248,6 +21262,36 @@ def test_joined_modal_or_numeric_policy_effect_is_toggleable(
     source = prefix + current_rule
 
     assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "current_rule",
+    [
+        "Applicants must be entitled to assistance if citizens.",
+        "SNAP benefits must apply if income is below 100 dollars.",
+        "SNAP benefits do not apply if income exceeds 100 dollars.",
+        "Coverage will not begin when documentation is missing.",
+        "Coverage ends when eligibility expires.",
+        "Applicants lose benefits if they are undocumented.",
+        "The allowance increases to 100 dollars when income rises.",
+        "The benefit is 100 dollars if income is below 500.",
+    ],
+)
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "Prior to the OBBB, aliens were eligible. ",
+        "State agencies must review changes when reported, and ",
+        "Alien Group Description: ",
+    ],
+)
+def test_joined_adjacent_policy_outcome_morphology_is_toggleable(
+    prefix: str,
+    current_rule: str,
+):
+    assert completeness_module._source_exception_requires_paired_witness(
+        prefix + current_rule
+    )
 
 
 @pytest.mark.parametrize("dash", [" - ", " – ", " — "])

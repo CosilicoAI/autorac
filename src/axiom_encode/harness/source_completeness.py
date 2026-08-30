@@ -23091,17 +23091,21 @@ def _source_has_operative_policy_effect(
     """Return whether a condition controls a claimant-facing policy outcome."""
 
     outcome = re.search(
-        r"\b(?:eligible|ineligible|qualif(?:y|ies))\b|"
-        r"\b(?:is|are|shall\s+be|will\s+be|may\s+be)\s+qualified\b|"
+        r"\b(?:(?:is|are|shall|will|may|must)\s+(?:not\s+)?(?:be\s+)?|"
+        r"(?:becomes?|remain(?:s)?)\s+)(?:eligible|ineligible)\b|"
+        r"\bqualif(?:y|ies)\b|"
+        r"\b(?:is|are|shall\s+be|will\s+be|may\s+be|must\s+be)\s+qualified\b|"
         r"\b(?:receive[sd]?|get[st]?|obtain[sd]?)\b[^.;]{0,100}\b(?:SNAP\s+)?"
         r"(?:benefits?|assistance|allowances?|payments?|coverage|credits?)\b|"
-        r"\b(?:is|are|becomes?|remain(?:s)?|shall|will|may)\s+(?:not\s+)?"
+        r"\b(?:is|are|becomes?|remain(?:s)?|shall|will|may|must)\s+(?:not\s+)?"
         r"(?:be\s+)?entitled\s+to\b|"
         r"\b(?:coverage|benefits?|provisions?|rules?)\s+"
-        r"(?:(?:shall|will|may)\s+)?(?:begins?|begin|appl(?:y|ies))\b|"
+        r"(?:(?:(?:shall|will|may|must)\s+)?(?:not\s+)?"
+        r"(?:begins?|begin|ends?|end|appl(?:y|ies))|do(?:es)?\s+not\s+apply)\b|"
+        r"\b(?:lose[sd]?|forfeit[sd]?)\b[^.;]{0,100}\b(?:SNAP\s+)?benefits?\b|"
         r"\b(?:benefits?|payments?|amounts?|allowances?|credits?|deductions?|"
         r"exemptions?)\s+(?:equals?|is\s+(?:calculated|computed|determined)|"
-        r"(?:increases?|decreases?)\s+by)\b",
+        r"(?:increases?|decreases?)\s+(?:by|to)|is\s+-?\d+(?:\.\d+)?)\b",
         text,
         flags=re.IGNORECASE,
     )
