@@ -12342,6 +12342,7 @@ _SOURCE_GATE_YET_PREFIX_CHARACTER_LIMIT = 32
 _SOURCE_GATE_YET_SUBJECT_CHARACTER_LIMIT = 96
 _SOURCE_GATE_YET_SUBJECT_TOKEN_LIMIT = 8
 _SOURCE_GATE_YET_PRONOUNS = frozenset({"he", "it", "she", "they"})
+_SOURCE_GATE_SUBJECT_PRONOUNS = frozenset({"he", "her", "him", "it", "she", "they"})
 _SOURCE_GATE_AMBIGUOUS_YET_MARKER = "sourcegateambiguousyet"
 _SOURCE_GATE_INCOME_BASES = frozenset({"income", "earning", "earnings"})
 _SOURCE_GATE_INCOME_BLOCKERS = frozenset(
@@ -12814,7 +12815,7 @@ def _source_conjunctive_fact_gates(
             if is_subject_continuation
             else explicit_entities or inherited_entities
         )
-        predicates = tokens - _SOURCE_GATE_ENTITIES
+        predicates = tokens - _SOURCE_GATE_ENTITIES - _SOURCE_GATE_SUBJECT_PRONOUNS
         if not predicates:
             continue
         if not (
@@ -13844,6 +13845,7 @@ def _opaque_same_source_condition_input_issues(
                 tuple[tuple[str, ...], int, int],
                 tuple[tuple[frozenset[str], frozenset[str]], ...],
             ] = {}
+            reversed_negative_gate_keys: set[tuple[tuple[str, ...], int, int]] = set()
             ambiguous_ownership = False
             for excerpt in excerpts:
                 owned_clauses, ambiguous = _source_condition_clauses_owned_by_excerpt(
@@ -13859,7 +13861,20 @@ def _opaque_same_source_condition_input_issues(
                     if len(gates) < 2:
                         continue
                     excerpt_has_gates = True
-                    gate_sets[(clause.branch_path, clause.start, clause.end)] = gates
+                    clause_key = (clause.branch_path, clause.start, clause.end)
+                    gate_sets[clause_key] = gates
+                    if (
+                        _exception_reverses_negative_proposition(clause.text)
+                        or re.search(
+                            r"\bunless\b",
+                            clause.text,
+                            flags=re.IGNORECASE,
+                        )
+                    ) and _rule_has_negative_output_semantics(
+                        rule,
+                        fallback_name=rule_name,
+                    ):
+                        reversed_negative_gate_keys.add(clause_key)
                 ambiguous_ownership |= ambiguous and excerpt_has_gates
             gate_count = max((len(gates) for gates in gate_sets.values()), default=0)
             if gate_count < 2:
@@ -13896,6 +13911,11 @@ def _opaque_same_source_condition_input_issues(
                 # A formula that is provably inactive on every path cannot grant
                 # the source benefit while bypassing its factual conditions.
                 continue
+            ordinary_gate_sets = tuple(
+                gates
+                for key, gates in gate_sets.items()
+                if key not in reversed_negative_gate_keys
+            )
             failing_choices = [
                 choice
                 for choice in terminal_choices
@@ -13907,10 +13927,49 @@ def _opaque_same_source_condition_input_issues(
                         terminal_evidence=terminal_evidence,
                         neutral_polarity_imports=frozenset(imported_names),
                     )
-                    for gates in gate_sets.values()
+                    for gates in ordinary_gate_sets
                 )
             ]
-            if not failing_choices and not ambiguous_ownership:
+            # A negative output implementing ``No ... eligible unless A and B``
+            # necessarily reaches separate ``not A`` / ``not B`` alternatives.
+            # Require the alternatives collectively to expose every source gate;
+            # requiring each De Morgan branch to contain every gate rejects the
+            # exact, explicit encoding while adding no opacity protection.
+            reversed_selector_choices = tuple(
+                choice
+                for selector_name in sorted(_formula_exception_selector_names(formula))
+                for choice in expand_name(
+                    selector_name,
+                    start=start,
+                    end=end,
+                    stack=frozenset({rule_name}),
+                )
+            )
+            reversed_names = frozenset().union(
+                *(
+                    choice.names
+                    for choice in reversed_selector_choices
+                    if choice.resolved
+                )
+            )
+            reversed_gate_failure = bool(reversed_negative_gate_keys) and (
+                not reversed_selector_choices
+                or any(not choice.resolved for choice in reversed_selector_choices)
+                or any(
+                    not _terminal_names_corroborate_source_gates(
+                        reversed_names,
+                        gate_sets[key],
+                        terminal_evidence=terminal_evidence,
+                        neutral_polarity_imports=frozenset(imported_names),
+                    )
+                    for key in reversed_negative_gate_keys
+                )
+            )
+            if (
+                not failing_choices
+                and not reversed_gate_failure
+                and not ambiguous_ownership
+            ):
                 continue
             least_supported = min(
                 failing_choices or terminal_choices,
@@ -23851,7 +23910,8 @@ def _exception_reverses_negative_proposition(text: str) -> bool:
             r"\bfindet\s+keine\s+anwendung\b|"
             r"\b(?:does|shall)\s+not\s+apply\b|"
             r"\b(?:is|are)\s+not\s+(?:eligible|qualified|entitled)\b|"
-            r"\bno\b[^.;]{0,80}\b(?:is|are)\s+(?:eligible|qualified|entitled)\b|"
+            r"\bno\b[^.;]{0,320}\b(?:is|are|shall\s+be)\s+"
+            r"(?:eligible|qualified|entitled)\b|"
             r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\bkein(?:e|en|em|er|es)?\s+(?:anspruch|berechtigung)\b",
             proposition,
@@ -23876,6 +23936,18 @@ def _source_exception_selector_is_relevant(
     if re.search(
         r"\b(?:at\s+least\s+one|one\s+or\s+more)\b[^.;]{0,80}"
         r"\b(?:criteria|conditions|requirements)\b",
+        collapsed,
+    ):
+        return any(
+            _source_selector_distinctive_concept_matches(
+                supporting_text,
+                normalized_name,
+            )
+            for supporting_text in supporting_texts
+        )
+    if re.search(
+        r"\b(?:unless|except(?:\s+(?:if|when))?)\b[^.;]{0,120}"
+        r"\b(?:is|are|be)\s*(?:[-–—]|:)\s*$",
         collapsed,
     ):
         return any(
