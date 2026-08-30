@@ -11968,29 +11968,33 @@ def authoritative_numeric_recall_text(source_text: str) -> str:
     for definition in footnote_definition.finditer(cleaned):
         marker = definition.group("marker")
         body = definition.group("body").lower()
-        if (
-            re.search(
-                r"\bsection\s+\d+\s*\([a-z0-9]+\)|"
-                r"\b\d+\s+U\.?S\.?C\.?\b|"
-                r"\bAct\s+of\s+\d{4}\b",
-                body,
-                flags=re.IGNORECASE,
-            )
-            is None
-        ):
-            continue
         definition_bodies[marker] = (
             *definition_bodies.get(marker, ()),
             body,
         )
 
+    def known_guidance_footnote(marker: str, label: str) -> bool:
+        bodies = definition_bodies.get(marker, ())
+        if marker == "1" and label.lower() == "entrants":
+            return any(
+                re.match(r"\s*cuban\s+and\s+haitian\s+entrants\b", body) is not None
+                and re.search(r"\bsection\s+501\s*\(e\)", body) is not None
+                for body in bodies
+            )
+        if marker == "2" and label.upper() == "PRWORA":
+            return any(
+                re.match(r"\s*aliens\s+who\s+were\s+qualified\s+aliens\b", body)
+                is not None
+                and re.search(r"\bsection\s+431\b", body) is not None
+                and re.search(r"\bPRWORA\b", body, flags=re.IGNORECASE) is not None
+                for body in bodies
+            )
+        return False
+
     def linked_footnote_reference(match: re.Match[str]) -> str:
         marker = match.group("marker")
         label = match.group("label")
-        if any(
-            re.search(rf"\b{re.escape(label)}\b", body, flags=re.IGNORECASE)
-            for body in definition_bodies.get(marker, ())
-        ):
+        if known_guidance_footnote(marker, label):
             confirmed_footnote_markers.add(marker)
             return f"{label}{match.groupdict().get('closing') or ''}"
         return match.group(0)

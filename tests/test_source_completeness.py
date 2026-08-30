@@ -20905,6 +20905,25 @@ def test_guidance_repeated_numbered_category_is_not_a_footnote(label: str):
     assert f"{label}2" in cleaned
 
 
+@pytest.mark.parametrize(
+    "citation",
+    ["section 5(a)", "the Act of 1996"],
+)
+def test_guidance_cited_numbered_category_is_not_a_footnote(citation: str):
+    source = (
+        "Tier2, members receive benefits. "
+        f"2 Tier households are eligible as defined by {citation}."
+    )
+
+    cleaned = authoritative_numeric_recall_text(source)
+    values = [
+        occurrence.value for occurrence in EN_NUMERIC_OCCURRENCE_EXTRACTOR(cleaned)
+    ]
+
+    assert values.count(2) == 1
+    assert "Tier2" in cleaned
+
+
 def test_guidance_lpr_acronym_matches_lawful_permanent_resident_selector():
     assert completeness_module._source_exception_selector_is_relevant(
         "unless an LPR.",
