@@ -66,28 +66,212 @@ def _signed_apply_script(*, require_complete_source_unit: bool = False) -> str:
     return script
 
 
-def test_rules_engine_pin_is_caller_selectable_and_preserves_existing_default():
+def test_rules_engine_pin_is_derived_by_default_with_optional_exact_override():
     workflow = _workflow_payload()
     checkout = _workflow_step("Checkout axiom-rules-engine (pinned)")
+    authenticate = _workflow_step("Authenticate axiom-rules-engine commit")
     engine_input = workflow["on"]["workflow_call"]["inputs"]["axiom-rules-engine-ref"]
 
     assert engine_input == {
         "description": (
-            "Immutable axiom-rules-engine commit SHA; keep aligned with the "
-            "caller's validation workflow."
+            "Optional immutable axiom-rules-engine commit SHA; when set, must "
+            "match the caller's reviewed validation workflow."
         ),
         "required": "false",
         "type": "string",
-        "default": LEGACY_RULES_ENGINE_REF,
+        "default": "",
     }
-    assert checkout["with"]["ref"] == ("${{ needs.dispatch.outputs.rules_engine_ref }}")
+    assert checkout["with"]["repository"] == "TheAxiomFoundation/axiom-rules-engine"
+    assert checkout["with"]["ref"] == "${{ steps.pins.outputs.rules_engine_ref }}"
+    assert checkout["with"]["fetch-depth"] == "0"
+    assert checkout["with"]["persist-credentials"] == "false"
+    assert authenticate["env"] == {
+        "AXIOM_RULES_ENGINE_SHA": "${{ steps.pins.outputs.rules_engine_ref }}"
+    }
+    assert "${{" not in authenticate["run"]
+
+    steps = workflow["jobs"]["encode"]["steps"]
+    names = [step.get("name") for step in steps]
+    assert (
+        names.index("Checkout axiom-rules-engine (pinned)")
+        < names.index("Authenticate axiom-rules-engine commit")
+        < names.index("Build engine")
+    )
+
+
+def _run_resolve_pins(
+    tmp_path: Path, *, requested_rules_engine_ref: str, reviewed_rules_engine_ref: str
+) -> subprocess.CompletedProcess[str]:
+    workflow_dir = tmp_path / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    (workflow_dir / "repository-checks.yml").write_text(
+        "jobs:\n"
+        "  validate:\n"
+        "    with:\n"
+        f"      axiom-rules-engine-ref: {reviewed_rules_engine_ref}\n"
+        "      axiom-corpus-ref: " + "c" * 40 + "\n",
+        encoding="utf-8",
+    )
+    toolchain_dir = tmp_path / ".axiom"
+    toolchain_dir.mkdir()
+    (toolchain_dir / "toolchain.toml").write_text(
+        '[toolchain]\naxiom_corpus_release = "test-release"\n'
+        f'axiom_corpus_release_content_sha256 = "{"d" * 64}"\n',
+        encoding="utf-8",
+    )
+    output = tmp_path / "github-output"
+    step = _workflow_step("Resolve pinned refs and release binding")
+    return subprocess.run(
+        ["/bin/bash", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "GITHUB_OUTPUT": str(output),
+            "REQUESTED_RULES_ENGINE_REF": requested_rules_engine_ref,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("requested_ref", "reviewed_ref"),
+    [
+        ("", LEGACY_RULES_ENGINE_REF),
+        ("", "f" * 40),
+        (LEGACY_RULES_ENGINE_REF, LEGACY_RULES_ENGINE_REF),
+    ],
+)
+def test_rules_engine_ref_is_derived_or_matches_reviewed_caller_pin(
+    tmp_path, requested_ref, reviewed_ref
+):
+    result = _run_resolve_pins(
+        tmp_path,
+        requested_rules_engine_ref=requested_ref,
+        reviewed_rules_engine_ref=reviewed_ref,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "github-output").read_text(encoding="utf-8") == (
+        f"corpus_ref={'c' * 40}\n"
+        f"rules_engine_ref={reviewed_ref}\n"
+        "release=test-release\n"
+        f"release_sha={'d' * 64}\n"
+    )
+
+
+@pytest.mark.parametrize("reviewed_ref", ["f" * 40, "main", "F" * 40])
+def test_rules_engine_ref_rejects_mismatch_or_invalid_reviewed_pin(
+    tmp_path, reviewed_ref
+):
+    result = _run_resolve_pins(
+        tmp_path,
+        requested_rules_engine_ref=LEGACY_RULES_ENGINE_REF,
+        reviewed_rules_engine_ref=reviewed_ref,
+    )
+
+    assert result.returncode == 1
+    assert not (tmp_path / "github-output").exists()
+
+
+def _create_engine_checkout(tmp_path: Path) -> tuple[Path, str, str]:
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(origin)], check=True)
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "init", "-b", "main", str(seed)], check=True)
+    subprocess.run(["git", "-C", str(seed), "config", "user.name", "Test"], check=True)
+    subprocess.run(
+        ["git", "-C", str(seed), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    (seed / "README.md").write_text("main\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(seed), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(seed), "commit", "-m", "main"], check=True)
+    main_sha = subprocess.check_output(
+        ["git", "-C", str(seed), "rev-parse", "HEAD"], text=True
+    ).strip()
+    subprocess.run(
+        ["git", "-C", str(seed), "remote", "add", "origin", str(origin)],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(seed), "push", "origin", "main"], check=True)
+    subprocess.run(
+        ["git", "--git-dir", str(origin), "symbolic-ref", "HEAD", "refs/heads/main"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(seed), "switch", "-c", "unreviewed"], check=True)
+    (seed / "README.md").write_text("unreviewed\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(seed), "commit", "-am", "unreviewed"], check=True)
+    unreviewed_sha = subprocess.check_output(
+        ["git", "-C", str(seed), "rev-parse", "HEAD"], text=True
+    ).strip()
+    subprocess.run(["git", "-C", str(seed), "push", "origin", "unreviewed"], check=True)
+    checkout = tmp_path / "_axiom" / "axiom-rules-engine"
+    checkout.parent.mkdir()
+    subprocess.run(["git", "clone", str(origin), str(checkout)], check=True)
+    return checkout, main_sha, unreviewed_sha
+
+
+def _run_engine_authentication(
+    tmp_path: Path, checkout: Path, sha: str
+) -> subprocess.CompletedProcess[str]:
+    subprocess.run(
+        ["git", "-C", str(checkout), "checkout", "--detach", sha], check=True
+    )
+    step = _workflow_step("Authenticate axiom-rules-engine commit")
+    return subprocess.run(
+        ["/bin/bash", "-c", step["run"]],
+        cwd=tmp_path,
+        env={**os.environ, "AXIOM_RULES_ENGINE_SHA": sha},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_rules_engine_authentication_accepts_default_branch_ancestor(tmp_path):
+    checkout, main_sha, _ = _create_engine_checkout(tmp_path)
+
+    result = _run_engine_authentication(tmp_path, checkout, main_sha)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_rules_engine_authentication_rejects_unreviewed_branch_commit(tmp_path):
+    checkout, _, unreviewed_sha = _create_engine_checkout(tmp_path)
+
+    result = _run_engine_authentication(tmp_path, checkout, unreviewed_sha)
+
+    assert result.returncode == 1
+    assert "is not an ancestor of default branch main" in result.stderr
+
+
+def test_rules_engine_authentication_rejects_checkout_identity_mismatch(tmp_path):
+    checkout, main_sha, unreviewed_sha = _create_engine_checkout(tmp_path)
+    subprocess.run(
+        ["git", "-C", str(checkout), "checkout", "--detach", main_sha], check=True
+    )
+    step = _workflow_step("Authenticate axiom-rules-engine commit")
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", step["run"]],
+        cwd=tmp_path,
+        env={**os.environ, "AXIOM_RULES_ENGINE_SHA": unreviewed_sha},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "did not check out expected SHA" in result.stderr
 
 
 @pytest.mark.parametrize(
     "rules_engine_ref",
-    [LEGACY_RULES_ENGINE_REF, "f" * 40, "0123456789abcdef" * 2 + "01234567"],
+    ["", LEGACY_RULES_ENGINE_REF, "f" * 40, "0123456789abcdef" * 2 + "01234567"],
 )
-def test_rules_engine_ref_accepts_only_immutable_lowercase_shas(
+def test_rules_engine_ref_accepts_empty_or_immutable_lowercase_shas(
     tmp_path, rules_engine_ref
 ):
     step = _dispatch_step("Validate axiom-rules-engine ref")
@@ -111,7 +295,7 @@ def test_rules_engine_ref_accepts_only_immutable_lowercase_shas(
 
 @pytest.mark.parametrize(
     "rules_engine_ref",
-    ["", "main", "f" * 39, "f" * 41, "F" * 40, "g" * 40, "$(touch injected)"],
+    ["main", "f" * 39, "f" * 41, "F" * 40, "g" * 40, "$(touch injected)"],
 )
 def test_rules_engine_ref_rejects_non_commit_refs(tmp_path, rules_engine_ref):
     step = _dispatch_step("Validate axiom-rules-engine ref")
@@ -129,7 +313,7 @@ def test_rules_engine_ref_rejects_non_commit_refs(tmp_path, rules_engine_ref):
     )
 
     assert result.returncode == 1
-    assert "expected a lowercase 40-character commit SHA" in result.stderr
+    assert "expected empty or a lowercase 40-character commit SHA" in result.stderr
     assert not (tmp_path / "injected").exists()
 
 
