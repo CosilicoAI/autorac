@@ -20918,6 +20918,22 @@ def test_obbb_history_does_not_hide_other_joined_operative_rules(current_rule: s
     assert completeness_module._source_exception_requires_paired_witness(source)
 
 
+@pytest.mark.parametrize(
+    "current_rule",
+    [
+        "Applicants receive SNAP benefits if they are citizens.",
+        "This provision applies if income is below 100 dollars.",
+        "Applicants are entitled to assistance if citizens.",
+        "Households receive an allowance if income is below 100.",
+        "Coverage begins when admitted.",
+    ],
+)
+def test_obbb_history_keeps_joined_conditional_outcome_vocabulary(current_rule: str):
+    source = f"Prior to the OBBB, aliens were eligible. {current_rule}"
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
 def test_guidance_agency_review_instruction_is_not_a_toggleable_benefit_rule():
     source = (
         "State agencies must review household circumstances to take appropriate "
@@ -20951,6 +20967,22 @@ def test_guidance_agency_instruction_keeps_other_joined_rules(current_rule: str)
     assert completeness_module._source_exception_requires_paired_witness(source)
 
 
+@pytest.mark.parametrize(
+    "current_rule",
+    [
+        "Applicants receive SNAP benefits if they are citizens.",
+        "This provision applies if income is below 100 dollars.",
+        "Applicants are entitled to assistance if citizens.",
+        "Households receive an allowance if income is below 100.",
+        "Coverage begins when admitted.",
+    ],
+)
+def test_guidance_agency_instruction_keeps_conditional_outcomes(current_rule: str):
+    source = f"State agencies must review changes when reported, and {current_rule}"
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
 def test_guidance_attachment_description_is_not_a_toggleable_benefit_rule():
     source = (
         "Page 11 of 11 Alien Group Description honorably discharged veteran "
@@ -20978,6 +21010,22 @@ def test_guidance_description_keeps_explicit_eligibility_selector():
     ],
 )
 def test_guidance_description_keeps_other_joined_rules(current_rule: str):
+    source = f"Alien Group Description. {current_rule}"
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "current_rule",
+    [
+        "Applicants receive SNAP benefits if they are citizens.",
+        "This provision applies if income is below 100 dollars.",
+        "Applicants are entitled to assistance if citizens.",
+        "Households receive an allowance if income is below 100.",
+        "Coverage begins when admitted.",
+    ],
+)
+def test_guidance_description_keeps_conditional_outcomes(current_rule: str):
     source = f"Alien Group Description. {current_rule}"
 
     assert completeness_module._source_exception_requires_paired_witness(source)
@@ -21033,6 +21081,26 @@ def test_operative_parolee_duration_remains_a_boundary_obligation():
     ],
 )
 def test_qualification_parolee_duration_remains_a_boundary_obligation(source: str):
+    root = completeness_module.SourceStructureBranch(
+        (), "source-unit", "source unit", source, 0, len(source)
+    )
+
+    obligations = completeness_module._source_boundary_obligations(
+        (root,),
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert [(occurrence.value, occurrence.raw) for _branch, occurrence in obligations] == [
+        (1, "1")
+    ]
+
+
+def test_parolee_glossary_row_does_not_hide_joined_conditional_boundary():
+    source = (
+        "Parolees Paroled into the U.S. under section 212(d)(5) of the INA for "
+        "a period of at least 1 year and applicants receive SNAP benefits if "
+        "they are citizens."
+    )
     root = completeness_module.SourceStructureBranch(
         (), "source-unit", "source unit", source, 0, len(source)
     )

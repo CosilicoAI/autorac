@@ -23123,13 +23123,34 @@ def _source_is_superseded_obbb_eligibility_history(text: str) -> bool:
     if historical is None:
         return False
     remainder = text[historical.end() :]
-    return not _source_has_operative_policy_effect(remainder)
+    return not (
+        _source_exception_or_applicability_matches(remainder)
+        or _source_has_operative_policy_effect(remainder)
+    )
+
+
+def _source_has_joined_operative_segment(text: str) -> bool:
+    """Detect a separate conditional/computational rule after nonoperative prose."""
+
+    joined_segments = re.split(
+        r"(?:[.;]\s+|,\s*(?:and|but|yet)\s+)",
+        text,
+        flags=re.IGNORECASE,
+    )[1:]
+    return any(
+        _source_exception_or_applicability_matches(segment)
+        or _source_has_operative_policy_effect(segment)
+        for segment in joined_segments
+        if segment.strip()
+    )
 
 
 def _source_is_nonoperative_guidance_instruction(text: str) -> bool:
     """Exclude agency workflow prose that has no claimant-facing outcome."""
 
-    if _source_has_operative_policy_effect(text):
+    if _source_has_operative_policy_effect(text) or _source_has_joined_operative_segment(
+        text
+    ):
         return False
     return bool(
         re.match(
@@ -23147,6 +23168,7 @@ def _source_is_guidance_glossary_description(text: str) -> bool:
     return bool(
         re.search(r"\bAlien\s+Group\s+Description\b", text, flags=re.IGNORECASE)
         and not _source_has_operative_policy_effect(text)
+        and not _source_has_joined_operative_segment(text)
     )
 
 
@@ -26614,6 +26636,7 @@ def _source_boundary_is_nonoperative_guidance_definition(
             collapsed,
             flags=re.IGNORECASE,
         )
+        and not _source_exception_or_applicability_matches(collapsed)
         and not _source_has_operative_policy_effect(collapsed)
     )
 
