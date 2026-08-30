@@ -33136,9 +33136,23 @@ def test_latest_positive_effect_controls_exception_polarity(source: str):
         "Under this section, no person shall be eligible unless citizen.",
         "For purposes of this section, no child shall be eligible unless qualified.",
         "Except as provided in paragraph (2), no alien shall be eligible unless qualified.",
+        "Except as provided in this section, no person shall be eligible unless qualified.",
+        "Except as provided in this paragraph, no child shall be eligible unless qualified.",
     ),
 )
 def test_bounded_introductory_phrase_preserves_no_subject_polarity(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) == "enable"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The applicant shall not be eligible unless the applicant is a citizen.",
+        "The applicant will not be eligible unless the applicant is a citizen.",
+        "The applicant may not be eligible unless the applicant is a citizen.",
+    ),
+)
+def test_modal_negative_eligibility_exception_is_enabling(source: str):
     assert completeness_module._source_exception_effect_requirement(source) == "enable"
 
 

@@ -23863,8 +23863,8 @@ def _source_positive_effect_matches(text: str) -> tuple[re.Match[str], ...]:
 def _source_negative_effect_matches(text: str) -> tuple[re.Match[str], ...]:
     return tuple(
         re.finditer(
-            r"\b(?:shall|does|is|are)\s+not\s+(?:apply|eligible|qualified|"
-            r"allowed|entitled)\b|"
+            r"\b(?:shall|will|may|does|is|are)\s+not\s+(?:be\s+)?"
+            r"(?:apply|eligible|qualified|allowed|entitled)\b|"
             r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\bnicht\s+berechtigt\b",
             text,
@@ -24008,7 +24008,8 @@ def _no_subject_eligibility_negative_proposition(text: str) -> bool:
         r"under\s+(?:this|the)\s+(?:section|subsection|paragraph|clause)|"
         r"for\s+purposes\s+of\s+(?:this|the)\s+"
         r"(?:section|subsection|paragraph|clause)|"
-        r"except\s+as\s+provided\s+in\s+(?:this|the|paragraph\s*\([^)]+\))"
+        r"except\s+as\s+provided\s+in\s+(?:(?:this|the)\s+"
+        r"(?:section|subsection|paragraph|clause)|paragraph\s*\([^)]+\))"
         r")\s*,\s*",
         "",
         text,
