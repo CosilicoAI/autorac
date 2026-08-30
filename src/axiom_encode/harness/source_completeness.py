@@ -23036,6 +23036,10 @@ def _source_exception_requires_paired_witness(
     """
 
     collapsed = _collapse_text(text)
+    if _source_is_nonoperative_guidance_instruction(collapsed):
+        return False
+    if _source_is_guidance_glossary_description(collapsed):
+        return False
     if re.fullmatch(
         r"(?:Guidance\s+documents\s+lack\s+the\s+force\s+and\s+effect\s+"
         r"of\s+law,\s*unless\s+expressly\s+authorized\s+by\s+statute\s+or\s+"
@@ -23047,13 +23051,7 @@ def _source_exception_requires_paired_witness(
         flags=re.IGNORECASE,
     ):
         return False
-    historical = re.fullmatch(
-        r"Prior\s+to\s+the\s+OBBB\b[^.;]{0,640}\b(?:was|were)\s+eligible\b"
-        r"[^.;]*[.]?",
-        collapsed,
-        flags=re.IGNORECASE,
-    )
-    if historical is not None:
+    if _source_is_superseded_obbb_eligibility_history(collapsed):
         # A historical comparison explains superseded eligibility; it is not
         # a current selector that companion cases can toggle.
         return False
@@ -23083,6 +23081,118 @@ def _source_exception_requires_paired_witness(
     ) and _source_reference_reservation_is_only_references(collapsed):
         return False
     return True
+
+
+def _source_has_operative_policy_effect(
+    text: str,
+    *,
+    allow_explicit_computation: bool = False,
+) -> bool:
+    """Return whether a condition controls a claimant-facing policy outcome."""
+
+    outcome = re.search(
+        r"\b(?:(?:is|are|shall|will|may|must|can(?:not)?)\s+(?:not\s+)?"
+        r"(?:be\s+)?|"
+        r"(?:becomes?|remain(?:s)?)\s+)(?:eligible|ineligible)\b|"
+        r"\bqualif(?:y|ies)\b|"
+        r"\b(?:is|are|shall\s+be|will\s+be|may\s+be|must\s+be)\s+qualified\b|"
+        r"\b(?:receive[sd]?|get[st]?|obtain[sd]?)\b[^.;]{0,100}\b(?:SNAP\s+)?"
+        r"(?:benefits?|assistance|allowances?|payments?|coverage|credits?)\b|"
+        r"\b(?:is|are|becomes?|remain(?:s)?|shall|will|may|must)\s+(?:not\s+)?"
+        r"(?:be\s+)?entitled\s+to\b|"
+        r"\b(?:coverage|benefits?|provisions?|rules?)\s+"
+        r"(?:(?:(?:shall|will|may|must)\s+)?(?:not\s+)?"
+        r"(?:begins?|begin|ends?|end|ceases?|cease|appl(?:y|ies))|"
+        r"do(?:es)?\s+not\s+apply)\b|"
+        r"\b(?:lose[sd]?|forfeit[sd]?)\b[^.;]{0,100}\b(?:SNAP\s+)?benefits?\b|"
+        r"\b(?:benefits?|payments?|amounts?|allowances?|credits?|deductions?|"
+        r"exemptions?)\s+(?:equals?|is\s+(?:calculated|computed|determined)|"
+        r"(?:increases?|decreases?)\s+(?:by|to)|is\s+(?:[$€£]\s*)?"
+        r"(?:-?\d+(?:\.\d+)?|zero))\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    condition = _source_exception_or_applicability_matches(text)
+    return bool(
+        condition
+        and (
+            outcome
+            or (allow_explicit_computation and source_states_explicit_computation(text))
+        )
+    )
+
+
+def _source_has_current_eligibility_effect(text: str) -> bool:
+    """Return whether text states a present/future eligibility outcome."""
+
+    return bool(
+        re.search(
+            r"\b(?:is|are|shall\s+be|will\s+be|may\s+be|remain(?:s)?)\s+"
+            r"(?:not\s+)?eligible\b|\b(?:becomes?|remain(?:s)?)\s+"
+            r"ineligible\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _source_is_superseded_obbb_eligibility_history(text: str) -> bool:
+    """Recognize a superseded pre-OBBB comparison plus citation footnotes."""
+
+    historical = re.match(
+        r"Prior\s+to\s+the\s+OBBB\b.*?\b(?:was|were)\s+eligible\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if historical is None:
+        return False
+    historical_tail = text[historical.end() :]
+    return not _source_has_joined_operative_segment(historical_tail)
+
+
+def _source_has_joined_operative_segment(text: str) -> bool:
+    """Detect a separate conditional/computational rule after nonoperative prose."""
+
+    delimiter = re.compile(
+        r"(?:[.;:,]\s*(?:(?:and|but|or|yet)\s+)?|"
+        r"\b(?:and|but|or|yet)\s+|\s+[\N{EN DASH}\N{EM DASH}-]\s+)",
+        flags=re.IGNORECASE,
+    )
+    joined_segments = (text[match.end() :] for match in delimiter.finditer(text))
+    return any(
+        _source_has_operative_policy_effect(
+            segment,
+            allow_explicit_computation=True,
+        )
+        for segment in joined_segments
+        if segment.strip()
+    )
+
+
+def _source_is_nonoperative_guidance_instruction(text: str) -> bool:
+    """Exclude agency workflow prose that has no claimant-facing outcome."""
+
+    if _source_has_joined_operative_segment(text):
+        return False
+    return bool(
+        re.match(
+            r"State\s+agencies\s+must\s+(?:(?:review|check|contact|follow|use|"
+            r"verify)\b|provide\s+(?:notice|notification|information|guidance|"
+            r"documentation)\b)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _source_is_guidance_glossary_description(text: str) -> bool:
+    """Exclude attachment definition prose without an operative outcome."""
+
+    return bool(
+        re.search(r"\bAlien\s+Group\s+Description\b", text, flags=re.IGNORECASE)
+        and not _source_has_operative_policy_effect(text)
+        and not _source_has_joined_operative_segment(text)
+    )
 
 
 def _leading_reference_reservation_is_nonlocal(
@@ -26458,6 +26568,14 @@ def _source_boundary_obligations(
         direct_inventory = tuple(extract_numeric_occurrences(direct_text))
         for fragment_start, fragment in _source_boundary_fragments(direct_text):
             range_fragment = fragment.split(":", 1)[0]
+            boundary_context = direct_text[
+                max(0, fragment_start - 160) : fragment_start + len(range_fragment)
+            ]
+            if _source_boundary_is_nonoperative_guidance_definition(
+                range_fragment,
+                context=boundary_context,
+            ):
+                continue
             if not re.search(
                 r"\b(?:zwischen|between|bis|von|ab|unter|über|"
                 r"mehr\s+als|weniger\s+als|from|to|"
@@ -26517,6 +26635,31 @@ def _source_boundary_obligations(
             ): (branch, occurrence)
             for branch, occurrence in obligations
         }.values()
+    )
+
+
+def _source_boundary_is_nonoperative_guidance_definition(
+    text: str,
+    *,
+    context: str,
+) -> bool:
+    """Exclude a glossary-only admission-duration definition from case bounds."""
+
+    collapsed = _collapse_text(text)
+    return bool(
+        re.search(
+            r"\bParolees\s+Paroled\s+into\s+the\s+U\.?S\.?\s*$",
+            _collapse_text(context[: -len(text)] if text else context),
+            flags=re.IGNORECASE,
+        )
+        and re.search(
+            r"\bunder\s+\([a-z]\)\(\d+\)\s+of\s+the\s+INA\s+for\s+a\s+"
+            r"period\s+of\s+at\s+least\s+\d+(?:\.\d+)?\s+years?\b",
+            collapsed,
+            flags=re.IGNORECASE,
+        )
+        and not _source_has_operative_policy_effect(collapsed)
+        and not _source_has_joined_operative_segment(collapsed)
     )
 
 
