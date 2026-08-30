@@ -20904,6 +20904,20 @@ def test_obbb_history_does_not_hide_joined_current_eligibility_selector():
     assert completeness_module._source_exception_requires_paired_witness(source)
 
 
+@pytest.mark.parametrize(
+    "current_rule",
+    [
+        "SNAP benefits apply if income is below 100 dollars.",
+        "Applicants are ineligible if undocumented.",
+        "The benefit equals income minus 100 if income is below 500.",
+    ],
+)
+def test_obbb_history_does_not_hide_other_joined_operative_rules(current_rule: str):
+    source = f"Prior to the OBBB, aliens were eligible. {current_rule}"
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
 def test_guidance_agency_review_instruction_is_not_a_toggleable_benefit_rule():
     source = (
         "State agencies must review household circumstances to take appropriate "
@@ -20917,6 +20931,21 @@ def test_guidance_agency_instruction_keeps_joined_eligibility_selector():
     source = (
         "State agencies must review household circumstances when this occurs, "
         "and applicants are eligible if they are citizens."
+    )
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "current_rule",
+    [
+        "SNAP benefits apply if income is below 100 dollars.",
+        "The benefit equals income minus 100 if income is below 500.",
+    ],
+)
+def test_guidance_agency_instruction_keeps_other_joined_rules(current_rule: str):
+    source = (
+        "State agencies must review changes when reported, and " + current_rule
     )
 
     assert completeness_module._source_exception_requires_paired_witness(source)
@@ -20937,6 +20966,19 @@ def test_guidance_description_keeps_explicit_eligibility_selector():
         "Alien Group Description: a parolee is eligible if paroled for at least "
         "1 year."
     )
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "current_rule",
+    [
+        "SNAP benefits apply if income is below 100 dollars.",
+        "The benefit equals income minus 100 if income is below 500.",
+    ],
+)
+def test_guidance_description_keeps_other_joined_rules(current_rule: str):
+    source = f"Alien Group Description. {current_rule}"
 
     assert completeness_module._source_exception_requires_paired_witness(source)
 
@@ -20963,6 +21005,34 @@ def test_operative_parolee_duration_remains_a_boundary_obligation():
         "A parolee is eligible if paroled under section 212(d)(5) of the INA "
         "for a period of at least 1 year."
     )
+    root = completeness_module.SourceStructureBranch(
+        (), "source-unit", "source unit", source, 0, len(source)
+    )
+
+    obligations = completeness_module._source_boundary_obligations(
+        (root,),
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert [(occurrence.value, occurrence.raw) for _branch, occurrence in obligations] == [
+        (1, "1")
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "A parolee qualifies if paroled into the U.S. under section "
+            "212(d)(5) of the INA for a period of at least 1 year."
+        ),
+        (
+            "Qualification requires parole into the U.S. under section "
+            "212(d)(5) of the INA for a period of at least 1 year."
+        ),
+    ],
+)
+def test_qualification_parolee_duration_remains_a_boundary_obligation(source: str):
     root = completeness_module.SourceStructureBranch(
         (), "source-unit", "source unit", source, 0, len(source)
     )
