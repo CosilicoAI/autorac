@@ -12784,21 +12784,26 @@ def _source_conjunctive_fact_gates(
     """Return distinct entity/predicate signatures from one condition."""
 
     if _direct_exception_reverses_negative_proposition(text):
-        conditional = re.search(
-            r"\bunless\b(?P<body>.+)",
-            text,
-            flags=re.IGNORECASE | re.DOTALL,
+        reversal = _negative_proposition_reversal_match(text)
+        conditional = (
+            re.match(
+                r"(?P<cue>unless)\b(?P<body>.+)",
+                text[reversal.start() :],
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if reversal is not None
+            else None
         )
     else:
         conditional = re.search(
-            r"\b(?:if|when|provided\s+that|unless)\b(?P<body>.+)",
+            r"\b(?P<cue>if|when|provided\s+that|unless)\b(?P<body>.+)",
             text,
             flags=re.IGNORECASE | re.DOTALL,
         )
     if conditional is None:
         return ()
     body = conditional.group("body")
-    if conditional.group(0).strip().casefold() not in {"unless"}:
+    if conditional.group("cue").strip().casefold() != "unless":
         trailing_exception = re.search(
             r"\b(?:unless|except(?:\s+(?:if|when))?)\b",
             body,
@@ -23693,9 +23698,20 @@ def _source_exception_effect_requirement(text: str) -> str:
         return notwithstanding_requirement
     if _exception_reverses_negative_proposition(collapsed):
         return "enable"
+    conditions = tuple(_source_exception_or_applicability_matches(collapsed))
+    effect_end = max(
+        (
+            match.end()
+            for match in (
+                *_source_positive_effect_matches(collapsed),
+                *_source_negative_effect_matches(collapsed),
+            )
+        ),
+        default=-1,
+    )
     condition = next(
-        iter(_source_exception_or_applicability_matches(collapsed)),
-        None,
+        (match for match in conditions if match.start() >= effect_end),
+        conditions[0] if conditions else None,
     )
     if condition is not None:
         cue = condition.group(0).strip().lower()
@@ -23931,15 +23947,31 @@ def _rule_has_negative_output_semantics(
 
 
 def _exception_reverses_negative_proposition(text: str) -> bool:
-    reversal = re.search(
-        r"\b(?:außer|ausser|es\s+sei\s+denn|unless|except)\b",
-        text,
-        flags=re.IGNORECASE,
+    return _negative_proposition_reversal_match(text) is not None
+
+
+def _negative_proposition_reversal_match(text: str) -> re.Match[str] | None:
+    """Select an exception cue attached to a preceding negative proposition."""
+
+    reversals = tuple(
+        re.finditer(
+            r"\b(?:außer|ausser|es\s+sei\s+denn|unless|except)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
     )
-    if reversal is None:
-        return False
-    proposition = text[: reversal.start()]
-    return _no_subject_eligibility_negative_proposition(proposition) or (
+    return next(
+        (
+            reversal
+            for reversal in reversed(reversals)
+            if _source_has_negative_proposition(text[: reversal.start()])
+        ),
+        None,
+    )
+
+
+def _source_has_negative_proposition(text: str) -> bool:
+    return _no_subject_eligibility_negative_proposition(text) or (
         re.search(
             r"\b(?:besteht|gilt)\b[^.;]{0,80}\bnicht\b|"
             r"\bfindet\s+keine\s+anwendung\b|"
@@ -23947,7 +23979,7 @@ def _exception_reverses_negative_proposition(text: str) -> bool:
             r"\b(?:is|are)\s+not\s+(?:eligible|qualified|entitled)\b|"
             r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\bkein(?:e|en|em|er|es)?\s+(?:anspruch|berechtigung)\b",
-            proposition,
+            text,
             flags=re.IGNORECASE,
         )
         is not None
@@ -23957,41 +23989,68 @@ def _exception_reverses_negative_proposition(text: str) -> bool:
 def _no_subject_eligibility_negative_proposition(text: str) -> bool:
     """Recognize a bounded ``No <subject> ... eligible`` main proposition."""
 
-    match = re.search(
-        r"\bno\s+(?P<body>[^.;]{0,320}?)\b"
-        r"(?:is|are|shall\s+be)\s+(?:eligible|qualified|entitled)\b",
-        text,
-        flags=re.IGNORECASE,
+    effects = tuple(
+        re.finditer(
+            r"\b(?:is|are|shall\s+be)\s+(?:eligible|qualified|entitled)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
     )
-    if match is None or re.match(
-        r"(?:later|fewer|more|less)\s+than\b",
-        match.group("body"),
-        flags=re.IGNORECASE,
-    ):
-        return False
-    body = re.sub(
-        r",\s*(?:if|when|provided\s+that)\b[^,;]{0,160},",
-        " ",
-        match.group("body"),
-        flags=re.IGNORECASE,
-    )
-    return not re.search(
-        r",|\b(?:and|but|or)\s+(?:a|an|the)?\s*[^,;.]{0,80}"
-        r"\b(?:is|are|shall|will)\b",
-        body,
-        flags=re.IGNORECASE,
-    )
+    for effect in reversed(effects):
+        clause_start = (
+            max(
+                text.rfind(".", 0, effect.start()),
+                text.rfind(";", 0, effect.start()),
+            )
+            + 1
+        )
+        no_matches = tuple(
+            re.finditer(
+                r"\bno\s+",
+                text[clause_start : effect.start()],
+                flags=re.IGNORECASE,
+            )
+        )
+        if not no_matches:
+            continue
+        subject_region = text[
+            clause_start + no_matches[-1].end() : effect.start()
+        ].strip()
+        if re.match(
+            r"(?:later|fewer|more|less)\s+than\b",
+            subject_region,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        relative = re.search(
+            r"\b(?:who|that|which)\b",
+            subject_region,
+            flags=re.IGNORECASE,
+        )
+        noun_phrase = (
+            subject_region[: relative.start()] if relative else subject_region
+        ).strip()
+        if not noun_phrase or re.search(
+            r"[,;:]|\b(?:and|before|but|if|is|need|needs|or|where|when)\b",
+            noun_phrase,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        if relative is not None and re.search(
+            r",\s*(?:and|but|or|however)\b",
+            subject_region[relative.end() :],
+            flags=re.IGNORECASE,
+        ):
+            continue
+        return True
+    return False
 
 
 def _direct_exception_reverses_negative_proposition(text: str) -> bool:
     """Require ``unless`` to be the first condition cue on the proposition."""
 
-    reversal = re.search(
-        r"\b(?:außer|ausser|es\s+sei\s+denn|unless|except)\b",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if reversal is None or not _exception_reverses_negative_proposition(text):
+    reversal = _negative_proposition_reversal_match(text)
+    if reversal is None:
         return False
     if _no_subject_eligibility_negative_proposition(text[: reversal.start()]):
         return True

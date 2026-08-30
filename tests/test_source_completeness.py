@@ -583,6 +583,41 @@ def test_subordinate_if_does_not_hide_direct_unless_gates():
     assert _has_issue(result, "source-explicit-conditions")
 
 
+def test_subordinate_unless_does_not_hide_direct_unless_gates():
+    source = (
+        "No person who receives assistance unless disabled shall be eligible unless "
+        "that person is a resident and that person is a citizen."
+    )
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [
+            _ky_derived_rule(
+                "person_ineligible",
+                source="KRS 141.020",
+                formula="person_is_resident",
+                excerpt=source.rstrip("."),
+                dtype="Judgment",
+            )
+        ],
+        "inputs": [
+            _ky_boolean_input("person_is_resident", "The person is a resident."),
+        ],
+    }
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions")
+
+
 @pytest.mark.parametrize(
     "condition",
     (
@@ -33040,6 +33075,19 @@ def test_no_person_eligible_unless_status_is_an_enabling_exception(source: str):
 def test_quantitative_or_independent_no_clause_does_not_reverse_eligibility(
     source: str,
 ):
+    assert completeness_module._source_exception_effect_requirement(source) != "enable"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "No report is required before the applicant shall be eligible unless qualified.",
+        "No finding is necessary where the child shall be eligible unless qualified.",
+        "No certification need be filed before an alien shall be eligible unless qualified.",
+        "No report is required, if waived, the person shall be eligible unless qualified.",
+    ),
+)
+def test_unrelated_no_subject_does_not_reverse_later_eligibility(source: str):
     assert completeness_module._source_exception_effect_requirement(source) != "enable"
 
 
