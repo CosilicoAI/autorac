@@ -23979,24 +23979,42 @@ def _source_has_negative_proposition(text: str) -> bool:
         )
     )
     proposition = text[boundary_matches[-1].end() :] if boundary_matches else text
-    return _no_subject_eligibility_negative_proposition(proposition) or (
-        re.search(
+    if _no_subject_eligibility_negative_proposition(proposition):
+        return True
+    negative_matches = (
+        *_source_negative_effect_matches(proposition),
+        *re.finditer(
             r"\b(?:besteht|gilt)\b[^.;]{0,80}\bnicht\b|"
             r"\bfindet\s+keine\s+anwendung\b|"
-            r"\b(?:does|shall)\s+not\s+apply\b|"
-            r"\b(?:is|are)\s+not\s+(?:eligible|qualified|entitled)\b|"
-            r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\bkein(?:e|en|em|er|es)?\s+(?:anspruch|berechtigung)\b",
             proposition,
             flags=re.IGNORECASE,
-        )
-        is not None
+        ),
     )
+    latest_negative = max((match.start() for match in negative_matches), default=-1)
+    latest_positive = max(
+        (match.start() for match in _source_positive_effect_matches(proposition)),
+        default=-1,
+    )
+    return latest_negative > latest_positive
 
 
 def _no_subject_eligibility_negative_proposition(text: str) -> bool:
     """Recognize a bounded ``No <subject> ... eligible`` main proposition."""
 
+    text = _strip_source_clause_marker(text).lstrip()
+    text = re.sub(
+        r"^(?:"
+        r"under\s+(?:this|the)\s+(?:section|subsection|paragraph|clause)|"
+        r"for\s+purposes\s+of\s+(?:this|the)\s+"
+        r"(?:section|subsection|paragraph|clause)|"
+        r"except\s+as\s+provided\s+in\s+(?:this|the|paragraph\s*\([^)]+\))"
+        r")\s*,\s*",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
     effects = tuple(
         re.finditer(
             r"\b(?:is|are|shall\s+be)\s+(?:eligible|qualified|entitled)\b",

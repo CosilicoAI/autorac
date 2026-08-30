@@ -33116,6 +33116,32 @@ def test_prior_negative_clause_does_not_reverse_positive_eligibility(source: str
     assert completeness_module._source_exception_effect_requirement(source) != "enable"
 
 
+@pytest.mark.parametrize(
+    "source",
+    (
+        "A child who is ineligible for TANF shall be eligible for SNAP unless qualified.",
+        "If the spouse is ineligible, the applicant is eligible unless qualified.",
+        "The first applicant is ineligible and the child shall be eligible unless qualified.",
+        "The first applicant is ineligible, yet the child shall be eligible unless qualified.",
+    ),
+)
+def test_latest_positive_effect_controls_exception_polarity(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) != "enable"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "(1) No person shall be eligible unless qualified.",
+        "Under this section, no person shall be eligible unless citizen.",
+        "For purposes of this section, no child shall be eligible unless qualified.",
+        "Except as provided in paragraph (2), no alien shall be eligible unless qualified.",
+    ),
+)
+def test_bounded_introductory_phrase_preserves_no_subject_polarity(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) == "enable"
+
+
 def test_generic_at_least_one_criterion_chapeau_accepts_descendant_selector():
     source = "The person is eligible if the person meets at least one of the criteria."
 
