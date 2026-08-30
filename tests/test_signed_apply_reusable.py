@@ -9,6 +9,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/signed-apply-reusable.yml"
+LEGACY_RULES_ENGINE_REF = "05eac9d2f89dabe5c6673176260762cef3a58f47"
 COMPLETE_SOURCE_FLAG = "--require-complete-source-unit"
 MODEL_FLAG = "--model"
 ESCALATE_FLAG = "--escalate-after"
@@ -41,6 +42,14 @@ def _workflow_step(name: str) -> dict:
     )
 
 
+def _dispatch_step(name: str) -> dict:
+    return next(
+        step
+        for step in _workflow_payload()["jobs"]["dispatch"]["steps"]
+        if step.get("name") == name
+    )
+
+
 def _signed_apply_script(*, require_complete_source_unit: bool = False) -> str:
     script = _signed_apply_step()["run"]
     replacements = {
@@ -55,6 +64,73 @@ def _signed_apply_script(*, require_complete_source_unit: bool = False) -> str:
         script = script.replace(expression, value)
     assert "${{" not in script
     return script
+
+
+def test_rules_engine_pin_is_caller_selectable_and_preserves_existing_default():
+    workflow = _workflow_payload()
+    checkout = _workflow_step("Checkout axiom-rules-engine (pinned)")
+    engine_input = workflow["on"]["workflow_call"]["inputs"]["axiom-rules-engine-ref"]
+
+    assert engine_input == {
+        "description": (
+            "Immutable axiom-rules-engine commit SHA; keep aligned with the "
+            "caller's validation workflow."
+        ),
+        "required": "false",
+        "type": "string",
+        "default": LEGACY_RULES_ENGINE_REF,
+    }
+    assert checkout["with"]["ref"] == ("${{ needs.dispatch.outputs.rules_engine_ref }}")
+
+
+@pytest.mark.parametrize(
+    "rules_engine_ref",
+    [LEGACY_RULES_ENGINE_REF, "f" * 40, "0123456789abcdef" * 2 + "01234567"],
+)
+def test_rules_engine_ref_accepts_only_immutable_lowercase_shas(
+    tmp_path, rules_engine_ref
+):
+    step = _dispatch_step("Validate axiom-rules-engine ref")
+    output = tmp_path / "github-output"
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", step["run"]],
+        env={
+            **os.environ,
+            "GITHUB_OUTPUT": str(output),
+            "RULES_ENGINE_REF": rules_engine_ref,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output.read_text() == f"ref={rules_engine_ref}\n"
+
+
+@pytest.mark.parametrize(
+    "rules_engine_ref",
+    ["", "main", "f" * 39, "f" * 41, "F" * 40, "g" * 40, "$(touch injected)"],
+)
+def test_rules_engine_ref_rejects_non_commit_refs(tmp_path, rules_engine_ref):
+    step = _dispatch_step("Validate axiom-rules-engine ref")
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", step["run"]],
+        env={
+            **os.environ,
+            "GITHUB_OUTPUT": str(tmp_path / "github-output"),
+            "RULES_ENGINE_REF": rules_engine_ref,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "expected a lowercase 40-character commit SHA" in result.stderr
+    assert not (tmp_path / "injected").exists()
 
 
 def _base_encoder_argv(tmp_path: Path) -> list[str]:
