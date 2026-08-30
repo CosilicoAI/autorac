@@ -638,6 +638,17 @@ def test_structural_unless_chapeau_does_not_treat_pronouns_as_fact_gates(
     assert completeness_module._source_conjunctive_fact_gates(source) == ()
 
 
+def test_flattened_pdf_x_alternative_list_is_not_conjunctive_fact_gates():
+    source = (
+        "LPRs may be eligible without a waiting period if they meet one or more "
+        "of the following conditions: x Are under 18 years old x Have 40 "
+        "qualifying work quarters x Are blind or disabled x Were lawfully "
+        "residing in the U.S. and 65 or older on August 22, 1996."
+    )
+
+    assert completeness_module._source_conjunctive_fact_gates(source) == ()
+
+
 def test_flattened_inline_dotted_items_disambiguate_spouse_credit_proof():
     payload = _ky_spouse_credit_payload(decomposed=True)
     result = _analyze(
@@ -20705,6 +20716,55 @@ rules:
 )
 def test_additional_formula_language_is_computation(source: str):
     assert source_states_explicit_computation(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "Supplemental Nutrition Assistance Program Implementation of the Act "
+        "of 2025 – Alien SNAP Eligibility All Regions.",
+        "The agency published the Act of 2025 – Information Memorandum.",
+    ],
+)
+def test_year_dash_capitalized_title_is_not_subtraction(source: str):
+    assert not source_states_explicit_computation(source)
+
+
+def test_guidance_pdf_structural_numbers_are_not_numeric_recall_values():
+    source = (
+        "Food and Nutrition Service, Braddock Metro Center, 1320 Braddock Place, "
+        "Alexandria, VA 22314. Page 7 of 11. Public Law 119-21. "
+        "Digitally signed Date: 2025.10.31 10:20:47 -04'00'. "
+        "Applicants under 18 or 65 or older remain eligible. A 120-day variance "
+        "period applies."
+    )
+    cleaned = completeness_module.authoritative_numeric_recall_text(source)
+    occurrences = EN_NUMERIC_OCCURRENCE_EXTRACTOR(cleaned)
+    values = {occurrence.value for occurrence in occurrences}
+
+    assert values == {18, 65, 120}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "Guidance documents lack the force and effect of law, unless "
+            "expressly authorized by statute or incorporated into a contract."
+        ),
+        (
+            "USDA may not cite, use, or rely on any guidance that is not "
+            "available through its guidance portal, except to establish "
+            "historical facts."
+        ),
+        (
+            "Prior to the amendment, certain aliens were eligible if they met "
+            "all other program requirements."
+        ),
+    ],
+)
+def test_guidance_boilerplate_and_history_do_not_require_paired_cases(source: str):
+    assert not completeness_module._source_exception_requires_paired_witness(source)
 
 
 @pytest.mark.parametrize("result_phrase", ["ergibt sich", "ergeben sich"])
