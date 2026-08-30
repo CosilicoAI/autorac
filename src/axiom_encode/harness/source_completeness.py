@@ -12342,6 +12342,26 @@ _SOURCE_GATE_YET_PREFIX_CHARACTER_LIMIT = 32
 _SOURCE_GATE_YET_SUBJECT_CHARACTER_LIMIT = 96
 _SOURCE_GATE_YET_SUBJECT_TOKEN_LIMIT = 8
 _SOURCE_GATE_YET_PRONOUNS = frozenset({"he", "it", "she", "they"})
+_SOURCE_GATE_SUBJECT_PRONOUNS = frozenset(
+    {
+        "he",
+        "her",
+        "hers",
+        "herself",
+        "him",
+        "himself",
+        "his",
+        "it",
+        "its",
+        "itself",
+        "she",
+        "their",
+        "theirs",
+        "them",
+        "themselves",
+        "they",
+    }
+)
 _SOURCE_GATE_AMBIGUOUS_YET_MARKER = "sourcegateambiguousyet"
 _SOURCE_GATE_INCOME_BASES = frozenset({"income", "earning", "earnings"})
 _SOURCE_GATE_INCOME_BLOCKERS = frozenset(
@@ -12763,14 +12783,34 @@ def _source_conjunctive_fact_gates(
 ) -> tuple[tuple[frozenset[str], frozenset[str]], ...]:
     """Return distinct entity/predicate signatures from one condition."""
 
-    conditional = re.search(
-        r"\b(?:if|when|provided\s+that|unless)\b(?P<body>.+)",
-        text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
+    if _direct_exception_reverses_negative_proposition(text):
+        reversal = _negative_proposition_reversal_match(text)
+        conditional = (
+            re.match(
+                r"(?P<cue>unless)\b(?P<body>.+)",
+                text[reversal.start() :],
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if reversal is not None
+            else None
+        )
+    else:
+        conditional = re.search(
+            r"\b(?P<cue>if|when|provided\s+that|unless)\b(?P<body>.+)",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
     if conditional is None:
         return ()
     body = conditional.group("body")
+    if conditional.group("cue").strip().casefold() != "unless":
+        trailing_exception = re.search(
+            r"\b(?:unless|except(?:\s+(?:if|when))?)\b",
+            body,
+            flags=re.IGNORECASE,
+        )
+        if trailing_exception is not None:
+            body = body[: trailing_exception.start()]
     # A parenthetical condition modifies only the text inside its parentheses.
     # Do not let later sentence-level conjunctions (for example "earned and
     # unearned income") masquerade as additional factual gates.
@@ -12798,6 +12838,12 @@ def _source_conjunctive_fact_gates(
     gates: list[tuple[frozenset[str], frozenset[str]]] = []
     inherited_entities: frozenset[str] = frozenset()
     for segment in segments:
+        if re.search(
+            r"\b(?:is|are|be)\s*(?:[-–—]|:)\s*$",
+            segment,
+            flags=re.IGNORECASE,
+        ):
+            continue
         tokens = _source_gate_semantic_tokens(segment)
         explicit_entities = tokens & _SOURCE_GATE_ENTITIES
         is_subject_continuation = bool(
@@ -12814,7 +12860,7 @@ def _source_conjunctive_fact_gates(
             if is_subject_continuation
             else explicit_entities or inherited_entities
         )
-        predicates = tokens - _SOURCE_GATE_ENTITIES
+        predicates = tokens - _SOURCE_GATE_ENTITIES - _SOURCE_GATE_SUBJECT_PRONOUNS
         if not predicates:
             continue
         if not (
@@ -13844,6 +13890,7 @@ def _opaque_same_source_condition_input_issues(
                 tuple[tuple[str, ...], int, int],
                 tuple[tuple[frozenset[str], frozenset[str]], ...],
             ] = {}
+            reversed_negative_gate_keys: set[tuple[tuple[str, ...], int, int]] = set()
             ambiguous_ownership = False
             for excerpt in excerpts:
                 owned_clauses, ambiguous = _source_condition_clauses_owned_by_excerpt(
@@ -13859,7 +13906,15 @@ def _opaque_same_source_condition_input_issues(
                     if len(gates) < 2:
                         continue
                     excerpt_has_gates = True
-                    gate_sets[(clause.branch_path, clause.start, clause.end)] = gates
+                    clause_key = (clause.branch_path, clause.start, clause.end)
+                    gate_sets[clause_key] = gates
+                    if _direct_exception_reverses_negative_proposition(
+                        clause.text
+                    ) and _rule_has_negative_output_semantics(
+                        rule,
+                        fallback_name=rule_name,
+                    ):
+                        reversed_negative_gate_keys.add(clause_key)
                 ambiguous_ownership |= ambiguous and excerpt_has_gates
             gate_count = max((len(gates) for gates in gate_sets.values()), default=0)
             if gate_count < 2:
@@ -13896,6 +13951,11 @@ def _opaque_same_source_condition_input_issues(
                 # A formula that is provably inactive on every path cannot grant
                 # the source benefit while bypassing its factual conditions.
                 continue
+            ordinary_gate_sets = tuple(
+                gates
+                for key, gates in gate_sets.items()
+                if key not in reversed_negative_gate_keys
+            )
             failing_choices = [
                 choice
                 for choice in terminal_choices
@@ -13907,10 +13967,49 @@ def _opaque_same_source_condition_input_issues(
                         terminal_evidence=terminal_evidence,
                         neutral_polarity_imports=frozenset(imported_names),
                     )
-                    for gates in gate_sets.values()
+                    for gates in ordinary_gate_sets
                 )
             ]
-            if not failing_choices and not ambiguous_ownership:
+            # A negative output implementing ``No ... eligible unless A and B``
+            # necessarily reaches separate ``not A`` / ``not B`` alternatives.
+            # Require the alternatives collectively to expose every source gate;
+            # requiring each De Morgan branch to contain every gate rejects the
+            # exact, explicit encoding while adding no opacity protection.
+            reversed_selector_choices = tuple(
+                choice
+                for selector_name in sorted(_formula_exception_selector_names(formula))
+                for choice in expand_name(
+                    selector_name,
+                    start=start,
+                    end=end,
+                    stack=frozenset({rule_name}),
+                )
+            )
+            reversed_names = frozenset().union(
+                *(
+                    choice.names
+                    for choice in reversed_selector_choices
+                    if choice.resolved
+                )
+            )
+            reversed_gate_failure = bool(reversed_negative_gate_keys) and (
+                not reversed_selector_choices
+                or any(not choice.resolved for choice in reversed_selector_choices)
+                or any(
+                    not _terminal_names_corroborate_source_gates(
+                        reversed_names,
+                        gate_sets[key],
+                        terminal_evidence=terminal_evidence,
+                        neutral_polarity_imports=frozenset(imported_names),
+                    )
+                    for key in reversed_negative_gate_keys
+                )
+            )
+            if (
+                not failing_choices
+                and not reversed_gate_failure
+                and not ambiguous_ownership
+            ):
                 continue
             least_supported = min(
                 failing_choices or terminal_choices,
@@ -23599,9 +23698,20 @@ def _source_exception_effect_requirement(text: str) -> str:
         return notwithstanding_requirement
     if _exception_reverses_negative_proposition(collapsed):
         return "enable"
+    conditions = tuple(_source_exception_or_applicability_matches(collapsed))
+    effect_end = max(
+        (
+            match.end()
+            for match in (
+                *_source_positive_effect_matches(collapsed),
+                *_source_negative_effect_matches(collapsed),
+            )
+        ),
+        default=-1,
+    )
     condition = next(
-        iter(_source_exception_or_applicability_matches(collapsed)),
-        None,
+        (match for match in conditions if match.start() >= effect_end),
+        conditions[0] if conditions else None,
     )
     if condition is not None:
         cue = condition.group(0).strip().lower()
@@ -23753,8 +23863,8 @@ def _source_positive_effect_matches(text: str) -> tuple[re.Match[str], ...]:
 def _source_negative_effect_matches(text: str) -> tuple[re.Match[str], ...]:
     return tuple(
         re.finditer(
-            r"\b(?:shall|does|is|are)\s+not\s+(?:apply|eligible|qualified|"
-            r"allowed|entitled)\b|"
+            r"\b(?:must|shall|will|may|does|is|are)\s+not\s+(?:be\s+)?"
+            r"(?:apply|eligible|qualified|allowed|entitled)\b|"
             r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\bnicht\s+berechtigt\b",
             text,
@@ -23837,27 +23947,143 @@ def _rule_has_negative_output_semantics(
 
 
 def _exception_reverses_negative_proposition(text: str) -> bool:
-    reversal = re.search(
-        r"\b(?:außer|ausser|es\s+sei\s+denn|unless|except)\b",
-        text,
-        flags=re.IGNORECASE,
+    return _negative_proposition_reversal_match(text) is not None
+
+
+def _negative_proposition_reversal_match(text: str) -> re.Match[str] | None:
+    """Select an exception cue attached to a preceding negative proposition."""
+
+    reversals = tuple(
+        re.finditer(
+            r"\b(?:außer|ausser|es\s+sei\s+denn|unless|except)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
     )
-    if reversal is None:
-        return False
-    proposition = text[: reversal.start()]
-    return (
-        re.search(
+    return next(
+        (
+            reversal
+            for reversal in reversed(reversals)
+            if _source_has_negative_proposition(text[: reversal.start()])
+        ),
+        None,
+    )
+
+
+def _source_has_negative_proposition(text: str) -> bool:
+    boundary_matches = tuple(
+        re.finditer(
+            r"[.;]|,\s*(?:and|but|or|however)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+    proposition = text[boundary_matches[-1].end() :] if boundary_matches else text
+    if _no_subject_eligibility_negative_proposition(proposition):
+        return True
+    negative_matches = (
+        *_source_negative_effect_matches(proposition),
+        *re.finditer(
             r"\b(?:besteht|gilt)\b[^.;]{0,80}\bnicht\b|"
             r"\bfindet\s+keine\s+anwendung\b|"
-            r"\b(?:does|shall)\s+not\s+apply\b|"
-            r"\b(?:is|are)\s+not\s+(?:eligible|qualified|entitled)\b|"
-            r"\bno\b[^.;]{0,80}\b(?:is|are)\s+(?:eligible|qualified|entitled)\b|"
-            r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\bkein(?:e|en|em|er|es)?\s+(?:anspruch|berechtigung)\b",
             proposition,
             flags=re.IGNORECASE,
+        ),
+    )
+    latest_negative = max((match.start() for match in negative_matches), default=-1)
+    latest_positive = max(
+        (match.start() for match in _source_positive_effect_matches(proposition)),
+        default=-1,
+    )
+    return latest_negative > latest_positive
+
+
+def _no_subject_eligibility_negative_proposition(text: str) -> bool:
+    """Recognize a bounded ``No <subject> ... eligible`` main proposition."""
+
+    text = _strip_source_clause_marker(text).lstrip()
+    text = re.sub(
+        r"^(?:"
+        r"under\s+(?:this|the)\s+(?:section|subsection|paragraph|clause)|"
+        r"for\s+purposes\s+of\s+(?:this|the)\s+"
+        r"(?:section|subsection|paragraph|clause)|"
+        r"except\s+as\s+provided\s+in\s+(?:(?:this|the)\s+"
+        r"(?:section|subsection|paragraph|clause)|paragraph\s*\([^)]+\))"
+        r")\s*,\s*",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    effects = tuple(
+        re.finditer(
+            r"\b(?:is|are|shall\s+be)\s+(?:eligible|qualified|entitled)\b",
+            text,
+            flags=re.IGNORECASE,
         )
-        is not None
+    )
+    for effect in reversed(effects):
+        clause_start = (
+            max(
+                text.rfind(".", 0, effect.start()),
+                text.rfind(";", 0, effect.start()),
+            )
+            + 1
+        )
+        no_match = re.match(
+            r"\s*no\s+",
+            text[clause_start : effect.start()],
+            flags=re.IGNORECASE,
+        )
+        if no_match is None:
+            continue
+        subject_region = text[clause_start + no_match.end() : effect.start()].strip()
+        if re.match(
+            r"(?:later|fewer|more|less)\s+than\b",
+            subject_region,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        relative = re.search(
+            r"\b(?:who|that|which)\b",
+            subject_region,
+            flags=re.IGNORECASE,
+        )
+        noun_phrase = (
+            subject_region[: relative.start()] if relative else subject_region
+        ).strip()
+        if not noun_phrase or re.search(
+            r"[,;:]|\b(?:and|before|but|if|is|need|needs|or|where|when)\b",
+            noun_phrase,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        if relative is not None and re.search(
+            r",\s*(?:and|but|or|however)\b",
+            subject_region[relative.end() :],
+            flags=re.IGNORECASE,
+        ):
+            continue
+        return True
+    return False
+
+
+def _direct_exception_reverses_negative_proposition(text: str) -> bool:
+    """Require ``unless`` to be the first condition cue on the proposition."""
+
+    reversal = _negative_proposition_reversal_match(text)
+    if reversal is None:
+        return False
+    if _no_subject_eligibility_negative_proposition(text[: reversal.start()]):
+        return True
+    return (
+        re.search(
+            r"\b(?:if|when|provided\s+that|wenn|falls|sofern|soweit)\b",
+            text[: reversal.start()],
+            flags=re.IGNORECASE,
+        )
+        is None
     )
 
 
@@ -23876,6 +24102,18 @@ def _source_exception_selector_is_relevant(
     if re.search(
         r"\b(?:at\s+least\s+one|one\s+or\s+more)\b[^.;]{0,80}"
         r"\b(?:criteria|conditions|requirements)\b",
+        collapsed,
+    ):
+        return any(
+            _source_selector_distinctive_concept_matches(
+                supporting_text,
+                normalized_name,
+            )
+            for supporting_text in supporting_texts
+        )
+    if re.search(
+        r"\b(?:unless|except(?:\s+(?:if|when))?)\b[^.;]{0,120}"
+        r"\b(?:is|are|be)\s*(?:[-–—]|:)\s*$",
         collapsed,
     ):
         return any(

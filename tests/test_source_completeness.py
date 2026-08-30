@@ -443,6 +443,201 @@ def test_accepts_decomposed_facts_for_same_source_spouse_credit_gates():
     assert not _has_issue(result, "source-explicit-conditions")
 
 
+def _negative_unless_eligibility_analysis(*, decomposed: bool):
+    source = (
+        "No person who is otherwise eligible shall be eligible unless that person "
+        "is a resident and that person is a citizen."
+    )
+    if decomposed:
+        formula = (
+            "otherwise_eligible and (not person_is_resident or not person_is_citizen)"
+        )
+        inputs = [
+            _ky_boolean_input(
+                "otherwise_eligible", "The person is otherwise eligible."
+            ),
+            _ky_boolean_input("person_is_resident", "The person is a resident."),
+            _ky_boolean_input("person_is_citizen", "The person is a citizen."),
+        ]
+    else:
+        formula = "otherwise_eligible and not residency_and_status_requirements_hold"
+        inputs = [
+            _ky_boolean_input(
+                "otherwise_eligible", "The person is otherwise eligible."
+            ),
+            _ky_boolean_input(
+                "residency_and_status_requirements_hold",
+                "The person's residency and status requirements hold.",
+            ),
+        ]
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [
+            _ky_derived_rule(
+                "person_ineligible",
+                source="KRS 141.020",
+                formula=formula,
+                excerpt=source.rstrip("."),
+                dtype="Judgment",
+            )
+        ],
+        "inputs": inputs,
+    }
+    return _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+
+def test_negative_unless_formula_accepts_de_morgan_gate_alternatives():
+    result = _negative_unless_eligibility_analysis(decomposed=True)
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+def test_negative_unless_formula_still_rejects_aggregate_status_input():
+    result = _negative_unless_eligibility_analysis(decomposed=False)
+
+    assert _has_issue(result, "source-explicit-conditions")
+
+
+def test_negative_rule_with_trailing_exception_retains_per_path_gate_checks():
+    source = (
+        "A person is ineligible if the person is a resident and the person is a "
+        "citizen unless the person is pardoned."
+    )
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [
+            _ky_derived_rule(
+                "person_ineligible",
+                source="KRS 141.020",
+                formula=(
+                    "(person_is_resident and not person_is_pardoned) or "
+                    "(person_is_citizen and not person_is_pardoned)"
+                ),
+                excerpt=source.rstrip("."),
+                dtype="Judgment",
+            )
+        ],
+        "inputs": [
+            _ky_boolean_input("person_is_resident", "The person is a resident."),
+            _ky_boolean_input("person_is_citizen", "The person is a citizen."),
+            _ky_boolean_input("person_is_pardoned", "The person is pardoned."),
+        ],
+    }
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions")
+
+
+def test_subordinate_if_does_not_hide_direct_unless_gates():
+    source = (
+        "No person who, if disabled, receives assistance shall be eligible unless "
+        "that person is a resident and that person is a citizen."
+    )
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [
+            _ky_derived_rule(
+                "person_ineligible",
+                source="KRS 141.020",
+                formula="person_is_resident",
+                excerpt=source.rstrip("."),
+                dtype="Judgment",
+            )
+        ],
+        "inputs": [
+            _ky_boolean_input("person_is_resident", "The person is a resident."),
+        ],
+    }
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions")
+
+
+def test_subordinate_unless_does_not_hide_direct_unless_gates():
+    source = (
+        "No person who receives assistance unless disabled shall be eligible unless "
+        "that person is a resident and that person is a citizen."
+    )
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [
+            _ky_derived_rule(
+                "person_ineligible",
+                source="KRS 141.020",
+                formula="person_is_resident",
+                excerpt=source.rstrip("."),
+                dtype="Judgment",
+            )
+        ],
+        "inputs": [
+            _ky_boolean_input("person_is_resident", "The person is a resident."),
+        ],
+    }
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions")
+
+
+@pytest.mark.parametrize(
+    "condition",
+    (
+        "he or she is—",
+        "his or her status is—",
+        "their status is—",
+        "its status is—",
+    ),
+)
+def test_structural_unless_chapeau_does_not_treat_pronouns_as_fact_gates(
+    condition: str,
+):
+    source = (
+        f"No individual shall be eligible unless {condition}\n\n"
+        "(1) a resident of the United States"
+    )
+
+    assert completeness_module._source_conjunctive_fact_gates(source) == ()
+
+
 def test_flattened_inline_dotted_items_disambiguate_spouse_credit_proof():
     payload = _ky_spouse_credit_payload(decomposed=True)
     result = _analyze(
@@ -32854,9 +33049,111 @@ def test_boolean_selector_cannot_replace_numeric_exception_evidence():
     )
 
 
-def test_no_person_eligible_unless_status_is_an_enabling_exception():
-    source = "No person is eligible unless that person is a citizen."
+@pytest.mark.parametrize(
+    "source",
+    (
+        "No person is eligible unless that person is a citizen.",
+        "No person who is otherwise eligible shall be eligible unless that person "
+        "is a citizen.",
+        "No applicant shall be eligible unless the applicant is qualified.",
+        "No child shall be eligible unless the child is qualified.",
+        "No alien shall be eligible unless the alien is qualified.",
+    ),
+)
+def test_no_person_eligible_unless_status_is_an_enabling_exception(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) == "enable"
 
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "No later than January 1, the agency shall be eligible unless it filed.",
+        "No fewer than three members shall be eligible unless they filed.",
+        "No report is required, but the person shall be eligible unless it filed.",
+    ),
+)
+def test_quantitative_or_independent_no_clause_does_not_reverse_eligibility(
+    source: str,
+):
+    assert completeness_module._source_exception_effect_requirement(source) != "enable"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "No report is required before the applicant shall be eligible unless qualified.",
+        "No finding is necessary where the child shall be eligible unless qualified.",
+        "No certification need be filed before an alien shall be eligible unless qualified.",
+        "No report is required, if waived, the person shall be eligible unless qualified.",
+    ),
+)
+def test_unrelated_no_subject_does_not_reverse_later_eligibility(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) != "enable"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "An applicant with no income shall be eligible unless qualified.",
+        "The child who has no parent shall be eligible unless qualified.",
+        "A household reporting no earnings is eligible unless disqualified.",
+        "Any alien with no documentation shall be eligible unless exempt.",
+    ),
+)
+def test_negative_subject_modifier_does_not_reverse_positive_eligibility(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) != "enable"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Another applicant is ineligible. The child shall be eligible unless qualified.",
+        "The first applicant is not eligible; the child shall be eligible unless qualified.",
+        "The first applicant is ineligible, but the child shall be eligible unless qualified.",
+    ),
+)
+def test_prior_negative_clause_does_not_reverse_positive_eligibility(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) != "enable"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "A child who is ineligible for TANF shall be eligible for SNAP unless qualified.",
+        "If the spouse is ineligible, the applicant is eligible unless qualified.",
+        "The first applicant is ineligible and the child shall be eligible unless qualified.",
+        "The first applicant is ineligible, yet the child shall be eligible unless qualified.",
+    ),
+)
+def test_latest_positive_effect_controls_exception_polarity(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) != "enable"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "(1) No person shall be eligible unless qualified.",
+        "Under this section, no person shall be eligible unless citizen.",
+        "For purposes of this section, no child shall be eligible unless qualified.",
+        "Except as provided in paragraph (2), no alien shall be eligible unless qualified.",
+        "Except as provided in this section, no person shall be eligible unless qualified.",
+        "Except as provided in this paragraph, no child shall be eligible unless qualified.",
+    ),
+)
+def test_bounded_introductory_phrase_preserves_no_subject_polarity(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) == "enable"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The applicant shall not be eligible unless the applicant is a citizen.",
+        "The applicant will not be eligible unless the applicant is a citizen.",
+        "The applicant may not be eligible unless the applicant is a citizen.",
+        "The applicant must not be eligible unless the applicant is a citizen.",
+    ),
+)
+def test_modal_negative_eligibility_exception_is_enabling(source: str):
     assert completeness_module._source_exception_effect_requirement(source) == "enable"
 
 
@@ -32900,6 +33197,21 @@ def test_generic_at_least_one_criterion_chapeau_accepts_descendant_selector():
         source,
         "member_has_ssn",
         supporting_texts=("The member has a Social Security number.",),
+    )
+
+
+def test_structural_unless_chapeau_accepts_only_cited_descendant_selector():
+    source = "No individual is eligible unless he or she is—"
+
+    assert completeness_module._source_exception_selector_is_relevant(
+        source,
+        "person_is_resident_of_united_states",
+        supporting_texts=("a resident of the United States",),
+    )
+    assert not completeness_module._source_exception_selector_is_relevant(
+        source,
+        "person_owns_luxury_car",
+        supporting_texts=("a resident of the United States",),
     )
 
 
