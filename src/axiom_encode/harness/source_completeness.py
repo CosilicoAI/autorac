@@ -23091,7 +23091,8 @@ def _source_has_operative_policy_effect(
     """Return whether a condition controls a claimant-facing policy outcome."""
 
     outcome = re.search(
-        r"\b(?:(?:is|are|shall|will|may|must)\s+(?:not\s+)?(?:be\s+)?|"
+        r"\b(?:(?:is|are|shall|will|may|must|can(?:not)?)\s+(?:not\s+)?"
+        r"(?:be\s+)?|"
         r"(?:becomes?|remain(?:s)?)\s+)(?:eligible|ineligible)\b|"
         r"\bqualif(?:y|ies)\b|"
         r"\b(?:is|are|shall\s+be|will\s+be|may\s+be|must\s+be)\s+qualified\b|"
@@ -23101,11 +23102,13 @@ def _source_has_operative_policy_effect(
         r"(?:be\s+)?entitled\s+to\b|"
         r"\b(?:coverage|benefits?|provisions?|rules?)\s+"
         r"(?:(?:(?:shall|will|may|must)\s+)?(?:not\s+)?"
-        r"(?:begins?|begin|ends?|end|appl(?:y|ies))|do(?:es)?\s+not\s+apply)\b|"
+        r"(?:begins?|begin|ends?|end|ceases?|cease|appl(?:y|ies))|"
+        r"do(?:es)?\s+not\s+apply)\b|"
         r"\b(?:lose[sd]?|forfeit[sd]?)\b[^.;]{0,100}\b(?:SNAP\s+)?benefits?\b|"
         r"\b(?:benefits?|payments?|amounts?|allowances?|credits?|deductions?|"
         r"exemptions?)\s+(?:equals?|is\s+(?:calculated|computed|determined)|"
-        r"(?:increases?|decreases?)\s+(?:by|to)|is\s+-?\d+(?:\.\d+)?)\b",
+        r"(?:increases?|decreases?)\s+(?:by|to)|is\s+(?:[$€£]\s*)?"
+        r"(?:-?\d+(?:\.\d+)?|zero))\b",
         text,
         flags=re.IGNORECASE,
     )
@@ -23169,14 +23172,11 @@ def _source_has_joined_operative_segment(text: str) -> bool:
 def _source_is_nonoperative_guidance_instruction(text: str) -> bool:
     """Exclude agency workflow prose that has no claimant-facing outcome."""
 
-    if _source_has_operative_policy_effect(text) or _source_has_joined_operative_segment(
-        text
-    ):
+    if _source_has_joined_operative_segment(text):
         return False
     return bool(
         re.match(
-            r"State\s+agencies\s+must\s+(?:review|check|contact|follow|provide|"
-            r"take|use|verify)\b",
+            r"State\s+agencies\s+must\s+(?:review|check|contact|follow|use|verify)\b",
             text,
             flags=re.IGNORECASE,
         )

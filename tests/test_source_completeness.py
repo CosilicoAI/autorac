@@ -21235,6 +21235,23 @@ def test_eligible_condition_or_modifier_is_not_an_eligibility_effect(source: str
 
 
 @pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "State agencies must verify whether an applicant is eligible if "
+            "records are available."
+        ),
+        (
+            "State agencies must check whether a household is entitled to "
+            "benefits when documentation arrives."
+        ),
+    ],
+)
+def test_agency_verification_complement_is_not_claimant_policy(source: str):
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
     "current_rule",
     [
         "Applicants shall be entitled to assistance if citizens.",
@@ -21286,6 +21303,32 @@ def test_joined_modal_or_numeric_policy_effect_is_toggleable(
     ],
 )
 def test_joined_adjacent_policy_outcome_morphology_is_toggleable(
+    prefix: str,
+    current_rule: str,
+):
+    assert completeness_module._source_exception_requires_paired_witness(
+        prefix + current_rule
+    )
+
+
+@pytest.mark.parametrize(
+    "current_rule",
+    [
+        "The benefit is $100 if income is below 500.",
+        "The benefit is zero if income is below 500.",
+        "Applicants cannot be eligible if undocumented.",
+        "Coverage ceases when eligibility expires.",
+    ],
+)
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "Prior to the OBBB, aliens were eligible. ",
+        "State agencies must review changes when reported, and ",
+        "Alien Group Description: ",
+    ],
+)
+def test_joined_currency_zero_cannot_or_cease_outcome_is_toggleable(
     prefix: str,
     current_rule: str,
 ):
