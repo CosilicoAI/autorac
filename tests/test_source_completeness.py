@@ -657,7 +657,21 @@ def test_flattened_pdf_x_list_retains_preface_conjunctive_fact_gates():
         "quarters."
     )
 
-    assert len(completeness_module._source_conjunctive_fact_gates(source)) == 2
+    assert completeness_module._source_conjunctive_fact_gates(source) == (
+        (frozenset({"applicant"}), frozenset({"resident"})),
+        (frozenset({"applicant"}), frozenset({"citizen"})),
+    )
+
+
+@pytest.mark.parametrize("modal", ["must ", "shall ", "is required to "])
+def test_flattened_pdf_x_list_removes_modal_introducer(modal: str):
+    source = (
+        "Applicants are eligible if the applicant is a resident and the "
+        f"applicant {modal}meet one or more of the following conditions: "
+        "x Is under 18 years old x Has 40 qualifying work quarters."
+    )
+
+    assert completeness_module._source_conjunctive_fact_gates(source) == ()
 
 
 def test_flattened_inline_dotted_items_disambiguate_spouse_credit_proof():

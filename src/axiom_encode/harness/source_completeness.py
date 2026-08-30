@@ -12860,6 +12860,7 @@ def _source_conjunctive_fact_gates(
         body = re.sub(
             r"\b(?:and|or)\s+(?:(?:the\s+)?(?:person|individual|applicant|"
             r"claimant|household|recipient)\s+|they\s+)?"
+            r"(?:(?:must|shall|should)\s+|(?:is|are)\s+required\s+to\s+)?"
             r"(?:has|have|meets?|satisf(?:y|ies))\s*$",
             "",
             body[: alternative_list.start()],
