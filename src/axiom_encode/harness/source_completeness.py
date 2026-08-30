@@ -4343,9 +4343,14 @@ def _has_substantive_arithmetic_expression(source_text: str) -> bool:
     if _WORDED_ARITHMETIC_EXPRESSION.search(masked_source_text):
         return True
     for match in _ARITHMETIC_EXPRESSION.finditer(masked_source_text):
+        title_prefix = masked_source_text[max(0, match.start() - 120) : match.start()]
         if re.fullmatch(
             r"(?:19|20)\d{2}\s+[–—]\s+[A-Z][A-Za-z'-]*",
             match.group(0),
+        ) and re.search(
+            r"\b(?:Act|Bill|Memorandum|Program|Report|Title)\s+of\s+$",
+            title_prefix,
+            flags=re.IGNORECASE,
         ):
             # PDF text commonly preserves an en/em dash in a title such as
             # ``Act of 2025 – Information Memorandum``.  A year followed by a
@@ -11968,7 +11973,7 @@ def authoritative_numeric_recall_text(source_text: str) -> str:
     cleaned = re.sub(
         r"\b\d{1,6}\s+[A-Z][A-Za-z.'’-]*(?:\s+[A-Z][A-Za-z.'’-]*){0,4}\s+"
         r"(?:Avenue|Boulevard|Center|Drive|Lane|Place|Plaza|Road|Street|Way)\b"
-        r"(?:,\s*[A-Za-z .'-]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?)?",
+        r",\s*[A-Za-z .'-]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?",
         "",
         cleaned,
     )
@@ -12837,20 +12842,29 @@ def _source_conjunctive_fact_gates(
     if conditional is None:
         return ()
     body = conditional.group("body")
+    alternative_list = re.search(
+        r"\b(?:one\s+or\s+more|at\s+least\s+one)\s+of\s+the\s+"
+        r"following\s+(?:conditions?|criteria|requirements?)\s*:\s*"
+        r"x\s+",
+        body,
+        flags=re.IGNORECASE,
+    )
     if (
-        re.search(
-            r"\b(?:one\s+or\s+more|at\s+least\s+one)\s+of\s+the\s+"
-            r"following\s+(?:conditions?|criteria|requirements?)\s*:\s*"
-            r"x\s+",
-            body,
-            flags=re.IGNORECASE,
-        )
+        alternative_list is not None
         and len(re.findall(r"(?:^|\s)x\s+(?=[A-Z])", body)) >= 2
     ):
         # Some PDF extractors flatten bullet glyphs to literal ``x`` tokens.
-        # The introduced items are alternatives, so conjunctions inside or
-        # after the flattened list are not conjunctive gates of one condition.
-        return ()
+        # The introduced items are alternatives, so retain only factual gates
+        # before the list rather than treating its internal conjunctions as
+        # conjunctive requirements.
+        body = re.sub(
+            r"\b(?:and|or)\s+(?:(?:the\s+)?(?:person|individual|applicant|"
+            r"claimant|household|recipient)\s+|they\s+)?"
+            r"(?:has|have|meets?|satisf(?:y|ies))\s*$",
+            "",
+            body[: alternative_list.start()],
+            flags=re.IGNORECASE,
+        )
     if conditional.group("cue").strip().casefold() != "unless":
         trailing_exception = re.search(
             r"\b(?:unless|except(?:\s+(?:if|when))?)\b",
@@ -23017,19 +23031,24 @@ def _source_exception_requires_paired_witness(
     """
 
     collapsed = _collapse_text(text)
-    if re.match(
-        r"^(?:Guidance\s+documents\s+lack\s+the\s+force\s+and\s+effect\s+"
-        r"of\s+law|USDA\s+may\s+not\s+cite,\s*use,\s*or\s+rely\s+on\s+any\s+"
-        r"guidance)\b",
+    if re.fullmatch(
+        r"(?:Guidance\s+documents\s+lack\s+the\s+force\s+and\s+effect\s+"
+        r"of\s+law,\s*unless\s+expressly\s+authorized\s+by\s+statute\s+or\s+"
+        r"incorporated\s+into\s+a\s+contract|USDA\s+may\s+not\s+cite,\s*use,\s*"
+        r"or\s+rely\s+on\s+any\s+guidance\s+that\s+is\s+not\s+available\s+"
+        r"through\s+(?:its|their)\s+guidance\s+portal,\s*except\s+to\s+"
+        r"establish\s+historical\s+facts)\.?",
         collapsed,
         flags=re.IGNORECASE,
     ):
         return False
-    if re.match(
-        r"^Prior\s+to\b[^.;]{0,320}\b(?:was|were)\s+eligible\b",
+    historical = re.fullmatch(
+        r"Prior\s+to\s+the\s+OBBB\b[^.;]{0,640}\b(?:was|were)\s+eligible\b"
+        r"[^.;]*[.]?",
         collapsed,
         flags=re.IGNORECASE,
-    ):
+    )
+    if historical is not None:
         # A historical comparison explains superseded eligibility; it is not
         # a current selector that companion cases can toggle.
         return False

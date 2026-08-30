@@ -649,6 +649,17 @@ def test_flattened_pdf_x_alternative_list_is_not_conjunctive_fact_gates():
     assert completeness_module._source_conjunctive_fact_gates(source) == ()
 
 
+def test_flattened_pdf_x_list_retains_preface_conjunctive_fact_gates():
+    source = (
+        "Applicants are eligible if the applicant is a resident and the "
+        "applicant is a citizen and the applicant meets one or more of the "
+        "following conditions: x Is under 18 years old x Has 40 qualifying work "
+        "quarters."
+    )
+
+    assert len(completeness_module._source_conjunctive_fact_gates(source)) == 2
+
+
 def test_flattened_inline_dotted_items_disambiguate_spouse_credit_proof():
     payload = _ky_spouse_credit_payload(decomposed=True)
     result = _analyze(
@@ -20730,6 +20741,17 @@ def test_year_dash_capitalized_title_is_not_subtraction(source: str):
     assert not source_states_explicit_computation(source)
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "The amount is 2025 – Income.",
+        "Calculate 2025 – Income.",
+    ],
+)
+def test_year_dash_capitalized_operand_remains_subtraction(source: str):
+    assert source_states_explicit_computation(source)
+
+
 def test_guidance_pdf_structural_numbers_are_not_numeric_recall_values():
     source = (
         "Food and Nutrition Service, Braddock Metro Center, 1320 Braddock Place, "
@@ -20746,6 +20768,25 @@ def test_guidance_pdf_structural_numbers_are_not_numeric_recall_values():
 
 
 @pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("A $100 Child Care Center fee is deductible.", 100),
+        ("A 500 Community Center allowance applies.", 500),
+    ],
+)
+def test_capitalized_center_without_address_keeps_numeric_value(
+    source: str,
+    expected: int,
+):
+    cleaned = completeness_module.authoritative_numeric_recall_text(source)
+    values = {
+        occurrence.value for occurrence in EN_NUMERIC_OCCURRENCE_EXTRACTOR(cleaned)
+    }
+
+    assert expected in values
+
+
+@pytest.mark.parametrize(
     "source",
     [
         (
@@ -20758,13 +20799,33 @@ def test_guidance_pdf_structural_numbers_are_not_numeric_recall_values():
             "historical facts."
         ),
         (
-            "Prior to the amendment, certain aliens were eligible if they met "
+            "Prior to the OBBB, certain aliens were eligible if they met "
             "all other program requirements."
         ),
     ],
 )
 def test_guidance_boilerplate_and_history_do_not_require_paired_cases(source: str):
     assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "Guidance documents lack the force and effect of law, unless "
+            "authorized, and applicants are eligible if citizens."
+        ),
+        (
+            "USDA may not rely on unavailable guidance, except for history, "
+            "but applicants are eligible if citizens."
+        ),
+        "Prior to July 1, applicants were eligible if they were citizens.",
+    ],
+)
+def test_boilerplate_or_prior_prefix_does_not_hide_joined_current_selector(
+    source: str,
+):
+    assert completeness_module._source_exception_requires_paired_witness(source)
 
 
 @pytest.mark.parametrize("result_phrase", ["ergibt sich", "ergeben sich"])
