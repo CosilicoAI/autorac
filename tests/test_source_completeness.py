@@ -21206,6 +21206,50 @@ def test_guidance_glossary_admission_description_is_not_claimant_policy():
     assert not completeness_module._source_exception_requires_paired_witness(source)
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "Alien Group Description: qualified alien if admitted as a refugee.",
+        (
+            "State agencies must verify qualified alien status if documents "
+            "are provided."
+        ),
+    ],
+)
+def test_qualified_alien_description_is_not_predicate_qualification(source: str):
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "current_rule",
+    [
+        "Applicants shall be entitled to assistance if citizens.",
+        "Applicants will be entitled to assistance if citizens.",
+        "Applicants may be entitled to assistance if citizens.",
+        "Applicants are not entitled to assistance if undocumented.",
+        "SNAP benefits shall apply if income is below 100 dollars.",
+        "Coverage shall begin when admitted.",
+        "The benefit is 100 dollars if eligible.",
+        "The allowance increases by 100 dollars when income rises.",
+    ],
+)
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "Prior to the OBBB, aliens were eligible. ",
+        "State agencies must review changes when reported, and ",
+        "Alien Group Description: ",
+    ],
+)
+def test_joined_modal_or_numeric_policy_effect_is_toggleable(
+    prefix: str,
+    current_rule: str,
+):
+    source = prefix + current_rule
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
 @pytest.mark.parametrize("dash", [" - ", " – ", " — "])
 def test_guidance_glossary_dash_heading_is_not_arithmetic_policy(dash: str):
     source = (

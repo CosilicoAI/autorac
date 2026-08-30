@@ -23083,22 +23083,36 @@ def _source_exception_requires_paired_witness(
     return True
 
 
-def _source_has_operative_policy_effect(text: str) -> bool:
+def _source_has_operative_policy_effect(
+    text: str,
+    *,
+    allow_explicit_computation: bool = False,
+) -> bool:
     """Return whether a condition controls a claimant-facing policy outcome."""
 
     outcome = re.search(
-        r"\b(?:eligible|ineligible|qualif(?:y|ies|ied|ication))\b|"
+        r"\b(?:eligible|ineligible|qualif(?:y|ies))\b|"
+        r"\b(?:is|are|shall\s+be|will\s+be|may\s+be)\s+qualified\b|"
         r"\b(?:receive[sd]?|get[st]?|obtain[sd]?)\b[^.;]{0,100}\b(?:SNAP\s+)?"
         r"(?:benefits?|assistance|allowances?|payments?|coverage|credits?)\b|"
-        r"\b(?:is|are|becomes?|remain(?:s)?)\s+entitled\s+to\b|"
+        r"\b(?:is|are|becomes?|remain(?:s)?|shall|will|may)\s+(?:not\s+)?"
+        r"(?:be\s+)?entitled\s+to\b|"
         r"\b(?:coverage|benefits?|provisions?|rules?)\s+"
-        r"(?:begins?|appl(?:y|ies))\b|"
+        r"(?:(?:shall|will|may)\s+)?(?:begins?|begin|appl(?:y|ies))\b|"
         r"\b(?:benefits?|payments?|amounts?|allowances?|credits?|deductions?|"
-        r"exemptions?)\s+(?:equals?|is\s+(?:calculated|computed|determined))\b",
+        r"exemptions?)\s+(?:equals?|is\s+(?:calculated|computed|determined)|"
+        r"(?:increases?|decreases?)\s+by)\b",
         text,
         flags=re.IGNORECASE,
     )
-    return bool(outcome and _source_exception_or_applicability_matches(text))
+    condition = _source_exception_or_applicability_matches(text)
+    return bool(
+        condition
+        and (
+            outcome
+            or (allow_explicit_computation and source_states_explicit_computation(text))
+        )
+    )
 
 
 def _source_has_current_eligibility_effect(text: str) -> bool:
@@ -23139,7 +23153,10 @@ def _source_has_joined_operative_segment(text: str) -> bool:
     )
     joined_segments = (text[match.end() :] for match in delimiter.finditer(text))
     return any(
-        _source_has_operative_policy_effect(segment)
+        _source_has_operative_policy_effect(
+            segment,
+            allow_explicit_computation=True,
+        )
         for segment in joined_segments
         if segment.strip()
     )
