@@ -38206,6 +38206,11 @@ rules:
   input: {}
   output:
     us:policies/usda/fns/alien-status#ordinary_month_rule: holds
+- name: external_same_leaf_case
+  period: 2025-07
+  input: {}
+  output:
+    us:other/module#snap_alien_status_eligible: holds
 """
         )
         result = SimpleNamespace(output_file=str(rules_file), runner=runner)
@@ -38230,6 +38235,7 @@ rules:
         }
         assert payload[1]["period"] == payload[0]["period"]
         assert payload[2]["period"] == "2025-07"
+        assert payload[3]["period"] == "2025-07"
 
     def test_unsafe_formula_output_repair_defers_tax_status_components(self, tmp_path):
         output_root = tmp_path / "out"

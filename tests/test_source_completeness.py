@@ -20825,6 +20825,7 @@ def test_guidance_pdf_structural_numbers_are_not_numeric_recall_values():
 def test_guidance_attachment_and_footnote_labels_are_not_numeric_recall_values():
     source = (
         "Prior to the OBBB, aliens defined by PRWORA)2 were eligible. "
+        "Eligible groups include Cuban and Haitian entrants1, and COFA citizens. "
         "1 Cuban and Haitian entrants as defined in section 501(e). "
         "2 Aliens who were qualified aliens as defined by section 431. "
         "The chart in Attachment 1 compares eligibility. Attachment 2 provides "
@@ -20851,6 +20852,21 @@ def test_guidance_structural_number_cleanup_preserves_substantive_values():
     }
 
     assert values == {1, 2}
+
+
+def test_guidance_footnote_cleanup_preserves_numbered_rules_and_categories():
+    source = (
+        "2 SNAP units are eligible as defined by section 5. "
+        "Tier2 is eligible for benefits."
+    )
+
+    cleaned = authoritative_numeric_recall_text(source)
+    values = {
+        occurrence.value for occurrence in EN_NUMERIC_OCCURRENCE_EXTRACTOR(cleaned)
+    }
+
+    assert 2 in values
+    assert "Tier2" in cleaned
 
 
 def test_guidance_lpr_acronym_matches_lawful_permanent_resident_selector():
@@ -20989,6 +21005,29 @@ def test_obbb_history_with_attached_definition_footnote_is_not_toggleable():
 )
 def test_guidance_collective_reference_umbrellas_are_not_local_toggles(source: str):
     assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "If an alien does not fall into one of the groups listed in section "
+            "6(f), the alien is no longer eligible for SNAP. Applicants are "
+            "eligible if they are citizens."
+        ),
+        (
+            "Aliens remain subject to a waiting period unless exempted by "
+            "PRWORA.3 Applicants are eligible if they are citizens."
+        ),
+        (
+            "Applicants are eligible if they are citizens; if an alien does not "
+            "fall into one of the groups listed in section 6(f), the alien is no "
+            "longer eligible for SNAP."
+        ),
+    ],
+)
+def test_collective_reference_does_not_hide_joined_local_rule(source: str):
+    assert completeness_module._source_exception_requires_paired_witness(source)
 
 
 @pytest.mark.parametrize(

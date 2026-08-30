@@ -42835,7 +42835,10 @@ def _try_repair_generated_day_period_test_shorthands_for_apply(
     if not case_periods:
         return []
     try:
-        _relative_generated_output_path(result, output_root=output_root)
+        relative_output = _relative_generated_output_path(
+            result,
+            output_root=output_root,
+        )
     except RuntimeError:
         return []
 
@@ -42844,6 +42847,7 @@ def _try_repair_generated_day_period_test_shorthands_for_apply(
         test_file=test_file,
         case_periods=case_periods,
         rulespec_file=Path(str(getattr(result, "output_file", "") or "")),
+        rulespec_module_path=_generated_rulespec_module_path(relative_output),
     )
 
 
@@ -42861,6 +42865,7 @@ def _rewrite_generated_day_period_test_shorthands(
     test_file: Path,
     case_periods: dict[str, str],
     rulespec_file: Path | None = None,
+    rulespec_module_path: str | None = None,
 ) -> list[str]:
     if not test_file.exists():
         return []
@@ -42925,9 +42930,12 @@ def _rewrite_generated_day_period_test_shorthands(
             if not isinstance(outputs, dict):
                 continue
             output_names = {
-                str(output_ref).rsplit("#", 1)[-1]
+                output_ref_text.rsplit("#", 1)[-1]
                 for output_ref in outputs
-                if "#" in str(output_ref)
+                if "#" in (output_ref_text := str(output_ref))
+                and rulespec_module_path is not None
+                and output_ref_text.split("#", 1)[0].split(":", 1)[-1]
+                == rulespec_module_path
             }
             effective_dates = {
                 effective_from
@@ -42954,6 +42962,17 @@ def _rewrite_generated_day_period_test_shorthands(
         yaml.safe_dump(test_cases, sort_keys=False, allow_unicode=False)
     )
     return repaired
+
+
+def _generated_rulespec_module_path(relative_output: Path) -> str | None:
+    """Return the repository-relative module path used by qualified test refs."""
+
+    parts = relative_output.with_suffix("").parts
+    if parts and parts[0] in RULESPEC_ATOMIC_MODULE_ROOTS:
+        return Path(*parts).as_posix()
+    if len(parts) >= 2 and parts[1] in RULESPEC_ATOMIC_MODULE_ROOTS:
+        return Path(*parts[1:]).as_posix()
+    return None
 
 
 def _empty_test_output_case_names_from_issues(issues: list[str]) -> set[str]:

@@ -11958,6 +11958,14 @@ def authoritative_numeric_recall_text(source_text: str) -> str:
     """Remove structural/citation ordinals, never substantive source values."""
 
     cleaned = _strip_terminal_session_law_history(source_text)
+    referenced_footnote_markers = {
+        *re.findall(r"\b[A-Za-z]{4,}([1-9]\d?)(?=[,.;])", cleaned),
+        *re.findall(
+            r"(?<=\))([1-9]\d?)(?=\s+(?:was|were|is|are|has|have|had)\b)",
+            cleaned,
+            flags=re.IGNORECASE,
+        ),
+    }
     cleaned = re.sub(
         r"\b(?:Public\s+Law|P\.?\s*L\.?)\s+\d+\s*[-–—]\s*\d+\b",
         "",
@@ -11977,20 +11985,26 @@ def authoritative_numeric_recall_text(source_text: str) -> str:
         flags=re.IGNORECASE,
     )
     cleaned = re.sub(
-        r"(?<=[A-Za-z)])(?:[1-9]\d?)"
+        r"(?<=\))([1-9]\d?)"
         r"(?=\s+(?:was|were|is|are|has|have|had|must|shall|will|may|"
         r"can|do|does|did)\b)",
         "",
         cleaned,
         flags=re.IGNORECASE,
     )
-    cleaned = re.sub(
-        r"(?P<boundary>(?:^|[.!?])\s*)(?:[1-9]\d?)"
+    footnote_definition = re.compile(
+        r"(?P<boundary>(?:^|[.!?])\s*)(?P<marker>[1-9]\d?)"
         r"(?=\s+[A-Z][^.!?]{0,320}\b"
         r"(?i:as\s+defined|defined\s+by|see|section)\b)",
-        r"\g<boundary>",
-        cleaned,
         flags=re.MULTILINE,
+    )
+    cleaned = footnote_definition.sub(
+        lambda match: (
+            match.group("boundary")
+            if match.group("marker") in referenced_footnote_markers
+            else match.group(0)
+        ),
+        cleaned,
     )
     cleaned = re.sub(
         r"\b\d{1,6}\s+[A-Z][A-Za-z.'’-]*(?:\s+[A-Z][A-Za-z.'’-]*){0,4}\s+"
@@ -23117,20 +23131,27 @@ def _source_collective_reference_condition_is_nonlocal(text: str) -> bool:
         collapsed,
     )
     if exemption is not None:
-        tail = collapsed[exemption.end() :]
-        local_tail = re.split(r"[.;]", tail, maxsplit=1)[0]
-        if re.fullmatch(r"\s*\d*\s*", local_tail):
+        outside = collapsed[: exemption.start()] + collapsed[exemption.end() :]
+        if not (
+            _source_has_operative_policy_effect(outside)
+            and re.search(r"\b(?:if|when|unless)\b", outside, flags=re.IGNORECASE)
+        ):
             return True
-    return (
-        re.search(
-            r"\b(?:if|when)\b[^.;]{0,180}\bdoes\s+not\s+fall\s+into\s+"
-            r"one\s+of\s+the\s+(?:groups|categories)\s+"
-            r"(?:listed|described)\s+in\s+"
-            r"(?:section|subsection|paragraph|attachment|table)\b",
-            collapsed,
-            flags=re.IGNORECASE,
-        )
-        is not None
+    collective = re.search(
+        r"\b(?:if|when)\b[^.;]{0,180}\bdoes\s+not\s+fall\s+into\s+"
+        r"one\s+of\s+the\s+(?:groups|categories)\s+"
+        r"(?:listed|described)\s+in\s+"
+        r"(?:section|subsection|paragraph|attachment|table)\b"
+        r"[^.;]{0,240}\b(?:no\s+longer\s+eligible|must\s+be\s+removed)\b",
+        collapsed,
+        flags=re.IGNORECASE,
+    )
+    if collective is None:
+        return False
+    outside = collapsed[: collective.start()] + collapsed[collective.end() :]
+    return not (
+        _source_has_operative_policy_effect(outside)
+        and re.search(r"\b(?:if|when|unless)\b", outside, flags=re.IGNORECASE)
     )
 
 
@@ -24358,9 +24379,8 @@ def _source_exception_selector_is_relevant(
     normalized_name = _normalized_selector_name(name)
     collapsed = _collapse_text(text).lower()
     distinctive_tokens = _source_selector_distinctive_tokens(normalized_name)
-    if (
-        len(distinctive_tokens) <= 2
-        and _source_selector_concept_matches(collapsed, normalized_name)
+    if len(distinctive_tokens) <= 2 and _source_selector_concept_matches(
+        collapsed, normalized_name
     ):
         return True
     if re.search(
