@@ -11973,23 +11973,27 @@ def authoritative_numeric_recall_text(source_text: str) -> str:
             body,
         )
 
-    def known_guidance_footnote(marker: str, label: str) -> bool:
-        bodies = definition_bodies.get(marker, ())
-        if marker == "1" and label.lower() == "entrants":
-            return any(
+    def known_guidance_footnote_definition(marker: str, body: str) -> bool:
+        if marker == "1":
+            return (
                 re.match(r"\s*cuban\s+and\s+haitian\s+entrants\b", body) is not None
                 and re.search(r"\bsection\s+501\s*\(e\)", body) is not None
-                for body in bodies
             )
-        if marker == "2" and label.upper() == "PRWORA":
-            return any(
+        if marker == "2":
+            return (
                 re.match(r"\s*aliens\s+who\s+were\s+qualified\s+aliens\b", body)
                 is not None
                 and re.search(r"\bsection\s+431\b", body) is not None
                 and re.search(r"\bPRWORA\b", body, flags=re.IGNORECASE) is not None
-                for body in bodies
             )
         return False
+
+    def known_guidance_footnote(marker: str, label: str) -> bool:
+        expected_label = {"1": "entrants", "2": "prwora"}.get(marker)
+        return expected_label == label.lower() and any(
+            known_guidance_footnote_definition(marker, body)
+            for body in definition_bodies.get(marker, ())
+        )
 
     def linked_footnote_reference(match: re.Match[str]) -> str:
         marker = match.group("marker")
@@ -12034,6 +12038,10 @@ def authoritative_numeric_recall_text(source_text: str) -> str:
         lambda match: (
             f"{match.group('boundary')}{match.group('body')}"
             if match.group("marker") in confirmed_footnote_markers
+            and known_guidance_footnote_definition(
+                match.group("marker"),
+                match.group("body").lower(),
+            )
             else match.group(0)
         ),
         cleaned,

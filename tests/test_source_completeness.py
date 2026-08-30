@@ -20924,6 +20924,41 @@ def test_guidance_cited_numbered_category_is_not_a_footnote(citation: str):
     assert "Tier2" in cleaned
 
 
+@pytest.mark.parametrize(
+    ("marker", "reference", "definition"),
+    [
+        (
+            1,
+            "Eligible groups include Cuban and Haitian entrants1.",
+            "1 Cuban and Haitian entrants as defined in section 501(e).",
+        ),
+        (
+            2,
+            "Aliens defined by PRWORA)2 were eligible.",
+            ("2 Aliens who were qualified aliens as defined by PRWORA section 431."),
+        ),
+    ],
+)
+@pytest.mark.parametrize("substantive_first", [False, True])
+def test_guidance_footnote_does_not_hide_same_number_substantive_rule(
+    marker: int,
+    reference: str,
+    definition: str,
+    substantive_first: bool,
+):
+    substantive = f"{marker} SNAP unit is eligible as defined by section 5."
+    blocks = [reference, definition, substantive]
+    if substantive_first:
+        blocks = [substantive, reference, definition]
+
+    cleaned = authoritative_numeric_recall_text(" ".join(blocks))
+    values = [
+        occurrence.value for occurrence in EN_NUMERIC_OCCURRENCE_EXTRACTOR(cleaned)
+    ]
+
+    assert values.count(marker) == 1
+
+
 def test_guidance_lpr_acronym_matches_lawful_permanent_resident_selector():
     assert completeness_module._source_exception_selector_is_relevant(
         "unless an LPR.",
