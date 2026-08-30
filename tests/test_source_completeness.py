@@ -688,6 +688,19 @@ def test_flattened_pdf_x_list_removes_bounded_subject_introducer(subject: str):
     assert completeness_module._source_conjunctive_fact_gates(source) == ()
 
 
+def test_flattened_pdf_x_list_preserves_prior_income_gate():
+    source = (
+        "Applicants are eligible if the applicant is a resident and has income "
+        "and must meet one or more of the following conditions: x Is under 18 "
+        "years old x Has 40 qualifying work quarters."
+    )
+
+    assert completeness_module._source_conjunctive_fact_gates(source) == (
+        (frozenset({"applicant"}), frozenset({"resident"})),
+        (frozenset({"applicant"}), frozenset({"income"})),
+    )
+
+
 def test_parenthetical_flattened_pdf_x_list_stays_truncated():
     source = (
         "Applicants may be eligible (if the applicant is a resident and the "
