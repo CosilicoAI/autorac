@@ -20883,6 +20883,100 @@ def test_boilerplate_or_prior_prefix_does_not_hide_joined_current_selector(
     assert completeness_module._source_exception_requires_paired_witness(source)
 
 
+def test_obbb_history_with_attached_definition_footnote_is_not_toggleable():
+    source = (
+        "Prior to the OBBB, certain lawfully present aliens were eligible to "
+        "receive SNAP benefits, provided they met all other requirements and "
+        "completed a 5-year waiting period, unless exempted by PRWORA. "
+        "1 Cuban and Haitian entrants as defined in section 501(e) of the "
+        "Refugee Education Assistance Act of 1980, 8 U.S.C."
+    )
+
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+def test_obbb_history_does_not_hide_joined_current_eligibility_selector():
+    source = (
+        "Prior to the OBBB, certain aliens were eligible. Applicants are "
+        "eligible if they are citizens."
+    )
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+def test_guidance_agency_review_instruction_is_not_a_toggleable_benefit_rule():
+    source = (
+        "State agencies must review household circumstances to take appropriate "
+        "action when this occurs and follow program rules for acting on changes."
+    )
+
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+def test_guidance_agency_instruction_keeps_joined_eligibility_selector():
+    source = (
+        "State agencies must review household circumstances when this occurs, "
+        "and applicants are eligible if they are citizens."
+    )
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+def test_guidance_attachment_description_is_not_a_toggleable_benefit_rule():
+    source = (
+        "Page 11 of 11 Alien Group Description honorably discharged veteran "
+        "whose discharge is not because of immigration status (includes spouse, "
+        "surviving spouse if not married, and unmarried dependent children)."
+    )
+
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+def test_guidance_description_keeps_explicit_eligibility_selector():
+    source = (
+        "Alien Group Description: a parolee is eligible if paroled for at least "
+        "1 year."
+    )
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+def test_nonoperative_parolee_glossary_duration_is_not_a_boundary_obligation():
+    source = (
+        "Parolees Paroled into the U.S. under section 212(d)(5) of the INA for "
+        "a period of at least 1 year."
+    )
+    root = completeness_module.SourceStructureBranch(
+        (), "source-unit", "source unit", source, 0, len(source)
+    )
+
+    obligations = completeness_module._source_boundary_obligations(
+        (root,),
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert obligations == ()
+
+
+def test_operative_parolee_duration_remains_a_boundary_obligation():
+    source = (
+        "A parolee is eligible if paroled under section 212(d)(5) of the INA "
+        "for a period of at least 1 year."
+    )
+    root = completeness_module.SourceStructureBranch(
+        (), "source-unit", "source unit", source, 0, len(source)
+    )
+
+    obligations = completeness_module._source_boundary_obligations(
+        (root,),
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert [(occurrence.value, occurrence.raw) for _branch, occurrence in obligations] == [
+        (1, "1")
+    ]
+
+
 @pytest.mark.parametrize("result_phrase", ["ergibt sich", "ergeben sich"])
 def test_stated_conversion_result_is_not_a_formula_mandate(result_phrase: str):
     source = (

@@ -23036,6 +23036,10 @@ def _source_exception_requires_paired_witness(
     """
 
     collapsed = _collapse_text(text)
+    if _source_is_nonoperative_guidance_instruction(collapsed):
+        return False
+    if _source_is_guidance_glossary_description(collapsed):
+        return False
     if re.fullmatch(
         r"(?:Guidance\s+documents\s+lack\s+the\s+force\s+and\s+effect\s+"
         r"of\s+law,\s*unless\s+expressly\s+authorized\s+by\s+statute\s+or\s+"
@@ -23047,13 +23051,7 @@ def _source_exception_requires_paired_witness(
         flags=re.IGNORECASE,
     ):
         return False
-    historical = re.fullmatch(
-        r"Prior\s+to\s+the\s+OBBB\b[^.;]{0,640}\b(?:was|were)\s+eligible\b"
-        r"[^.;]*[.]?",
-        collapsed,
-        flags=re.IGNORECASE,
-    )
-    if historical is not None:
+    if _source_is_superseded_obbb_eligibility_history(collapsed):
         # A historical comparison explains superseded eligibility; it is not
         # a current selector that companion cases can toggle.
         return False
@@ -23083,6 +23081,58 @@ def _source_exception_requires_paired_witness(
     ) and _source_reference_reservation_is_only_references(collapsed):
         return False
     return True
+
+
+def _source_has_current_eligibility_effect(text: str) -> bool:
+    """Return whether text states a present/future eligibility outcome."""
+
+    return bool(
+        re.search(
+            r"\b(?:is|are|shall\s+be|will\s+be|may\s+be|remain(?:s)?)\s+"
+            r"(?:not\s+)?eligible\b|\b(?:becomes?|remain(?:s)?)\s+"
+            r"ineligible\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _source_is_superseded_obbb_eligibility_history(text: str) -> bool:
+    """Recognize a superseded pre-OBBB comparison plus citation footnotes."""
+
+    historical = re.match(
+        r"Prior\s+to\s+the\s+OBBB\b(?P<body>.*?\b(?:was|were)\s+eligible\b.*?[.])",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if historical is None:
+        return False
+    remainder = text[historical.end() :]
+    return not _source_has_current_eligibility_effect(remainder)
+
+
+def _source_is_nonoperative_guidance_instruction(text: str) -> bool:
+    """Exclude agency workflow prose that has no claimant-facing outcome."""
+
+    if _source_has_current_eligibility_effect(text):
+        return False
+    return bool(
+        re.match(
+            r"State\s+agencies\s+must\s+(?:review|check|contact|follow|provide|"
+            r"take|use|verify)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _source_is_guidance_glossary_description(text: str) -> bool:
+    """Exclude attachment definition prose without an operative outcome."""
+
+    return bool(
+        re.search(r"\bAlien\s+Group\s+Description\b", text, flags=re.IGNORECASE)
+        and not _source_has_current_eligibility_effect(text)
+    )
 
 
 def _leading_reference_reservation_is_nonlocal(
@@ -26458,6 +26508,8 @@ def _source_boundary_obligations(
         direct_inventory = tuple(extract_numeric_occurrences(direct_text))
         for fragment_start, fragment in _source_boundary_fragments(direct_text):
             range_fragment = fragment.split(":", 1)[0]
+            if _source_boundary_is_nonoperative_guidance_definition(range_fragment):
+                continue
             if not re.search(
                 r"\b(?:zwischen|between|bis|von|ab|unter|über|"
                 r"mehr\s+als|weniger\s+als|from|to|"
@@ -26517,6 +26569,26 @@ def _source_boundary_obligations(
             ): (branch, occurrence)
             for branch, occurrence in obligations
         }.values()
+    )
+
+
+def _source_boundary_is_nonoperative_guidance_definition(text: str) -> bool:
+    """Exclude a glossary-only admission-duration definition from case bounds."""
+
+    collapsed = _collapse_text(text)
+    return bool(
+        re.search(
+            r"\bunder\s+\([a-z]\)\(\d+\)\s+of\s+the\s+INA\s+for\s+a\s+"
+            r"period\s+of\s+at\s+least\s+\d+(?:\.\d+)?\s+years?\b",
+            collapsed,
+            flags=re.IGNORECASE,
+        )
+        and not re.search(
+            r"\b(?:eligible|eligibility|benefit|payment|amount|allowance|"
+            r"credit|deduction|exemption|appl(?:y|ies|icable))\b",
+            collapsed,
+            flags=re.IGNORECASE,
+        )
     )
 
 
