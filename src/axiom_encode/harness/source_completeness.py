@@ -23863,7 +23863,7 @@ def _source_positive_effect_matches(text: str) -> tuple[re.Match[str], ...]:
 def _source_negative_effect_matches(text: str) -> tuple[re.Match[str], ...]:
     return tuple(
         re.finditer(
-            r"\b(?:shall|will|may|does|is|are)\s+not\s+(?:be\s+)?"
+            r"\b(?:must|shall|will|may|does|is|are)\s+not\s+(?:be\s+)?"
             r"(?:apply|eligible|qualified|allowed|entitled)\b|"
             r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\bnicht\s+berechtigt\b",

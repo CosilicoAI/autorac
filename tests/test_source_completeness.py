@@ -33150,6 +33150,7 @@ def test_bounded_introductory_phrase_preserves_no_subject_polarity(source: str):
         "The applicant shall not be eligible unless the applicant is a citizen.",
         "The applicant will not be eligible unless the applicant is a citizen.",
         "The applicant may not be eligible unless the applicant is a citizen.",
+        "The applicant must not be eligible unless the applicant is a citizen.",
     ),
 )
 def test_modal_negative_eligibility_exception_is_enabling(source: str):
