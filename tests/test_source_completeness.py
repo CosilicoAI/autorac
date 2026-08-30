@@ -21252,6 +21252,25 @@ def test_agency_verification_complement_is_not_claimant_policy(source: str):
 
 
 @pytest.mark.parametrize(
+    "source",
+    [
+        "State agencies must provide notification when verification is complete.",
+        "State agencies must provide information if requested.",
+        "State agencies must provide guidance when requested.",
+        "State agencies must provide documentation if requested.",
+    ],
+)
+def test_agency_bounded_provide_instruction_is_not_claimant_policy(source: str):
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+def test_agency_provide_snap_benefits_remains_claimant_policy():
+    source = "State agencies must provide SNAP benefits if applicants are eligible."
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
     "current_rule",
     [
         "Applicants shall be entitled to assistance if citizens.",

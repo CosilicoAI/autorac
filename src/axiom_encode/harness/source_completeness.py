@@ -23176,7 +23176,9 @@ def _source_is_nonoperative_guidance_instruction(text: str) -> bool:
         return False
     return bool(
         re.match(
-            r"State\s+agencies\s+must\s+(?:review|check|contact|follow|use|verify)\b",
+            r"State\s+agencies\s+must\s+(?:(?:review|check|contact|follow|use|"
+            r"verify)\b|provide\s+(?:notice|notification|information|guidance|"
+            r"documentation)\b)",
             text,
             flags=re.IGNORECASE,
         )
