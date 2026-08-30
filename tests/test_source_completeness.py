@@ -20827,7 +20827,7 @@ def test_guidance_attachment_and_footnote_labels_are_not_numeric_recall_values()
         "Prior to the OBBB, aliens defined by PRWORA)2 were eligible. "
         "Eligible groups include Cuban and Haitian entrants1, and COFA citizens. "
         "1 Cuban and Haitian entrants as defined in section 501(e). "
-        "2 Aliens who were qualified aliens as defined by section 431. "
+        "2 Aliens who were qualified aliens as defined by PRWORA section 431. "
         "The chart in Attachment 1 compares eligibility. Attachment 2 provides "
         "alien-group descriptions. Attachment 2 Alien Group Descriptions."
     )
@@ -20867,6 +20867,25 @@ def test_guidance_footnote_cleanup_preserves_numbered_rules_and_categories():
 
     assert 2 in values
     assert "Tier2" in cleaned
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "Eligible groups include Entrants2, described below. "
+            "2 SNAP units are eligible as defined by section 5."
+        ),
+        "The category (group)2 is eligible for benefits.",
+    ],
+)
+def test_guidance_unlinked_numbered_categories_are_not_footnotes(source: str):
+    cleaned = authoritative_numeric_recall_text(source)
+    values = {
+        occurrence.value for occurrence in EN_NUMERIC_OCCURRENCE_EXTRACTOR(cleaned)
+    }
+
+    assert 2 in values
 
 
 def test_guidance_lpr_acronym_matches_lawful_permanent_resident_selector():
@@ -21028,6 +21047,27 @@ def test_guidance_collective_reference_umbrellas_are_not_local_toggles(source: s
 )
 def test_collective_reference_does_not_hide_joined_local_rule(source: str):
     assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "umbrella",
+    [
+        "Aliens remain subject to a waiting period unless exempted by PRWORA.3",
+        (
+            "If an alien does not fall into one of the groups listed in section "
+            "6(f), the alien is no longer eligible for SNAP."
+        ),
+    ],
+)
+def test_collective_reference_does_not_hide_joined_computation(umbrella: str):
+    computation = "Use 20 percent of income if income exceeds 500."
+
+    assert completeness_module._source_exception_requires_paired_witness(
+        f"{umbrella} {computation}"
+    )
+    assert completeness_module._source_exception_requires_paired_witness(
+        f"{computation}; {umbrella}"
+    )
 
 
 @pytest.mark.parametrize(

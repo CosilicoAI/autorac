@@ -11958,14 +11958,44 @@ def authoritative_numeric_recall_text(source_text: str) -> str:
     """Remove structural/citation ordinals, never substantive source values."""
 
     cleaned = _strip_terminal_session_law_history(source_text)
-    referenced_footnote_markers = {
-        *re.findall(r"\b[A-Za-z]{4,}([1-9]\d?)(?=[,.;])", cleaned),
-        *re.findall(
-            r"(?<=\))([1-9]\d?)(?=\s+(?:was|were|is|are|has|have|had)\b)",
-            cleaned,
-            flags=re.IGNORECASE,
-        ),
-    }
+    footnote_definition = re.compile(
+        r"(?P<boundary>(?:^|[.!?])\s*)(?P<marker>[1-9]\d?)"
+        r"(?P<body>\s+[A-Z][^.!?]{0,640}\b"
+        r"(?i:as\s+defined|defined\s+by|see|section)\b[^.!?]{0,640})",
+        flags=re.MULTILINE,
+    )
+    definition_bodies: dict[str, tuple[str, ...]] = {}
+    for definition in footnote_definition.finditer(cleaned):
+        marker = definition.group("marker")
+        definition_bodies[marker] = (
+            *definition_bodies.get(marker, ()),
+            definition.group("body").lower(),
+        )
+
+    def linked_footnote_reference(match: re.Match[str]) -> str:
+        marker = match.group("marker")
+        label = match.group("label")
+        if any(
+            re.search(rf"\b{re.escape(label)}\b", body, flags=re.IGNORECASE)
+            for body in definition_bodies.get(marker, ())
+        ):
+            confirmed_footnote_markers.add(marker)
+            return f"{label}{match.groupdict().get('closing') or ''}"
+        return match.group(0)
+
+    confirmed_footnote_markers: set[str] = set()
+    cleaned = re.sub(
+        r"(?P<label>\b[A-Za-z]{4,})(?P<marker>[1-9]\d?)(?=[,.;])",
+        linked_footnote_reference,
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?P<label>[A-Za-z][A-Za-z0-9.-]{2,})(?P<closing>\))"
+        r"(?P<marker>[1-9]\d?)(?=\s+(?:was|were|is|are|has|have|had)\b)",
+        linked_footnote_reference,
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     cleaned = re.sub(
         r"\b(?:Public\s+Law|P\.?\s*L\.?)\s+\d+\s*[-–—]\s*\d+\b",
         "",
@@ -11984,24 +12014,10 @@ def authoritative_numeric_recall_text(source_text: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     )
-    cleaned = re.sub(
-        r"(?<=\))([1-9]\d?)"
-        r"(?=\s+(?:was|were|is|are|has|have|had|must|shall|will|may|"
-        r"can|do|does|did)\b)",
-        "",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    footnote_definition = re.compile(
-        r"(?P<boundary>(?:^|[.!?])\s*)(?P<marker>[1-9]\d?)"
-        r"(?=\s+[A-Z][^.!?]{0,320}\b"
-        r"(?i:as\s+defined|defined\s+by|see|section)\b)",
-        flags=re.MULTILINE,
-    )
     cleaned = footnote_definition.sub(
         lambda match: (
-            match.group("boundary")
-            if match.group("marker") in referenced_footnote_markers
+            f"{match.group('boundary')}{match.group('body')}"
+            if match.group("marker") in confirmed_footnote_markers
             else match.group(0)
         ),
         cleaned,
@@ -23133,7 +23149,10 @@ def _source_collective_reference_condition_is_nonlocal(text: str) -> bool:
     if exemption is not None:
         outside = collapsed[: exemption.start()] + collapsed[exemption.end() :]
         if not (
-            _source_has_operative_policy_effect(outside)
+            _source_has_operative_policy_effect(
+                outside,
+                allow_explicit_computation=True,
+            )
             and re.search(r"\b(?:if|when|unless)\b", outside, flags=re.IGNORECASE)
         ):
             return True
@@ -23150,7 +23169,10 @@ def _source_collective_reference_condition_is_nonlocal(text: str) -> bool:
         return False
     outside = collapsed[: collective.start()] + collapsed[collective.end() :]
     return not (
-        _source_has_operative_policy_effect(outside)
+        _source_has_operative_policy_effect(
+            outside,
+            allow_explicit_computation=True,
+        )
         and re.search(r"\b(?:if|when|unless)\b", outside, flags=re.IGNORECASE)
     )
 
