@@ -548,6 +548,41 @@ def test_negative_rule_with_trailing_exception_retains_per_path_gate_checks():
     assert _has_issue(result, "source-explicit-conditions")
 
 
+def test_subordinate_if_does_not_hide_direct_unless_gates():
+    source = (
+        "No person who, if disabled, receives assistance shall be eligible unless "
+        "that person is a resident and that person is a citizen."
+    )
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [
+            _ky_derived_rule(
+                "person_ineligible",
+                source="KRS 141.020",
+                formula="person_is_resident",
+                excerpt=source.rstrip("."),
+                dtype="Judgment",
+            )
+        ],
+        "inputs": [
+            _ky_boolean_input("person_is_resident", "The person is a resident."),
+        ],
+    }
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions")
+
+
 @pytest.mark.parametrize(
     "condition",
     (
@@ -32985,6 +33020,9 @@ def test_boolean_selector_cannot_replace_numeric_exception_evidence():
         "No person is eligible unless that person is a citizen.",
         "No person who is otherwise eligible shall be eligible unless that person "
         "is a citizen.",
+        "No applicant shall be eligible unless the applicant is qualified.",
+        "No child shall be eligible unless the child is qualified.",
+        "No alien shall be eligible unless the alien is qualified.",
     ),
 )
 def test_no_person_eligible_unless_status_is_an_enabling_exception(source: str):

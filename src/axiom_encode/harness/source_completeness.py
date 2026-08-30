@@ -12783,11 +12783,18 @@ def _source_conjunctive_fact_gates(
 ) -> tuple[tuple[frozenset[str], frozenset[str]], ...]:
     """Return distinct entity/predicate signatures from one condition."""
 
-    conditional = re.search(
-        r"\b(?:if|when|provided\s+that|unless)\b(?P<body>.+)",
-        text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
+    if _direct_exception_reverses_negative_proposition(text):
+        conditional = re.search(
+            r"\bunless\b(?P<body>.+)",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    else:
+        conditional = re.search(
+            r"\b(?:if|when|provided\s+that|unless)\b(?P<body>.+)",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
     if conditional is None:
         return ()
     body = conditional.group("body")
@@ -23932,22 +23939,47 @@ def _exception_reverses_negative_proposition(text: str) -> bool:
     if reversal is None:
         return False
     proposition = text[: reversal.start()]
-    return (
+    return _no_subject_eligibility_negative_proposition(proposition) or (
         re.search(
             r"\b(?:besteht|gilt)\b[^.;]{0,80}\bnicht\b|"
             r"\bfindet\s+keine\s+anwendung\b|"
             r"\b(?:does|shall)\s+not\s+apply\b|"
             r"\b(?:is|are)\s+not\s+(?:eligible|qualified|entitled)\b|"
-            r"\bno\s+(?:claimants?|households?|individuals?|members?|persons?|"
-            r"residents?|taxpayers?)\b[^,;.]{0,320}\b"
-            r"(?:is|are|shall\s+be)\s+"
-            r"(?:eligible|qualified|entitled)\b|"
             r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\bkein(?:e|en|em|er|es)?\s+(?:anspruch|berechtigung)\b",
             proposition,
             flags=re.IGNORECASE,
         )
         is not None
+    )
+
+
+def _no_subject_eligibility_negative_proposition(text: str) -> bool:
+    """Recognize a bounded ``No <subject> ... eligible`` main proposition."""
+
+    match = re.search(
+        r"\bno\s+(?P<body>[^.;]{0,320}?)\b"
+        r"(?:is|are|shall\s+be)\s+(?:eligible|qualified|entitled)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match is None or re.match(
+        r"(?:later|fewer|more|less)\s+than\b",
+        match.group("body"),
+        flags=re.IGNORECASE,
+    ):
+        return False
+    body = re.sub(
+        r",\s*(?:if|when|provided\s+that)\b[^,;]{0,160},",
+        " ",
+        match.group("body"),
+        flags=re.IGNORECASE,
+    )
+    return not re.search(
+        r",|\b(?:and|but|or)\s+(?:a|an|the)?\s*[^,;.]{0,80}"
+        r"\b(?:is|are|shall|will)\b",
+        body,
+        flags=re.IGNORECASE,
     )
 
 
@@ -23961,6 +23993,8 @@ def _direct_exception_reverses_negative_proposition(text: str) -> bool:
     )
     if reversal is None or not _exception_reverses_negative_proposition(text):
         return False
+    if _no_subject_eligibility_negative_proposition(text[: reversal.start()]):
+        return True
     return (
         re.search(
             r"\b(?:if|when|provided\s+that|wenn|falls|sofern|soweit)\b",
