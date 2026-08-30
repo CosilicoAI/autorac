@@ -21008,6 +21008,176 @@ def test_guidance_selector_relevance_rejects_unrelated_shared_eligibility_words(
 
 
 @pytest.mark.parametrize(
+    ("source", "selector"),
+    [
+        (
+            "A person indicates inability or unwillingness to provide documentation "
+            "of alien status.",
+            "alien_status_documentation_missing_or_unwilling",
+        ),
+    ],
+)
+def test_selector_relevance_accepts_bounded_semantic_equivalence(
+    source: str,
+    selector: str,
+):
+    assert completeness_module._source_exception_selector_is_relevant(source, selector)
+
+
+def test_selector_relevance_rejects_overspecific_two_token_overlap():
+    source = "The benefit does not apply unless the applicant is a dependent child."
+    selector = "dependent_child_has_fraud_conviction_and_vehicle_owner_status"
+    assert not completeness_module._source_exception_selector_is_relevant(
+        source, selector
+    )
+
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/1
+rules:
+  - name: benefit_applies
+    kind: derived
+    dtype: Judgment
+    source: us-zz/statute/1
+    versions:
+      - formula: 'if {selector}: true else: false'
+"""
+    cases = [
+        {
+            "name": "without unrelated compound selector",
+            "input": {selector: False},
+            "output": {"benefit_applies": False},
+        },
+        {
+            "name": "with unrelated compound selector",
+            "input": {selector: True},
+            "output": {"benefit_applies": True},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exceptions or applicability", "paired")
+
+
+@pytest.mark.parametrize(
+    ("source", "selector", "expected_issue"),
+    [
+        (
+            "The benefit does not apply unless the alien's eligibility continues "
+            "until next recertification.",
+            "current_period_is_before_next_recertification",
+            True,
+        ),
+        (
+            "The benefit does not apply unless a person indicates inability or "
+            "unwillingness to provide documentation of alien status.",
+            "alien_status_documentation_missing_or_unwilling",
+            False,
+        ),
+        (
+            "The benefit does not apply unless the resident is absent for more than "
+            "6 months.",
+            "qualified_status_residency_absence_months",
+            True,
+        ),
+        (
+            "The benefit does not apply unless the notice states that coverage lasts "
+            "until next recertification.",
+            "current_period_is_before_next_recertification",
+            True,
+        ),
+        (
+            "The benefit does not apply unless the notice explains an inability or "
+            "unwillingness to provide documentation.",
+            "alien_status_documentation_missing_or_unwilling",
+            True,
+        ),
+        (
+            "The benefit does not apply when a resident receives notice that another "
+            "person is absent.",
+            "residency_absence_notice_status",
+            True,
+        ),
+        (
+            "The benefit does not apply unless the notice states that the alien's "
+            "eligibility continues until next recertification.",
+            "current_period_is_before_next_recertification",
+            True,
+        ),
+        (
+            "The benefit does not apply unless the notice states that the person "
+            "indicates inability or unwillingness to provide documentation of alien "
+            "status.",
+            "alien_status_documentation_missing_or_unwilling",
+            True,
+        ),
+        (
+            "The benefit does not apply unless the notice states that when the person "
+            "indicates inability or unwillingness to provide documentation of alien "
+            "status, the agency acts.",
+            "alien_status_documentation_missing_or_unwilling",
+            True,
+        ),
+        (
+            "The benefit does not apply unless the notice states that if the resident "
+            "is absent for more than 6 months, the agency acts.",
+            "qualified_status_residency_absence_months",
+            True,
+        ),
+        (
+            "The benefit does not apply unless the notice states that the resident is "
+            "absent for more than 6 months.",
+            "qualified_status_residency_absence_months",
+            True,
+        ),
+        (
+            "The benefit does not apply unless the person indicates inability to "
+            "provide documentation of income.",
+            "alien_status_documentation_missing_or_unwilling",
+            True,
+        ),
+    ],
+)
+def test_bounded_selector_equivalence_requires_its_controlling_clause(
+    source: str,
+    selector: str,
+    expected_issue: bool,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/1
+rules:
+  - name: benefit_applies
+    kind: derived
+    dtype: Judgment
+    source: us-zz/statute/1
+    versions:
+      - formula: 'if {selector}: true else: false'
+"""
+    cases = [
+        {
+            "name": "condition absent",
+            "input": {selector: False},
+            "output": {"benefit_applies": False},
+        },
+        {
+            "name": "condition present",
+            "input": {selector: True},
+            "output": {"benefit_applies": True},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exceptions or applicability", "paired") is expected_issue
+
+
+@pytest.mark.parametrize(
     ("source", "expected"),
     [
         ("A $100 Child Care Center fee is deductible.", 100),
