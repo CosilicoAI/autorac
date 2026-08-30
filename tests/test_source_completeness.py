@@ -20934,6 +20934,16 @@ def test_obbb_history_keeps_joined_conditional_outcome_vocabulary(current_rule: 
     assert completeness_module._source_exception_requires_paired_witness(source)
 
 
+@pytest.mark.parametrize("joiner", ["; ", ", and ", " and ", ", but ", " but ", ": ", ", "])
+def test_obbb_history_keeps_current_rule_before_first_period(joiner: str):
+    source = (
+        "Prior to the OBBB, aliens were eligible"
+        f"{joiner}applicants receive SNAP benefits if citizens."
+    )
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
 def test_guidance_agency_review_instruction_is_not_a_toggleable_benefit_rule():
     source = (
         "State agencies must review household circumstances to take appropriate "
@@ -20983,6 +20993,16 @@ def test_guidance_agency_instruction_keeps_conditional_outcomes(current_rule: st
     assert completeness_module._source_exception_requires_paired_witness(source)
 
 
+@pytest.mark.parametrize("joiner", ["; ", ", and ", " and ", ", but ", " but ", ": ", ", "])
+def test_guidance_agency_instruction_keeps_structural_joins(joiner: str):
+    source = (
+        "State agencies must review changes when reported"
+        f"{joiner}applicants receive SNAP benefits if citizens."
+    )
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
 def test_guidance_attachment_description_is_not_a_toggleable_benefit_rule():
     source = (
         "Page 11 of 11 Alien Group Description honorably discharged veteran "
@@ -21027,6 +21047,19 @@ def test_guidance_description_keeps_other_joined_rules(current_rule: str):
 )
 def test_guidance_description_keeps_conditional_outcomes(current_rule: str):
     source = f"Alien Group Description. {current_rule}"
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "joiner",
+    ["; ", ", and ", " and ", ", but ", " but ", ": ", ", "],
+)
+def test_guidance_description_keeps_structural_joins(joiner: str):
+    source = (
+        "Alien Group Description"
+        f"{joiner}applicants receive SNAP benefits if citizens."
+    )
 
     assert completeness_module._source_exception_requires_paired_witness(source)
 

@@ -23124,6 +23124,8 @@ def _source_is_superseded_obbb_eligibility_history(text: str) -> bool:
         return False
     remainder = text[historical.end() :]
     return not (
+        _source_has_joined_operative_segment(text)
+        or
         _source_exception_or_applicability_matches(remainder)
         or _source_has_operative_policy_effect(remainder)
     )
@@ -23132,11 +23134,18 @@ def _source_is_superseded_obbb_eligibility_history(text: str) -> bool:
 def _source_has_joined_operative_segment(text: str) -> bool:
     """Detect a separate conditional/computational rule after nonoperative prose."""
 
-    joined_segments = re.split(
-        r"(?:[.;]\s+|,\s*(?:and|but|yet)\s+)",
-        text,
+    policy_subject = (
+        r"(?:applicants?|households?|persons?|individuals?|claimants?|aliens?|"
+        r"children?|famil(?:y|ies)|recipients?|students?|taxpayers?|"
+        r"SNAP\s+benefits?|benefits?|payments?|allowances?|coverage|"
+        r"(?:this|the|a)\s+(?:provision|rule|benefit|payment|allowance|credit))"
+    )
+    delimiter = re.compile(
+        rf"(?:[.;:,]\s*(?:(?:and|but|yet)\s+)?|"
+        rf"\b(?:and|but|yet)\s+)(?={policy_subject}\b)",
         flags=re.IGNORECASE,
-    )[1:]
+    )
+    joined_segments = (text[match.end() :] for match in delimiter.finditer(text))
     return any(
         _source_exception_or_applicability_matches(segment)
         or _source_has_operative_policy_effect(segment)
