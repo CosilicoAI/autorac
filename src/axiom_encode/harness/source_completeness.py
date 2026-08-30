@@ -12829,8 +12829,8 @@ def _without_flattened_pdf_alternative_list(body: str) -> str:
     if alternative_list is None or len(re.findall(r"(?:^|\s)x\s+(?=[A-Z])", body)) < 2:
         return body
     return re.sub(
-        r"\b(?:and|or)\s+(?:(?:the\s+)?(?:person|individual|applicant|"
-        r"claimant|household|recipient)\s+|they\s+)?"
+        r"\b(?:and|or)\s+(?:(?:(?:the|an?|any|each)\s+)?"
+        r"(?:[A-Za-z][A-Za-z'-]*\s+){1,4}|they\s+)?"
         r"(?:(?:must|shall|should)\s+|(?:is|are)\s+required\s+to\s+|"
         r"(?:has|have|needs?)\s+to\s+)?"
         r"(?:has|have|meets?|satisf(?:y|ies))\s*$",

@@ -677,6 +677,17 @@ def test_flattened_pdf_x_list_removes_modal_introducer(modal: str):
     assert completeness_module._source_conjunctive_fact_gates(source) == ()
 
 
+@pytest.mark.parametrize("subject", ["child", "alien", "LPR"])
+def test_flattened_pdf_x_list_removes_bounded_subject_introducer(subject: str):
+    source = (
+        f"A {subject} is eligible if the {subject} is a resident and the "
+        f"{subject} must meet one or more of the following conditions: "
+        "x Is under 18 years old x Has 40 qualifying work quarters."
+    )
+
+    assert completeness_module._source_conjunctive_fact_gates(source) == ()
+
+
 def test_parenthetical_flattened_pdf_x_list_stays_truncated():
     source = (
         "Applicants may be eligible (if the applicant is a resident and the "
