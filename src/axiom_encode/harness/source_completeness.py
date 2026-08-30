@@ -12342,7 +12342,26 @@ _SOURCE_GATE_YET_PREFIX_CHARACTER_LIMIT = 32
 _SOURCE_GATE_YET_SUBJECT_CHARACTER_LIMIT = 96
 _SOURCE_GATE_YET_SUBJECT_TOKEN_LIMIT = 8
 _SOURCE_GATE_YET_PRONOUNS = frozenset({"he", "it", "she", "they"})
-_SOURCE_GATE_SUBJECT_PRONOUNS = frozenset({"he", "her", "him", "it", "she", "they"})
+_SOURCE_GATE_SUBJECT_PRONOUNS = frozenset(
+    {
+        "he",
+        "her",
+        "hers",
+        "herself",
+        "him",
+        "himself",
+        "his",
+        "it",
+        "its",
+        "itself",
+        "she",
+        "their",
+        "theirs",
+        "them",
+        "themselves",
+        "they",
+    }
+)
 _SOURCE_GATE_AMBIGUOUS_YET_MARKER = "sourcegateambiguousyet"
 _SOURCE_GATE_INCOME_BASES = frozenset({"income", "earning", "earnings"})
 _SOURCE_GATE_INCOME_BLOCKERS = frozenset(
@@ -12772,6 +12791,14 @@ def _source_conjunctive_fact_gates(
     if conditional is None:
         return ()
     body = conditional.group("body")
+    if conditional.group(0).strip().casefold() not in {"unless"}:
+        trailing_exception = re.search(
+            r"\b(?:unless|except(?:\s+(?:if|when))?)\b",
+            body,
+            flags=re.IGNORECASE,
+        )
+        if trailing_exception is not None:
+            body = body[: trailing_exception.start()]
     # A parenthetical condition modifies only the text inside its parentheses.
     # Do not let later sentence-level conjunctions (for example "earned and
     # unearned income") masquerade as additional factual gates.
@@ -12799,6 +12826,12 @@ def _source_conjunctive_fact_gates(
     gates: list[tuple[frozenset[str], frozenset[str]]] = []
     inherited_entities: frozenset[str] = frozenset()
     for segment in segments:
+        if re.search(
+            r"\b(?:is|are|be)\s*(?:[-–—]|:)\s*$",
+            segment,
+            flags=re.IGNORECASE,
+        ):
+            continue
         tokens = _source_gate_semantic_tokens(segment)
         explicit_entities = tokens & _SOURCE_GATE_ENTITIES
         is_subject_continuation = bool(
@@ -13863,13 +13896,8 @@ def _opaque_same_source_condition_input_issues(
                     excerpt_has_gates = True
                     clause_key = (clause.branch_path, clause.start, clause.end)
                     gate_sets[clause_key] = gates
-                    if (
-                        _exception_reverses_negative_proposition(clause.text)
-                        or re.search(
-                            r"\bunless\b",
-                            clause.text,
-                            flags=re.IGNORECASE,
-                        )
+                    if _direct_exception_reverses_negative_proposition(
+                        clause.text
                     ) and _rule_has_negative_output_semantics(
                         rule,
                         fallback_name=rule_name,
@@ -23910,7 +23938,9 @@ def _exception_reverses_negative_proposition(text: str) -> bool:
             r"\bfindet\s+keine\s+anwendung\b|"
             r"\b(?:does|shall)\s+not\s+apply\b|"
             r"\b(?:is|are)\s+not\s+(?:eligible|qualified|entitled)\b|"
-            r"\bno\b[^.;]{0,320}\b(?:is|are|shall\s+be)\s+"
+            r"\bno\s+(?:claimants?|households?|individuals?|members?|persons?|"
+            r"residents?|taxpayers?)\b[^,;.]{0,320}\b"
+            r"(?:is|are|shall\s+be)\s+"
             r"(?:eligible|qualified|entitled)\b|"
             r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\bkein(?:e|en|em|er|es)?\s+(?:anspruch|berechtigung)\b",
@@ -23918,6 +23948,26 @@ def _exception_reverses_negative_proposition(text: str) -> bool:
             flags=re.IGNORECASE,
         )
         is not None
+    )
+
+
+def _direct_exception_reverses_negative_proposition(text: str) -> bool:
+    """Require ``unless`` to be the first condition cue on the proposition."""
+
+    reversal = re.search(
+        r"\b(?:außer|ausser|es\s+sei\s+denn|unless|except)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if reversal is None or not _exception_reverses_negative_proposition(text):
+        return False
+    return (
+        re.search(
+            r"\b(?:if|when|provided\s+that|wenn|falls|sofern|soweit)\b",
+            text[: reversal.start()],
+            flags=re.IGNORECASE,
+        )
+        is None
     )
 
 

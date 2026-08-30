@@ -508,9 +508,60 @@ def test_negative_unless_formula_still_rejects_aggregate_status_input():
     assert _has_issue(result, "source-explicit-conditions")
 
 
-def test_structural_unless_chapeau_does_not_treat_pronouns_as_fact_gates():
+def test_negative_rule_with_trailing_exception_retains_per_path_gate_checks():
     source = (
-        "No individual shall be eligible unless he or she is—\n\n"
+        "A person is ineligible if the person is a resident and the person is a "
+        "citizen unless the person is pardoned."
+    )
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [
+            _ky_derived_rule(
+                "person_ineligible",
+                source="KRS 141.020",
+                formula=(
+                    "(person_is_resident and not person_is_pardoned) or "
+                    "(person_is_citizen and not person_is_pardoned)"
+                ),
+                excerpt=source.rstrip("."),
+                dtype="Judgment",
+            )
+        ],
+        "inputs": [
+            _ky_boolean_input("person_is_resident", "The person is a resident."),
+            _ky_boolean_input("person_is_citizen", "The person is a citizen."),
+            _ky_boolean_input("person_is_pardoned", "The person is pardoned."),
+        ],
+    }
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions")
+
+
+@pytest.mark.parametrize(
+    "condition",
+    (
+        "he or she is—",
+        "his or her status is—",
+        "their status is—",
+        "its status is—",
+    ),
+)
+def test_structural_unless_chapeau_does_not_treat_pronouns_as_fact_gates(
+    condition: str,
+):
+    source = (
+        f"No individual shall be eligible unless {condition}\n\n"
         "(1) a resident of the United States"
     )
 
@@ -32938,6 +32989,20 @@ def test_boolean_selector_cannot_replace_numeric_exception_evidence():
 )
 def test_no_person_eligible_unless_status_is_an_enabling_exception(source: str):
     assert completeness_module._source_exception_effect_requirement(source) == "enable"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "No later than January 1, the agency shall be eligible unless it filed.",
+        "No fewer than three members shall be eligible unless they filed.",
+        "No report is required, but the person shall be eligible unless it filed.",
+    ),
+)
+def test_quantitative_or_independent_no_clause_does_not_reverse_eligibility(
+    source: str,
+):
+    assert completeness_module._source_exception_effect_requirement(source) != "enable"
 
 
 def test_generic_at_least_one_criterion_chapeau_accepts_descendant_selector():
