@@ -12817,6 +12817,29 @@ def _source_gate_explicit_polarities(text: str) -> dict[str, bool]:
     }
 
 
+def _without_flattened_pdf_alternative_list(body: str) -> str:
+    """Remove an OCR-flattened alternative list while retaining its preface."""
+
+    alternative_list = re.search(
+        r"\b(?:one\s+or\s+more|at\s+least\s+one)\s+of\s+the\s+"
+        r"following\s+(?:conditions?|criteria|requirements?)\s*:\s*x\s+",
+        body,
+        flags=re.IGNORECASE,
+    )
+    if alternative_list is None or len(re.findall(r"(?:^|\s)x\s+(?=[A-Z])", body)) < 2:
+        return body
+    return re.sub(
+        r"\b(?:and|or)\s+(?:(?:the\s+)?(?:person|individual|applicant|"
+        r"claimant|household|recipient)\s+|they\s+)?"
+        r"(?:(?:must|shall|should)\s+|(?:is|are)\s+required\s+to\s+|"
+        r"(?:has|have|needs?)\s+to\s+)?"
+        r"(?:has|have|meets?|satisf(?:y|ies))\s*$",
+        "",
+        body[: alternative_list.start()],
+        flags=re.IGNORECASE,
+    )
+
+
 def _source_conjunctive_fact_gates(
     text: str,
 ) -> tuple[tuple[frozenset[str], frozenset[str]], ...]:
@@ -12842,30 +12865,6 @@ def _source_conjunctive_fact_gates(
     if conditional is None:
         return ()
     body = conditional.group("body")
-    alternative_list = re.search(
-        r"\b(?:one\s+or\s+more|at\s+least\s+one)\s+of\s+the\s+"
-        r"following\s+(?:conditions?|criteria|requirements?)\s*:\s*"
-        r"x\s+",
-        body,
-        flags=re.IGNORECASE,
-    )
-    if (
-        alternative_list is not None
-        and len(re.findall(r"(?:^|\s)x\s+(?=[A-Z])", body)) >= 2
-    ):
-        # Some PDF extractors flatten bullet glyphs to literal ``x`` tokens.
-        # The introduced items are alternatives, so retain only factual gates
-        # before the list rather than treating its internal conjunctions as
-        # conjunctive requirements.
-        body = re.sub(
-            r"\b(?:and|or)\s+(?:(?:the\s+)?(?:person|individual|applicant|"
-            r"claimant|household|recipient)\s+|they\s+)?"
-            r"(?:(?:must|shall|should)\s+|(?:is|are)\s+required\s+to\s+)?"
-            r"(?:has|have|meets?|satisf(?:y|ies))\s*$",
-            "",
-            body[: alternative_list.start()],
-            flags=re.IGNORECASE,
-        )
     if conditional.group("cue").strip().casefold() != "unless":
         trailing_exception = re.search(
             r"\b(?:unless|except(?:\s+(?:if|when))?)\b",
@@ -12895,6 +12894,9 @@ def _source_conjunctive_fact_gates(
                 if depth == 0:
                     body = text[body_start:index]
                     break
+    # Parenthetical narrowing above reconstructs the body from the original
+    # source, so flattened-list truncation must happen afterward.
+    body = _without_flattened_pdf_alternative_list(body)
     segments = _source_gate_split_conjunctive_conditions(body)
     if len(segments) < 2:
         return ()
