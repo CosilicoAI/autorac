@@ -20827,7 +20827,8 @@ def test_guidance_attachment_and_footnote_labels_are_not_numeric_recall_values()
         "Prior to the OBBB, aliens defined by PRWORA)2 were eligible. "
         "Eligible groups include Cuban and Haitian entrants1, and COFA citizens. "
         "1 Cuban and Haitian entrants as defined in section 501(e). "
-        "2 Aliens who were qualified aliens as defined by PRWORA section 431. "
+        "2 Aliens who were qualified aliens as defined by PRWORA section 431 "
+        "of the Act of 1996. "
         "The chart in Attachment 1 compares eligibility. Attachment 2 provides "
         "alien-group descriptions. Attachment 2 Alien Group Descriptions."
     )
@@ -20886,6 +20887,22 @@ def test_guidance_unlinked_numbered_categories_are_not_footnotes(source: str):
     }
 
     assert 2 in values
+
+
+@pytest.mark.parametrize("label", ["Tier", "Group"])
+def test_guidance_repeated_numbered_category_is_not_a_footnote(label: str):
+    source = (
+        f"{label}2, members receive benefits. "
+        f"2 {label} households are eligible as defined by section 5."
+    )
+
+    cleaned = authoritative_numeric_recall_text(source)
+    values = [
+        occurrence.value for occurrence in EN_NUMERIC_OCCURRENCE_EXTRACTOR(cleaned)
+    ]
+
+    assert values.count(2) == 1
+    assert f"{label}2" in cleaned
 
 
 def test_guidance_lpr_acronym_matches_lawful_permanent_resident_selector():

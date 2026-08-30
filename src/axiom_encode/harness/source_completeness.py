@@ -11967,9 +11967,21 @@ def authoritative_numeric_recall_text(source_text: str) -> str:
     definition_bodies: dict[str, tuple[str, ...]] = {}
     for definition in footnote_definition.finditer(cleaned):
         marker = definition.group("marker")
+        body = definition.group("body").lower()
+        if (
+            re.search(
+                r"\bsection\s+\d+\s*\([a-z0-9]+\)|"
+                r"\b\d+\s+U\.?S\.?C\.?\b|"
+                r"\bAct\s+of\s+\d{4}\b",
+                body,
+                flags=re.IGNORECASE,
+            )
+            is None
+        ):
+            continue
         definition_bodies[marker] = (
             *definition_bodies.get(marker, ()),
-            definition.group("body").lower(),
+            body,
         )
 
     def linked_footnote_reference(match: re.Match[str]) -> str:
