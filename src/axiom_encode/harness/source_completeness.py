@@ -23116,33 +23116,29 @@ def _source_is_superseded_obbb_eligibility_history(text: str) -> bool:
     """Recognize a superseded pre-OBBB comparison plus citation footnotes."""
 
     historical = re.match(
-        r"Prior\s+to\s+the\s+OBBB\b(?P<body>.*?\b(?:was|were)\s+eligible\b.*?[.])",
+        r"Prior\s+to\s+the\s+OBBB\b.*?\b(?:was|were)\s+eligible\b",
         text,
         flags=re.IGNORECASE,
     )
     if historical is None:
         return False
-    remainder = text[historical.end() :]
-    return not (
-        _source_has_joined_operative_segment(text)
-        or
-        _source_exception_or_applicability_matches(remainder)
-        or _source_has_operative_policy_effect(remainder)
-    )
+    historical_tail = text[historical.end() :]
+    return not _source_has_joined_operative_segment(historical_tail)
 
 
 def _source_has_joined_operative_segment(text: str) -> bool:
     """Detect a separate conditional/computational rule after nonoperative prose."""
 
     policy_subject = (
-        r"(?:applicants?|households?|persons?|individuals?|claimants?|aliens?|"
-        r"children?|famil(?:y|ies)|recipients?|students?|taxpayers?|"
-        r"SNAP\s+benefits?|benefits?|payments?|allowances?|coverage|"
-        r"(?:this|the|a)\s+(?:provision|rule|benefit|payment|allowance|credit))"
+        r"(?:(?:the|this|an?|any|each|all|those|these)\s+)?(?:applicants?|"
+        r"households?(?:\s+members?)?|members?|persons?|individuals?|claimants?|"
+        r"aliens?|child(?:ren)?|parolees?|veterans?|famil(?:y|ies)|recipients?|"
+        r"students?|taxpayers?|they|he|she|SNAP\s+benefits?|benefits?|payments?|"
+        r"allowances?|coverage|provisions?|rules?|credits?)"
     )
     delimiter = re.compile(
-        rf"(?:[.;:,]\s*(?:(?:and|but|yet)\s+)?|"
-        rf"\b(?:and|but|yet)\s+)(?={policy_subject}\b)",
+        rf"(?:[.;:,]\s*(?:(?:and|but|or|yet)\s+)?|"
+        rf"\b(?:and|but|or|yet)\s+)(?={policy_subject}\b)",
         flags=re.IGNORECASE,
     )
     joined_segments = (text[match.end() :] for match in delimiter.finditer(text))

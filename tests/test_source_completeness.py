@@ -20934,7 +20934,10 @@ def test_obbb_history_keeps_joined_conditional_outcome_vocabulary(current_rule: 
     assert completeness_module._source_exception_requires_paired_witness(source)
 
 
-@pytest.mark.parametrize("joiner", ["; ", ", and ", " and ", ", but ", " but ", ": ", ", "])
+@pytest.mark.parametrize(
+    "joiner",
+    ["; ", ", and ", " and ", ", but ", " but ", ", or ", " or ", ": ", ", "],
+)
 def test_obbb_history_keeps_current_rule_before_first_period(joiner: str):
     source = (
         "Prior to the OBBB, aliens were eligible"
@@ -20942,6 +20945,13 @@ def test_obbb_history_keeps_current_rule_before_first_period(joiner: str):
     )
 
     assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize("subject", ["aliens", "applicants", "households"])
+def test_pure_obbb_history_with_claimant_subject_is_not_toggleable(subject: str):
+    source = f"Prior to the OBBB, {subject} were eligible."
+
+    assert not completeness_module._source_exception_requires_paired_witness(source)
 
 
 def test_guidance_agency_review_instruction_is_not_a_toggleable_benefit_rule():
@@ -20993,11 +21003,36 @@ def test_guidance_agency_instruction_keeps_conditional_outcomes(current_rule: st
     assert completeness_module._source_exception_requires_paired_witness(source)
 
 
-@pytest.mark.parametrize("joiner", ["; ", ", and ", " and ", ", but ", " but ", ": ", ", "])
+@pytest.mark.parametrize(
+    "joiner",
+    ["; ", ", and ", " and ", ", but ", " but ", ", or ", " or ", ": ", ", "],
+)
 def test_guidance_agency_instruction_keeps_structural_joins(joiner: str):
     source = (
         "State agencies must review changes when reported"
         f"{joiner}applicants receive SNAP benefits if citizens."
+    )
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "the applicant",
+        "an applicant",
+        "members",
+        "a child",
+        "parolees",
+        "veterans",
+        "they",
+        "the household member",
+    ],
+)
+def test_guidance_agency_instruction_keeps_common_policy_subjects(subject: str):
+    source = (
+        "State agencies must review changes when reported and "
+        f"{subject} receive SNAP benefits if citizens."
     )
 
     assert completeness_module._source_exception_requires_paired_witness(source)
@@ -21053,12 +21088,34 @@ def test_guidance_description_keeps_conditional_outcomes(current_rule: str):
 
 @pytest.mark.parametrize(
     "joiner",
-    ["; ", ", and ", " and ", ", but ", " but ", ": ", ", "],
+    ["; ", ", and ", " and ", ", but ", " but ", ", or ", " or ", ": ", ", "],
 )
 def test_guidance_description_keeps_structural_joins(joiner: str):
     source = (
         "Alien Group Description"
         f"{joiner}applicants receive SNAP benefits if citizens."
+    )
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "the applicant",
+        "an applicant",
+        "members",
+        "a child",
+        "parolees",
+        "veterans",
+        "they",
+        "the household member",
+    ],
+)
+def test_guidance_description_keeps_common_policy_subjects(subject: str):
+    source = (
+        "Alien Group Description and "
+        f"{subject} receive SNAP benefits if citizens."
     )
 
     assert completeness_module._source_exception_requires_paired_witness(source)
