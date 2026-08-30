@@ -24004,6 +24004,9 @@ def _source_exception_condition_text(text: str) -> str:
     suffix = clause[marker.start() :]
     if _source_qualification_exception_idiom(clause, marker):
         return clause
+    unless_cue = re.search(r"\bunless\b", suffix, flags=re.IGNORECASE)
+    if unless_cue is not None:
+        return suffix[unless_cue.start() :]
     condition_cue = re.search(
         r"\b(?:vorausgesetzt\s*,?\s+dass|"
         r"unter\s+der\s+voraussetzung\s*,?\s+dass|"
@@ -24563,6 +24566,20 @@ def _source_selector_token_matches(
 def _source_selector_relevance_matches(text: str, normalized_name: str) -> bool:
     """Require a distinctive selector concept, not one generic shared word."""
 
+    collapsed = _collapse_text(text).lower()
+    if (
+        normalized_name == "alien_status_documentation_missing_or_unwilling"
+        and re.search(
+            r"^(?:(?:if|when|unless)\s+)?"
+            r"(?:(?:the|an?)\s+)?(?:household|person|alien|applicant)\s+"
+            r"indicates\s+"
+            r"(?:an\s+)?(?:inability|unwillingness)(?:\s+or\s+"
+            r"(?:an\s+)?(?:inability|unwillingness))?\s+to\s+provide\s+"
+            r"documentation\s+of\s+alien\s+status\b",
+            collapsed,
+        )
+    ):
+        return True
     tokens = _source_selector_distinctive_tokens(normalized_name)
     if not tokens:
         return False
