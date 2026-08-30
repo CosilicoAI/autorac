@@ -11,7 +11,7 @@ MODULE = "us-ok:policies/income_tax/pilot_liability_pipeline"
 OUTPUT_NAME = "ok_pit_pilot_income_tax_liability"
 POLICYENGINE_VARIABLE = "ok_income_tax_before_credits"
 ORACLE_MERGE = "e1374eb30c582639f8f71f9bf9c22ba93b6e36f4"
-ENCODER_VERSION = "0.2.1743"
+ENCODER_VERSION = "0.2.1744"
 FALLBACK_TEXT = """  - legal_id_prefix: "us-ok:"
     country: us
     mapping_type: not_comparable
