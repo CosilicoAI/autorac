@@ -23971,7 +23971,15 @@ def _negative_proposition_reversal_match(text: str) -> re.Match[str] | None:
 
 
 def _source_has_negative_proposition(text: str) -> bool:
-    return _no_subject_eligibility_negative_proposition(text) or (
+    boundary_matches = tuple(
+        re.finditer(
+            r"[.;]|,\s*(?:and|but|or|however)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+    proposition = text[boundary_matches[-1].end() :] if boundary_matches else text
+    return _no_subject_eligibility_negative_proposition(proposition) or (
         re.search(
             r"\b(?:besteht|gilt)\b[^.;]{0,80}\bnicht\b|"
             r"\bfindet\s+keine\s+anwendung\b|"
@@ -23979,7 +23987,7 @@ def _source_has_negative_proposition(text: str) -> bool:
             r"\b(?:is|are)\s+not\s+(?:eligible|qualified|entitled)\b|"
             r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\bkein(?:e|en|em|er|es)?\s+(?:anspruch|berechtigung)\b",
-            text,
+            proposition,
             flags=re.IGNORECASE,
         )
         is not None
@@ -24004,18 +24012,14 @@ def _no_subject_eligibility_negative_proposition(text: str) -> bool:
             )
             + 1
         )
-        no_matches = tuple(
-            re.finditer(
-                r"\bno\s+",
-                text[clause_start : effect.start()],
-                flags=re.IGNORECASE,
-            )
+        no_match = re.match(
+            r"\s*no\s+",
+            text[clause_start : effect.start()],
+            flags=re.IGNORECASE,
         )
-        if not no_matches:
+        if no_match is None:
             continue
-        subject_region = text[
-            clause_start + no_matches[-1].end() : effect.start()
-        ].strip()
+        subject_region = text[clause_start + no_match.end() : effect.start()].strip()
         if re.match(
             r"(?:later|fewer|more|less)\s+than\b",
             subject_region,

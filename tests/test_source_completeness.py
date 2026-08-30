@@ -33091,6 +33091,31 @@ def test_unrelated_no_subject_does_not_reverse_later_eligibility(source: str):
     assert completeness_module._source_exception_effect_requirement(source) != "enable"
 
 
+@pytest.mark.parametrize(
+    "source",
+    (
+        "An applicant with no income shall be eligible unless qualified.",
+        "The child who has no parent shall be eligible unless qualified.",
+        "A household reporting no earnings is eligible unless disqualified.",
+        "Any alien with no documentation shall be eligible unless exempt.",
+    ),
+)
+def test_negative_subject_modifier_does_not_reverse_positive_eligibility(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) != "enable"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Another applicant is ineligible. The child shall be eligible unless qualified.",
+        "The first applicant is not eligible; the child shall be eligible unless qualified.",
+        "The first applicant is ineligible, but the child shall be eligible unless qualified.",
+    ),
+)
+def test_prior_negative_clause_does_not_reverse_positive_eligibility(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) != "enable"
+
+
 def test_generic_at_least_one_criterion_chapeau_accepts_descendant_selector():
     source = "The person is eligible if the person meets at least one of the criteria."
 
