@@ -21038,6 +21038,44 @@ def test_guidance_agency_instruction_keeps_common_policy_subjects(subject: str):
     assert completeness_module._source_exception_requires_paired_witness(source)
 
 
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "spouses",
+        "parents",
+        "refugees",
+        "asylees",
+        "noncitizens",
+        "immigrants",
+        "widows",
+    ],
+)
+def test_guidance_agency_instruction_keeps_other_claimant_subjects(subject: str):
+    source = (
+        "State agencies must review changes when reported and "
+        f"{subject} receive SNAP benefits if citizens."
+    )
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "State agencies must review changes, and applicants must provide "
+            "verification if requested."
+        ),
+        (
+            "State agencies must review households and applicants if changes "
+            "are reported."
+        ),
+    ],
+)
+def test_guidance_administrative_continuation_is_not_claimant_policy(source: str):
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
 def test_guidance_attachment_description_is_not_a_toggleable_benefit_rule():
     source = (
         "Page 11 of 11 Alien Group Description honorably discharged veteran "
@@ -21119,6 +21157,64 @@ def test_guidance_description_keeps_common_policy_subjects(subject: str):
     )
 
     assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "spouses",
+        "parents",
+        "refugees",
+        "asylees",
+        "noncitizens",
+        "immigrants",
+        "widows",
+    ],
+)
+def test_guidance_description_keeps_other_claimant_subjects(subject: str):
+    source = (
+        "Alien Group Description and "
+        f"{subject} receive SNAP benefits if citizens."
+    )
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize("dash", [" - ", " – ", " — "])
+def test_guidance_description_keeps_spaced_dash_policy_join(dash: str):
+    source = (
+        "Alien Group Description"
+        f"{dash}applicants receive SNAP benefits if citizens."
+    )
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize("dash", [" - ", " – ", " — "])
+def test_guidance_agency_instruction_keeps_spaced_dash_policy_join(dash: str):
+    source = (
+        "State agencies must review changes when reported"
+        f"{dash}applicants receive SNAP benefits if citizens."
+    )
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+def test_guidance_glossary_admission_description_is_not_claimant_policy():
+    source = "Alien Group Description: applicants admitted if paroled."
+
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize("dash", [" - ", " – ", " — "])
+def test_guidance_glossary_dash_heading_is_not_arithmetic_policy(dash: str):
+    source = (
+        "Alien Group Description"
+        f"{dash}honorably discharged veteran whose discharge is not because "
+        "of immigration status."
+    )
+
+    assert not completeness_module._source_exception_requires_paired_witness(source)
 
 
 def test_nonoperative_parolee_glossary_duration_is_not_a_boundary_obligation():

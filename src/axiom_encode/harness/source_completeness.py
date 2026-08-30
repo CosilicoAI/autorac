@@ -23084,18 +23084,21 @@ def _source_exception_requires_paired_witness(
 
 
 def _source_has_operative_policy_effect(text: str) -> bool:
-    """Return whether text states a claimant-facing outcome or computation."""
+    """Return whether a condition controls a claimant-facing policy outcome."""
 
-    return bool(
-        source_states_explicit_computation(text)
-        or re.search(
-            r"\b(?:eligible|ineligible|qualif(?:y|ies|ied|ication))\b|"
-            r"\b(?:benefits?|payments?|amounts?|allowances?|credits?|"
-            r"deductions?|exemptions?)\s+(?:apply|applies|equal|equals|are|is)\b",
-            text,
-            flags=re.IGNORECASE,
-        )
+    outcome = re.search(
+        r"\b(?:eligible|ineligible|qualif(?:y|ies|ied|ication))\b|"
+        r"\b(?:receive[sd]?|get[st]?|obtain[sd]?)\b[^.;]{0,100}\b(?:SNAP\s+)?"
+        r"(?:benefits?|assistance|allowances?|payments?|coverage|credits?)\b|"
+        r"\b(?:is|are|becomes?|remain(?:s)?)\s+entitled\s+to\b|"
+        r"\b(?:coverage|benefits?|provisions?|rules?)\s+"
+        r"(?:begins?|appl(?:y|ies))\b|"
+        r"\b(?:benefits?|payments?|amounts?|allowances?|credits?|deductions?|"
+        r"exemptions?)\s+(?:equals?|is\s+(?:calculated|computed|determined))\b",
+        text,
+        flags=re.IGNORECASE,
     )
+    return bool(outcome and _source_exception_or_applicability_matches(text))
 
 
 def _source_has_current_eligibility_effect(text: str) -> bool:
@@ -23129,22 +23132,14 @@ def _source_is_superseded_obbb_eligibility_history(text: str) -> bool:
 def _source_has_joined_operative_segment(text: str) -> bool:
     """Detect a separate conditional/computational rule after nonoperative prose."""
 
-    policy_subject = (
-        r"(?:(?:the|this|an?|any|each|all|those|these)\s+)?(?:applicants?|"
-        r"households?(?:\s+members?)?|members?|persons?|individuals?|claimants?|"
-        r"aliens?|child(?:ren)?|parolees?|veterans?|famil(?:y|ies)|recipients?|"
-        r"students?|taxpayers?|they|he|she|SNAP\s+benefits?|benefits?|payments?|"
-        r"allowances?|coverage|provisions?|rules?|credits?)"
-    )
     delimiter = re.compile(
-        rf"(?:[.;:,]\s*(?:(?:and|but|or|yet)\s+)?|"
-        rf"\b(?:and|but|or|yet)\s+)(?={policy_subject}\b)",
+        r"(?:[.;:,]\s*(?:(?:and|but|or|yet)\s+)?|"
+        r"\b(?:and|but|or|yet)\s+|\s+[\N{EN DASH}\N{EM DASH}-]\s+)",
         flags=re.IGNORECASE,
     )
     joined_segments = (text[match.end() :] for match in delimiter.finditer(text))
     return any(
-        _source_exception_or_applicability_matches(segment)
-        or _source_has_operative_policy_effect(segment)
+        _source_has_operative_policy_effect(segment)
         for segment in joined_segments
         if segment.strip()
     )
@@ -26641,8 +26636,8 @@ def _source_boundary_is_nonoperative_guidance_definition(
             collapsed,
             flags=re.IGNORECASE,
         )
-        and not _source_exception_or_applicability_matches(collapsed)
         and not _source_has_operative_policy_effect(collapsed)
+        and not _source_has_joined_operative_segment(collapsed)
     )
 
 
