@@ -2473,6 +2473,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "printf '%s\\n' \"$review_finding\"" in command
     assert 'args+=(--review-findings "$review_finding_path")' in command
     assert '--repair-candidate-root "$REPAIR_CANDIDATE_ROOT"' in command
+    assert (
+        'if [ -n "${REPAIR_CANDIDATE_ROOT:-}" ] && \\\n'
+        '     [ -n "$replacement_path" ]; then'
+    ) in command
     assert '--repair-candidate-path "$REPAIR_CANDIDATE_PATH"' in command
     assert "--repair-candidate-rulespec-sha256" in command
     assert '"$REPAIR_CANDIDATE_RULESPEC_SHA256"' in command
@@ -4635,6 +4639,11 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
             "GITHUB_WORKSPACE": str(tmp_path),
             "REPLACE_LEGACY_RULESPEC_PATH": "",
             "REPLACE_RULESPEC_PATH": replacement_path,
+            "REPAIR_CANDIDATE_PATH": "statutes/44-30-2.6.yaml",
+            "REPAIR_CANDIDATE_ROOT": str(tmp_path / "repair-candidate"),
+            "REPAIR_CANDIDATE_RULESPEC_SHA256": "b" * 64,
+            "REPAIR_CANDIDATE_TESTS_SHA256": "c" * 64,
+            "REPAIR_TESTS_ONLY": "false",
             "REVIEW_FINDING": "Preserve the composed target semantics.",
             "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
             "RULESPEC_REF": "a" * 40,
@@ -4662,16 +4671,19 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     assert preflight_args[replacement_index + 1] == replacement_path
     assert "--replace-legacy-rulespec-path" not in preflight_args
     assert "--required-import-rulespec-path" not in preflight_args
+    assert "--repair-candidate-root" in preflight_args
 
     for index, source in enumerate(sources, start=1):
         assert encode_args[index][-1] == source
         assert "--apply-target-only" in encode_args[index]
         assert "--required-import-rulespec-path" not in encode_args[index]
+        assert "--repair-candidate-root" not in encode_args[index]
 
     primary_args = encode_args[-1]
     assert primary_args[-1] == primary
     assert "--apply-target-only" not in primary_args
     assert "--replace-legacy-rulespec-path" not in primary_args
+    assert "--repair-candidate-root" in primary_args
     required_indexes = [
         index
         for index, value in enumerate(primary_args)

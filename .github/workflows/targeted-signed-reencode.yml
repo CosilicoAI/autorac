@@ -1253,7 +1253,8 @@ jobs:
                 "$review_contract_json"
               )
             fi
-            if [ -n "${REPAIR_CANDIDATE_ROOT:-}" ]; then
+            if [ -n "${REPAIR_CANDIDATE_ROOT:-}" ] && \
+               [ -n "$replacement_path" ]; then
               test -n "${REPAIR_CANDIDATE_PATH:-}" \
                 && test -n "${REPAIR_CANDIDATE_RULESPEC_SHA256:-}" \
                 && test -n "${REPAIR_CANDIDATE_TESTS_SHA256:-}"
