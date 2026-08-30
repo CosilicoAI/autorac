@@ -26652,8 +26652,7 @@ def _source_boundary_is_nonoperative_guidance_definition(
             _collapse_text(context[: -len(text)] if text else context),
             flags=re.IGNORECASE,
         )
-        and
-        re.search(
+        and re.search(
             r"\bunder\s+\([a-z]\)\(\d+\)\s+of\s+the\s+INA\s+for\s+a\s+"
             r"period\s+of\s+at\s+least\s+\d+(?:\.\d+)?\s+years?\b",
             collapsed,

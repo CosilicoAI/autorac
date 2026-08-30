@@ -20980,9 +20980,7 @@ def test_guidance_agency_instruction_keeps_joined_eligibility_selector():
     ],
 )
 def test_guidance_agency_instruction_keeps_other_joined_rules(current_rule: str):
-    source = (
-        "State agencies must review changes when reported, and " + current_rule
-    )
+    source = "State agencies must review changes when reported, and " + current_rule
 
     assert completeness_module._source_exception_requires_paired_witness(source)
 
@@ -21088,8 +21086,7 @@ def test_guidance_attachment_description_is_not_a_toggleable_benefit_rule():
 
 def test_guidance_description_keeps_explicit_eligibility_selector():
     source = (
-        "Alien Group Description: a parolee is eligible if paroled for at least "
-        "1 year."
+        "Alien Group Description: a parolee is eligible if paroled for at least 1 year."
     )
 
     assert completeness_module._source_exception_requires_paired_witness(source)
@@ -21130,8 +21127,7 @@ def test_guidance_description_keeps_conditional_outcomes(current_rule: str):
 )
 def test_guidance_description_keeps_structural_joins(joiner: str):
     source = (
-        "Alien Group Description"
-        f"{joiner}applicants receive SNAP benefits if citizens."
+        f"Alien Group Description{joiner}applicants receive SNAP benefits if citizens."
     )
 
     assert completeness_module._source_exception_requires_paired_witness(source)
@@ -21151,10 +21147,7 @@ def test_guidance_description_keeps_structural_joins(joiner: str):
     ],
 )
 def test_guidance_description_keeps_common_policy_subjects(subject: str):
-    source = (
-        "Alien Group Description and "
-        f"{subject} receive SNAP benefits if citizens."
-    )
+    source = f"Alien Group Description and {subject} receive SNAP benefits if citizens."
 
     assert completeness_module._source_exception_requires_paired_witness(source)
 
@@ -21172,10 +21165,7 @@ def test_guidance_description_keeps_common_policy_subjects(subject: str):
     ],
 )
 def test_guidance_description_keeps_other_claimant_subjects(subject: str):
-    source = (
-        "Alien Group Description and "
-        f"{subject} receive SNAP benefits if citizens."
-    )
+    source = f"Alien Group Description and {subject} receive SNAP benefits if citizens."
 
     assert completeness_module._source_exception_requires_paired_witness(source)
 
@@ -21183,8 +21173,7 @@ def test_guidance_description_keeps_other_claimant_subjects(subject: str):
 @pytest.mark.parametrize("dash", [" - ", " – ", " — "])
 def test_guidance_description_keeps_spaced_dash_policy_join(dash: str):
     source = (
-        "Alien Group Description"
-        f"{dash}applicants receive SNAP benefits if citizens."
+        f"Alien Group Description{dash}applicants receive SNAP benefits if citizens."
     )
 
     assert completeness_module._source_exception_requires_paired_witness(source)
@@ -21398,9 +21387,9 @@ def test_operative_parolee_duration_remains_a_boundary_obligation():
         extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
     )
 
-    assert [(occurrence.value, occurrence.raw) for _branch, occurrence in obligations] == [
-        (1, "1")
-    ]
+    assert [
+        (occurrence.value, occurrence.raw) for _branch, occurrence in obligations
+    ] == [(1, "1")]
 
 
 @pytest.mark.parametrize(
@@ -21426,9 +21415,9 @@ def test_qualification_parolee_duration_remains_a_boundary_obligation(source: st
         extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
     )
 
-    assert [(occurrence.value, occurrence.raw) for _branch, occurrence in obligations] == [
-        (1, "1")
-    ]
+    assert [
+        (occurrence.value, occurrence.raw) for _branch, occurrence in obligations
+    ] == [(1, "1")]
 
 
 def test_parolee_glossary_row_does_not_hide_joined_conditional_boundary():
@@ -21446,9 +21435,9 @@ def test_parolee_glossary_row_does_not_hide_joined_conditional_boundary():
         extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
     )
 
-    assert [(occurrence.value, occurrence.raw) for _branch, occurrence in obligations] == [
-        (1, "1")
-    ]
+    assert [
+        (occurrence.value, occurrence.raw) for _branch, occurrence in obligations
+    ] == [(1, "1")]
 
 
 @pytest.mark.parametrize("result_phrase", ["ergibt sich", "ergeben sich"])
