@@ -4343,6 +4343,19 @@ def _has_substantive_arithmetic_expression(source_text: str) -> bool:
     if _WORDED_ARITHMETIC_EXPRESSION.search(masked_source_text):
         return True
     for match in _ARITHMETIC_EXPRESSION.finditer(masked_source_text):
+        title_prefix = masked_source_text[max(0, match.start() - 120) : match.start()]
+        if re.fullmatch(
+            r"(?:19|20)\d{2}\s+[–—]\s+[A-Z][A-Za-z'-]*",
+            match.group(0),
+        ) and re.search(
+            r"\b(?:Act|Bill|Memorandum|Program|Report|Title)\s+of\s+$",
+            title_prefix,
+            flags=re.IGNORECASE,
+        ):
+            # PDF text commonly preserves an en/em dash in a title such as
+            # ``Act of 2025 – Information Memorandum``.  A year followed by a
+            # capitalized title word is typography, not subtraction.
+            continue
         expression = re.sub(r"\s+", "", match.group(0))
         if re.fullmatch(r"(?:19|20)\d{2}/(?:19|20)\d{2}", expression):
             continue
@@ -11945,6 +11958,32 @@ def authoritative_numeric_recall_text(source_text: str) -> str:
     """Remove structural/citation ordinals, never substantive source values."""
 
     cleaned = _strip_terminal_session_law_history(source_text)
+    cleaned = re.sub(
+        r"\b(?:Public\s+Law|P\.?\s*L\.?)\s+\d+\s*[-–—]\s*\d+\b",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\bPage\s+\d+(?:\s+of\s+\d+)?\b",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\b\d{1,6}\s+[A-Z][A-Za-z.'’-]*(?:\s+[A-Z][A-Za-z.'’-]*){0,4}\s+"
+        r"(?:Avenue|Boulevard|Center|Drive|Lane|Place|Plaza|Road|Street|Way)\b"
+        r",\s*[A-Za-z .'-]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"\bDate:\s*\d{4}[./-]\d{1,2}[./-]\d{1,2}\s+\d{1,2}:\d{2}:\d{2}"
+        r"\s+[+-]\d{2}(?:[':]?\d{2})?'?",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     cleaned = _LOUISIANA_SESSION_LAW_CITATION.sub("", cleaned)
     cleaned = _LOUISIANA_RS_NUMERIC_RECALL_CITATION.sub("", cleaned)
     cleaned = _GERMAN_LEGAL_CITATION.sub("", cleaned)
@@ -12778,6 +12817,31 @@ def _source_gate_explicit_polarities(text: str) -> dict[str, bool]:
     }
 
 
+def _without_flattened_pdf_alternative_list(body: str) -> str:
+    """Remove an OCR-flattened alternative list while retaining its preface."""
+
+    alternative_list = re.search(
+        r"\b(?:one\s+or\s+more|at\s+least\s+one)\s+of\s+the\s+"
+        r"following\s+(?:conditions?|criteria|requirements?)\s*:\s*x\s+",
+        body,
+        flags=re.IGNORECASE,
+    )
+    if alternative_list is None or len(re.findall(r"(?:^|\s)x\s+(?=[A-Z])", body)) < 2:
+        return body
+    return re.sub(
+        r"\b(?:and|or)\s+(?:(?:(?:the|an?|any|each)\s+)?"
+        r"(?:(?!(?:and|or|has|have|had|is|are|was|were|must|shall|should|"
+        r"needs?|meets?|satisfy|satisfies)\b)[A-Za-z][A-Za-z'-]*\s+){1,4}|"
+        r"they\s+)?"
+        r"(?:(?:must|shall|should)\s+|(?:is|are)\s+required\s+to\s+|"
+        r"(?:has|have|needs?)\s+to\s+)?"
+        r"(?:has|have|meets?|satisf(?:y|ies))\s*$",
+        "",
+        body[: alternative_list.start()],
+        flags=re.IGNORECASE,
+    )
+
+
 def _source_conjunctive_fact_gates(
     text: str,
 ) -> tuple[tuple[frozenset[str], frozenset[str]], ...]:
@@ -12832,6 +12896,9 @@ def _source_conjunctive_fact_gates(
                 if depth == 0:
                     body = text[body_start:index]
                     break
+    # Parenthetical narrowing above reconstructs the body from the original
+    # source, so flattened-list truncation must happen afterward.
+    body = _without_flattened_pdf_alternative_list(body)
     segments = _source_gate_split_conjunctive_conditions(body)
     if len(segments) < 2:
         return ()
@@ -15561,6 +15628,16 @@ def _source_clause_spans(
         0,
         len(source_text),
         *(match.end() for match in boundary_matches),
+        *(
+            match.start()
+            for match in re.finditer(
+                r"\b(?:Guidance\s+documents\s+lack\s+the\s+force\s+and\s+"
+                r"effect\s+of\s+law|USDA\s+may\s+not\s+cite,\s*use,\s*or\s+"
+                r"rely\s+on\s+any\s+guidance)\b",
+                source_text,
+                flags=re.IGNORECASE,
+            )
+        ),
         *(branch.start for branch in branches),
         *(branch.end for branch in branches),
     }
@@ -22959,6 +23036,27 @@ def _source_exception_requires_paired_witness(
     """
 
     collapsed = _collapse_text(text)
+    if re.fullmatch(
+        r"(?:Guidance\s+documents\s+lack\s+the\s+force\s+and\s+effect\s+"
+        r"of\s+law,\s*unless\s+expressly\s+authorized\s+by\s+statute\s+or\s+"
+        r"incorporated\s+into\s+a\s+contract|USDA\s+may\s+not\s+cite,\s*use,\s*"
+        r"or\s+rely\s+on\s+any\s+guidance\s+that\s+is\s+not\s+available\s+"
+        r"through\s+(?:its|their)\s+guidance\s+portal,\s*except\s+to\s+"
+        r"establish\s+historical\s+facts)\.?",
+        collapsed,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    historical = re.fullmatch(
+        r"Prior\s+to\s+the\s+OBBB\b[^.;]{0,640}\b(?:was|were)\s+eligible\b"
+        r"[^.;]*[.]?",
+        collapsed,
+        flags=re.IGNORECASE,
+    )
+    if historical is not None:
+        # A historical comparison explains superseded eligibility; it is not
+        # a current selector that companion cases can toggle.
+        return False
     notwithstanding_tail = _louisiana_notwithstanding_reference_tail(collapsed)
     if notwithstanding_tail is not None:
         return _notwithstanding_reference_tail_requires_paired_witness(
