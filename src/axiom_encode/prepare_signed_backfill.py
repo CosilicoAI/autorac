@@ -319,6 +319,45 @@ def citation_rulespec_path(citation: str) -> PurePosixPath:
     return PurePosixPath(jurisdiction) / relative
 
 
+def validate_primary_target_scope(
+    citation: str,
+    replace_rulespec_path: str = "",
+) -> PurePosixPath:
+    """Bind an optional primary replacement to the citation's canonical leaf.
+
+    The complete-source validator judges the source unit named by ``citation``.
+    Letting a dispatch pair that unit with a different RuleSpec destination can
+    therefore send a leaf candidate through whole-section completeness checks.
+    Fail before generation instead of relying on the later apply gauntlet to
+    discover that routing error.
+    """
+
+    from axiom_encode.corpus_resolver import (
+        require_canonical_corpus_citation_path,
+    )
+
+    try:
+        canonical_citation = require_canonical_corpus_citation_path(citation)
+        expected_path = citation_rulespec_path(canonical_citation)
+    except ValueError as exc:
+        raise ValueError(
+            "primary citation must be an exact canonical corpus citation path"
+        ) from exc
+    if not replace_rulespec_path:
+        return expected_path
+    actual_path = _safe_relative_path(
+        replace_rulespec_path,
+        label="primary replacement RuleSpec",
+    )
+    if actual_path != expected_path:
+        raise ValueError(
+            "primary replacement path must equal the citation's canonical "
+            f"RuleSpec path: citation {canonical_citation!r} resolves to "
+            f"{expected_path.as_posix()!r}, not {actual_path.as_posix()!r}"
+        )
+    return expected_path
+
+
 def split_atomic_source_input(atomic_source_json: str) -> dict[str, object]:
     """Split the bounded dispatch input into exactly one atomic source mode."""
 
@@ -4002,6 +4041,15 @@ def main() -> None:
     cascade_parser.add_argument("dependent_citations", nargs="+")
     citation_path_parser = subparsers.add_parser("citation-rulespec-path")
     citation_path_parser.add_argument("citation")
+    primary_target_parser = subparsers.add_parser(
+        "validate-primary-target-scope",
+        help=(
+            "require an optional primary replacement path to match the "
+            "citation's canonical RuleSpec path"
+        ),
+    )
+    primary_target_parser.add_argument("citation")
+    primary_target_parser.add_argument("replace_rulespec_path", nargs="?", default="")
     shrink_parser = subparsers.add_parser("authorize-legacy-index-manifest-shrink")
     shrink_parser.add_argument("repo", type=Path)
     shrink_parser.add_argument("target_rulespec_path")
@@ -4146,6 +4194,13 @@ def main() -> None:
             )
         elif args.command == "citation-rulespec-path":
             print(citation_rulespec_path(args.citation))
+        elif args.command == "validate-primary-target-scope":
+            print(
+                validate_primary_target_scope(
+                    args.citation,
+                    args.replace_rulespec_path,
+                )
+            )
         elif args.command == "authorize-legacy-index-manifest-shrink":
             print(
                 "true"

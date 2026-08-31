@@ -2169,6 +2169,24 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         if step.get("name") == "Enforce failed-attempt budget"
     )
     assert attempt_step["env"]["REPAIR_RUN_ID"] == "${{ inputs.repair_run_id }}"
+    scope_job = workflow["jobs"]["scope_preflight"]
+    assert "environment" not in scope_job
+    assert scope_job["needs"] == "attempt_budget"
+    assert "needs.attempt_budget.result == 'skipped'" in scope_job["if"]
+    assert "github.actor == 'github-actions[bot]'" in scope_job["if"]
+    scope_step = next(
+        step
+        for step in scope_job["steps"]
+        if step.get("name") == "Validate primary target scope"
+    )
+    assert scope_step["env"] == {
+        "CITATION": "${{ inputs.citation }}",
+        "REPLACE_RULESPEC_PATH": "${{ inputs.replace_rulespec_path }}",
+    }
+    assert "validate-primary-target-scope" in scope_step["run"]
+    assert '"$CITATION" "$REPLACE_RULESPEC_PATH"' in scope_step["run"]
+    assert set(job["needs"]) == {"attempt_budget", "scope_preflight"}
+    assert "needs.scope_preflight.result == 'success'" in job["if"]
     steps = job["steps"]
     country_step = next(
         step for step in steps if step.get("name") == "Validate country routing input"
@@ -2223,6 +2241,12 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "${{ inputs.existing_signed_imports_json }}"
     )
     assert source_bundle_step["env"]["REPAIR_RUN_ID"] == ("${{ inputs.repair_run_id }}")
+    assert "validate-primary-target-scope" in source_bundle_command
+    assert source_bundle_command.index("validate-primary-target-scope") > (
+        source_bundle_command.index(
+            "queue-authorized re-encodes cannot add source inputs"
+        )
+    )
     assert "split-atomic-source-input" in source_bundle_command
     assert 'parse-source-bundle "$source_bundle_json"' in source_bundle_command
     assert 'primary_required_test_cases_json="$(jq -cer' in source_bundle_command

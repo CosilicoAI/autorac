@@ -1,0 +1,1 @@
+Reject targeted signed re-encode dispatches whose primary replacement path does not match the canonical RuleSpec path for the requested citation before requesting production-signing approval or running a model.
