@@ -2,11 +2,16 @@
 
 ## State
 
-Resumed from clean head `5db9f866` with the prior implementation and tests
-preserved. The implementation is not approved: independent review found that
-the absent-from-HEAD worktree check can fail open because it uses path-based
-component probes. A descriptor-relative, fail-closed replacement and focused
-race/error coverage are now required before broader validation or publication.
+Resumed on `fix/optional-retired-manifest-inventory` at review checkpoint
+`4602eaf2`. The working-tree implementation and tests are byte-for-byte the
+tree saved by salvage ref
+`refs/codex-salvage/fix-optional-retired-manifest-inventory-20260830-212800-64246`
+(`7a6782b9`) and remain deliberately uncommitted while they are audited. The
+local `origin/main` is `f1bfe0a4`; a live fetch and GitHub query were attempted
+but are currently blocked by DNS/network access. Independent review rejected
+the prior path-based absence proof, so the recovered descriptor-relative,
+fail-closed replacement and adversarial tests must be validated and reviewed
+before publication.
 
 ## Done
 
@@ -46,15 +51,26 @@ race/error coverage are now required before broader validation or publication.
 - Attempted the repository-graph debugging workflow; its query tools are not
   available in this session, so direct source, call-site, and Git inspection is
   the active fallback.
+- Read the complete continuation brief and exact independent `REQUEST CHANGES`
+  report. The finding is limited to the fail-open worktree absence probe and
+  missing race/symlink tests; the report confirms the clean-absence and normal
+  tracked/dirty/malformed proof surfaces otherwise remain sound.
+- Inspected every branch commit and the salvage commit metadata, confirmed the
+  dirty source/test tree exactly matches salvage `7a6782b9`, and preserved it
+  without duplication or loss.
+- Attempted both `git fetch origin --prune` and a GitHub PR query; both failed
+  before changing state because this environment cannot currently resolve
+  GitHub hosts.
 
 ## Next
 
-- Replace the absent-from-HEAD proof with descriptor-relative traversal rooted
-  at a verified repository directory descriptor and one fail-closed leaf
-  metadata probe.
-- Add deterministic adversarial coverage for appearance, ancestor replacement,
-  symlink, dangling-link, non-regular leaf, and unexpected syscall errors.
+- Audit and, where needed, correct the recovered descriptor-relative traversal
+  and deterministic appearance, ancestor-replacement, symlink, dangling-link,
+  non-regular-leaf, unsupported-platform, and syscall-error tests.
+- Commit the coherent implementation/test step after its focused checks pass,
+  then update and commit this ledger after each subsequent coherent step.
 - Run focused and broad validation, then complete the required independent
   review-fix cycle with no actionable findings.
-- Verify the exact commits and draft PR body; only then push/open a draft PR,
-  without dispatching signing or merging, and write the final output report.
+- Retry live upstream comparison, verify the exact commits and draft PR body,
+  and only then push/open a draft PR if all checks are green. Do not dispatch
+  signing or merge; write the final report to the task output file.
