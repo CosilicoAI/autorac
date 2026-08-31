@@ -2032,8 +2032,20 @@ def test_targeted_signed_reencode_reconciles_retired_inventory_before_commits() 
     )
     command = step["run"]
     invocation = "reconcile-retired-manifest-inventory"
+    canonical_invocation = (
+        '    "$workflow_python" "$backfill_helper" \\\n'
+        "      reconcile-retired-manifest-inventory \\\n"
+        '      "$RULESPEC_CHECKOUT" "$refresh_rulespec_path"'
+    )
+    replacement_invocation = (
+        '    "$workflow_python" "$backfill_helper" \\\n'
+        "      reconcile-retired-manifest-inventory \\\n"
+        '      "$RULESPEC_CHECKOUT" "$REPLACE_RULESPEC_PATH"'
+    )
 
     assert command.count(invocation) == 3
+    assert command.count(canonical_invocation) == 1
+    assert command.count(replacement_invocation) == 2
     assert '[ "$source_bundle_enabled" = "false" ]' in command
     assert '[ -n "$REPLACE_RULESPEC_PATH" ]' in command
     assert '[ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]' in command

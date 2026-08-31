@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import contextlib
+import errno
 import hashlib
 import io
 import json
@@ -137,6 +138,20 @@ REVIEWED_RULESPEC_PR_BASE_BRANCHES = frozenset(
         ("dk", "pin/dk-rulespec-2026-08-07"),
         ("us", "hard-cut/canonical-layout-us"),
     }
+)
+
+_DESCRIPTOR_OPEN = os.open
+_DESCRIPTOR_STAT = os.stat
+_DESCRIPTOR_OS_IS_POSIX = os.name == "posix"
+_DESCRIPTOR_O_DIRECTORY = getattr(os, "O_DIRECTORY", None)
+_DESCRIPTOR_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", None)
+_DESCRIPTOR_O_CLOEXEC = getattr(os, "O_CLOEXEC", None)
+_DESCRIPTOR_OPEN_SUPPORTS_DIR_FD = os.open in getattr(os, "supports_dir_fd", ())
+_DESCRIPTOR_STAT_SUPPORTS_DIR_FD = os.stat in getattr(os, "supports_dir_fd", ())
+_DESCRIPTOR_STAT_SUPPORTS_NOFOLLOW = os.stat in getattr(
+    os,
+    "supports_follow_symlinks",
+    (),
 )
 
 
@@ -472,24 +487,92 @@ def _checkout_path_exists_without_indirection(
     *,
     label: str,
 ) -> bool:
-    """Return whether a checkout path exists, rejecting parent indirection."""
+    """Probe one checkout path through pinned, no-follow directory handles."""
 
-    cursor = repo
-    for index, component in enumerate(relative.parts):
-        cursor /= component
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(component in {"", ".", ".."} for component in relative.parts)
+    ):
+        raise ValueError(f"cannot inspect {label}: noncanonical path {relative}")
+    required_flags = (
+        _DESCRIPTOR_O_DIRECTORY,
+        _DESCRIPTOR_O_NOFOLLOW,
+        _DESCRIPTOR_O_CLOEXEC,
+    )
+    if (
+        not _DESCRIPTOR_OS_IS_POSIX
+        or not all(isinstance(flag, int) and flag for flag in required_flags)
+        or not _DESCRIPTOR_OPEN_SUPPORTS_DIR_FD
+        or not _DESCRIPTOR_STAT_SUPPORTS_DIR_FD
+        or not _DESCRIPTOR_STAT_SUPPORTS_NOFOLLOW
+    ):
+        raise ValueError(
+            f"cannot inspect {label} safely: descriptor traversal is unsupported"
+        )
+    directory_flags = (
+        os.O_RDONLY
+        | _DESCRIPTOR_O_DIRECTORY
+        | _DESCRIPTOR_O_NOFOLLOW
+        | _DESCRIPTOR_O_CLOEXEC
+    )
+    raw_repo = Path(os.path.abspath(repo))
+    if not raw_repo.name:
+        raise ValueError(f"cannot inspect {label}: repository root is invalid")
+
+    descriptors: list[int] = []
+    try:
         try:
-            metadata = cursor.lstat()
-        except FileNotFoundError:
-            return False
+            repo_fd = _DESCRIPTOR_OPEN(raw_repo, directory_flags)
+            descriptors.append(repo_fd)
+            opened_repo = os.fstat(repo_fd)
+            if not stat.S_ISDIR(opened_repo.st_mode):
+                raise ValueError(
+                    f"cannot inspect {label}: repository is not a directory"
+                )
+        except (TypeError, NotImplementedError) as exc:
+            raise ValueError(
+                f"cannot inspect {label} safely: descriptor traversal is unsupported"
+            ) from exc
         except OSError as exc:
             raise ValueError(f"cannot inspect {label}: {relative}") from exc
-        if stat.S_ISLNK(metadata.st_mode):
-            raise ValueError(f"{label} contains a symlink: {relative}")
-        if index < len(relative.parts) - 1 and not stat.S_ISDIR(metadata.st_mode):
-            raise ValueError(f"{label} parent is not a directory: {relative}")
-        if index == len(relative.parts) - 1:
-            return True
-    return False
+
+        current_fd = repo_fd
+        for component in relative.parts[:-1]:
+            try:
+                current_fd = _DESCRIPTOR_OPEN(
+                    component,
+                    directory_flags,
+                    dir_fd=current_fd,
+                )
+            except OSError as exc:
+                if exc.errno == errno.ENOENT:
+                    return False
+                raise ValueError(f"cannot inspect {label}: {relative}") from exc
+            except (TypeError, NotImplementedError) as exc:
+                raise ValueError(
+                    f"cannot inspect {label} safely: descriptor traversal is unsupported"
+                ) from exc
+            descriptors.append(current_fd)
+
+        try:
+            _DESCRIPTOR_STAT(
+                relative.name,
+                dir_fd=current_fd,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                return False
+            raise ValueError(f"cannot inspect {label}: {relative}") from exc
+        except (TypeError, NotImplementedError) as exc:
+            raise ValueError(
+                f"cannot inspect {label} safely: descriptor traversal is unsupported"
+            ) from exc
+        return True
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def validate_source_add_targets(
@@ -1821,6 +1904,33 @@ def reconcile_retired_manifest_inventory(
         raise ValueError(
             "retired manifest inventory changed before exact reconciliation"
         )
+    inventory_tree_entry = _git(
+        repo,
+        "ls-tree",
+        "--full-tree",
+        "-z",
+        "HEAD",
+        "--",
+        RETIRED_MANIFEST_INVENTORY.as_posix(),
+    )
+    if not inventory_tree_entry:
+        try:
+            inventory_present = _checkout_path_exists_without_indirection(
+                repo,
+                RETIRED_MANIFEST_INVENTORY,
+                label="retired manifest inventory",
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "retired manifest inventory is absent from HEAD but not safely "
+                "absent from the worktree"
+            ) from exc
+        if inventory_present:
+            raise ValueError(
+                "retired manifest inventory is absent from HEAD but not safely "
+                "absent from the worktree"
+            )
+        return None
     try:
         base_raw = _git(
             repo,

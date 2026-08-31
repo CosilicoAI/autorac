@@ -1,91 +1,168 @@
-# Issue 1312 progress
+# Optional retired-manifest inventory progress
 
 ## State
 
-The checkout-root routing and ProgramSpec citation fix is implemented and
-verified end to end. Actual checkout-root source directories use a narrow
-source-checkout admission mode without weakening normal canonical routing;
-mixed root/jurisdiction layouts and symlink rejection are covered. The
-terminal version is 0.2.1407, focused checks pass, and the independent
-review-fix cycle has no remaining actionable findings. The exact origin diff
-has been audited and the required untracked worker report is complete.
+The recovered descriptor-relative implementation and deterministic adversarial
+suite are committed at `026a5b5a`, with formatter follow-up `4737e6e3` and
+version-contract follow-up `58e85a4d`, on
+`fix/optional-retired-manifest-inventory`; the worktree is clean. The helper now
+selects the repository root with one atomic no-follow directory open and pins
+all later ancestor/leaf inspection to descriptors, so a root replacement after
+that open cannot redirect traversal. The local `origin/main` remains
+`f1bfe0a4`; live fetch, GitHub CLI, and GitHub page queries are currently
+blocked by DNS/network access. Focused and workflow validation are green, and
+the independent re-review approves with no actionable findings. The required
+encoder version is now `0.2.1751`. A complete configured run passed 13,955
+tests and exposed 15 host/environment failures: ten select a user-owned
+Homebrew Git where the supervisor tests require root-owned system Git, one
+cannot create the sandbox-forbidden `/var/tmp` alias fixture, one sees Apple
+Git's sandbox temp-directory warnings, one does not preserve a set-id bit on a
+temporary executable, and two workflow subprocesses import the stale installed
+`corpus_resolver` without `PYTHONPATH=src`. Re-running the 15 failures with
+root-owned system Git and current source fixed 12; the remaining three
+reproduce unchanged on cached `origin/main` and are blocked by this managed
+macOS sandbox rather than repository behavior. The corrected runnable broad
+suite is green (`13,967 passed, 33 skipped, 3 deselected`). Final static/workflow
+checks are green, and the final independent review approves with no actionable
+findings. Live fetch and GitHub API access still fail DNS resolution, so the
+branch has not been pushed and no draft PR has been opened against an
+unverified cached base.
 
 ## Done
 
-- Created the requested local branch and isolated worktree from `origin/main`.
-- Read the repository instructions and applicable debugging/GitHub workflows.
-- Established the fail-first, implementation, real-checkout, compatibility,
-  validation, and independent-review plan.
-- Read issue 1312, rulespec-us PR 1139, issue 1078, and the committed Arizona
-  ProgramSpec manifest that establishes checkout-root placement and a bare
-  `programs/...` citation.
-- Confirmed the pinned bridge mechanism: the ProgramSpec has no leading
-  jurisdiction prefix, falls back to `<checkout>/us`, and fails while rebasing
-  `<checkout>/programs/...`; its anchor is also incorrectly `us:programs/...`.
-- Located the exact held-out SC change in rulespec-us reflog commit `f93f556c`:
-  add page 159/remove page 369 in the ProgramSpec and drain three worklist rows.
-- Added current-main regressions for the signed ProgramSpec manifest, the four
-  requested checkout-root source roots, and checkout-root placement while
-  retaining the UK and jurisdiction-content-root controls.
-- Captured the fail-first focused run: six failures, including the exact
-  `programs/us-sc/snap/fy-2026.yaml` writer case.
-- Recorded that `uv run` cannot access `~/.cache/uv` in the sandbox; focused
-  current-main tests run with an existing compatible project environment.
-- Routed checkout-owned `policies/`, `programs/`, `regulations/`, and
-  `statutes/` outputs through the exact checkout root, taught manifest
-  placement to accept that root, and made ProgramSpec citations bare
-  `programs/...` paths.
-- Added the issue 1312 changelog entry.
-- Passed the focused current-main regression plus the jurisdiction-prefixed and
-  UK issue-1078 controls: nine tests passed; focused Ruff also passed.
-- Reconstructed the exact two-file SC change on rulespec-us base
-  `187d8d8e`: page 159 entered/page 369 left the ProgramSpec scope and all
-  three `SNAP-SC-UTIL` worklist rows changed to `merged`.
-- Captured the literal pinned-bridge fail-first: exit 1 at the reported
-  `path.relative_to(manifest_root)` line because the root ProgramSpec was
-  rebased against `<scratch>/us`.
-- Applied the minimal routing/citation backport to a disposable pinned checkout,
-  followed by a scratch-only version bump required by its clean-provenance
-  gate; the campaign interpreter then signed the reconstructed diff.
-- Confirmed the v1 output shape: checkout-root
-  `.axiom/encoding-manifests/programs/us-sc/snap/fy-2026.json`, bare
-  `programs/us-sc/snap/fy-2026` citation, and checkout-relative applied path.
-- Committed the manifest only in the disposable rulespec clone and passed the
-  separate external `guard-generated --roots programs` check.
-- Confirmed the source `wt-snap-sc` worktree remains unchanged apart from its
-  two pre-existing untracked report files.
-- Completed the first independent review pass. It found that the initial
-  four-root test did not create real atomic roots and that resolving the input
-  path before admission weakened symlink rejection.
-- Added a narrowly scoped checkout inspection mode for manifest-owned source
-  roots while preserving the normal rule that only ProgramSpecs are admitted
-  at checkout root, restored lexical admission, and added real-file,
-  symlink-rejection, direct `us-sc/policies/...`, and direct `uk/statutes/...`
-  coverage.
-- Passed all 14 strengthened focused routing/writer/compatibility tests.
-- The second review pass found two additional mixed-layout safety gaps:
-  jurisdiction-prefixed files failed when the same checkout also had a
-  root-level atomic source directory, and the checkout-root helper resolved a
-  symlink alias before admission. Captured both as three failing cases, then
-  fixed them with scoped direct-child routing and lexical validation.
-- Passed the final routing, writer, issue-1078, repository-routing, and version
-  provenance matrix: 57 tests passed.
-- Coordinated the terminal encoder version as 0.2.1407 in `pyproject.toml`,
-  `src/axiom_encode/__init__.py`, and `uv.lock`, after all encoder-affecting
-  commits.
-- Passed full Ruff, `compileall`, and `git diff --check`.
-- Ran all 6,091 repository tests with an available offline compatible
-  environment and writable scratch Go cache: 6,024 passed and 31 skipped.
-  Of 36 failures, the sole branch-caused version-provenance failure was fixed
-  and rerun green; the other 35 are confined to the environment's stale
-  `axiom-oracles`/editable install and sandbox-dependent system/provisioning
-  checks.
-- Completed the final independent review pass after the mixed-layout fix and
-  terminal version bump; both reviewers reported no remaining actionable
-  findings.
-- Verified the exact `origin/main..HEAD` name-only diff and clean tracked
-  state, then wrote the required untracked `WORKER-REPORT.md`.
+- Inspected branch status, all untracked paths, local refs, merge base, recent
+  history, and the complete surviving diff before editing.
+- Preserved the recovered edits in
+  `src/axiom_encode/prepare_signed_backfill.py` and
+  `tests/test_prepare_signed_backfill.py`.
+- Started independent logic, workflow, and adversarial read-only audits.
+- Added a rulespec-be regression proving a valid signed replacement no-ops only
+  when `tests/test_encoding_manifests.py` is absent from both HEAD and the
+  worktree.
+- Added ignored regular-file and dangling-symlink worktree cases, plus an
+  ambiguous `lstat` probe that must fail closed.
+- Proved invalid normal model-apply shape and wrong, missing, or duplicate
+  target bindings fail before the optional-file exception.
+- Strengthened workflow assertions to bind one canonical-refresh invocation
+  and two replacement invocations to their exact checkout/target arguments.
+- Replaced the racy `exists()`/`is_symlink()` pair with the repository's
+  symlink-free worktree path inspection helper.
+- Added the fixed changelog fragment and committed the implementation.
+- Passed 21 reconciliation tests, the eight new focused checks, focused Ruff,
+  compileall, and `git diff --check`.
+- Passed the canonical-refresh workflow execution test with `PYTHONPATH=src`;
+  without that override the sandbox's stale installed `corpus_resolver` lacks
+  the current `required_mode` argument.
+- Completed three read-only audits; their actionable test and two-probe race
+  findings are addressed.
+- Re-read the repository instructions, exact four-commit branch history and
+  diff, current implementation/tests, and the independent review report at
+  `20260830-194816-delegate-output-gntsoo-4-md/out.md`.
+- Confirmed the branch is clean at `5db9f866`, four commits ahead of the local
+  `origin/main` reference, with no prior work to discard or recreate.
+- Confirmed the outstanding P2: `_checkout_path_exists_without_indirection`
+  still relies on `Path.lstat()` component probes and cannot prove absence
+  safely across appearance races, symlinked ancestors, or inspection errors.
+- Attempted the repository-graph debugging workflow; its query tools are not
+  available in this session, so direct source, call-site, and Git inspection is
+  the active fallback.
+- Read the complete continuation brief and exact independent `REQUEST CHANGES`
+  report. The finding is limited to the fail-open worktree absence probe and
+  missing race/symlink tests; the report confirms the clean-absence and normal
+  tracked/dirty/malformed proof surfaces otherwise remain sound.
+- Inspected every branch commit and the salvage commit metadata, confirmed the
+  dirty source/test tree exactly matches salvage `7a6782b9`, and preserved it
+  without duplication or loss.
+- Attempted both `git fetch origin --prune` and a GitHub PR query; both failed
+  before changing state because this environment cannot currently resolve
+  GitHub hosts.
+- Replaced every checkout ancestor probe with descriptor-relative opens using
+  `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`, followed by one no-follow leaf
+  metadata probe where only `ENOENT` proves absence; unsupported capability
+  and every other syscall result fail closed.
+- Removed an avoidable repository-root stat/open pair in favor of one atomic
+  no-follow root open plus `fstat`, which supplies the traversal linearization
+  point and pins the selected root across rename/replacement.
+- Added deterministic coverage for clean Belgium absence, ignored regular and
+  dangling-symlink leaves, appearance before the sole leaf probe, symlinked and
+  replaced ancestors, symlinked and replaced repository roots, root/ancestor/
+  leaf errors, directory/FIFO leaves, and unsupported descriptor capability.
+- Added instrumentation proving malformed/non-normal apply manifests and
+  wrong, missing, or duplicate target bindings fail before optional inventory
+  probing.
+- Passed 36 focused retired-inventory/descriptor tests, focused Ruff,
+  `compileall`, and `git diff --check`; committed the source/test step as
+  `026a5b5a` (`Harden optional retired inventory traversal`).
+- Passed the three exact targeted-reencode workflow checks: shell syntax, exact
+  one-canonical/two-replacement invocation binding, and executable canonical
+  refresh ordering (`3 passed`).
+- Passed repository-wide Ruff lint and compileall. Applied only Ruff's
+  mechanical wrapping in the two touched files, re-passed the 36 focused tests,
+  focused lint/format/compile/diff checks, and committed it as `4737e6e3`
+  (`Format optional inventory hardening`).
+- Completed the independent review-fix cycle: the reviewer approved the atomic
+  root-open linearization, descriptor-relative ancestors, single leaf probe,
+  fail-closed errors/capabilities, proof ordering, and adversarial coverage with
+  no actionable findings; their independent revised root/error run passed 5
+  tests.
+- Started the full configured 14,003-test suite and stopped after 765 passes,
+  one skip, and one expected failure identified the repository's mandatory
+  version-provenance gate; no other failure had appeared. This superseded-tree
+  run is diagnostic only and is not a final green claim.
+- Synchronized the encoder version from `0.2.1750` to `0.2.1751` across
+  `pyproject.toml`, the package, `uv.lock`, and all exact version fixtures, then
+  committed it as `58e85a4d` (`Bump encoder version to 0.2.1751`). The version
+  provenance, package metadata, exact registry, and synchronized fixture checks
+  pass (`29 passed`).
+- Recorded that ordinary `uv run` now attempts an editable rebuild and cannot
+  download the declared Hatchling build requirement while DNS is unavailable;
+  final checks therefore use `uv run --no-sync` with the existing project
+  environment and configured `pythonpath = ["src"]`.
+- Diagnosed the first full-run canonical-root failure as a pre-existing,
+  load-sensitive two-second Git probe timeout: the exact predecessor pair, the
+  ordered prefix through the target (`664 passed`), and the complete ordered
+  CLI file (`1,314 passed, 1 skipped`) all passed, and the relevant CLI/routing
+  files are identical to `origin/main`. Two independent audits found no leaked
+  mock, environment, ContextVar, or temporary Git checkout.
+- Completed a second configured repository-wide run: `13,955 passed, 33
+  skipped, 15 failed` in 949.05 seconds. The changed prepare-signed-backfill
+  suite and the formerly flaky CLI node passed. The failure tracebacks isolate
+  host/sandbox setup rather than the optional-inventory implementation: the
+  selected `/opt/homebrew` Git is not root-owned, `/var/tmp` creation is denied,
+  Apple Git emits sandbox temp warnings, set-id metadata is not retained, and
+  two workflow subprocesses need the already-proven `PYTHONPATH=src` override.
+- Re-ran those exact 15 nodes with `/usr/bin/git` first on `PATH` and
+  `PYTHONPATH=src`: 12 passed. The trusted-Git/provision cluster and both stale
+  import workflow failures are therefore corrected by the intended test
+  invocation.
+- Checked out cached `origin/main` into a temporary worktree and reproduced all
+  three remaining failures there: this sandbox strips `S_ISUID` from the copied
+  executable (`100755` after `chmod`), denies creation under `/var/tmp`, and
+  makes root-owned Apple Git emit `DARWIN_USER_TEMP_DIR` warnings inside the
+  protected launcher. Removed the temporary worktree after the comparison.
+- Passed the corrected configured repository-wide runnable suite with
+  `/usr/bin/git` first on `PATH`, `PYTHONPATH=src`, and only the three exact
+  cached-base sandbox failures deselected: `13,967 passed, 33 skipped, 3
+  deselected` in 798.66 seconds. This includes every changed test, all runnable
+  prepare/signing-supervisor tests, and the formerly transient CLI node.
+- Re-passed the complete focused prepare-signed-backfill file (`214 passed`)
+  and the three exact targeted-reencode workflow checks (`3 passed`) on the
+  committed tree.
+- Re-passed repository-wide Ruff lint and format (`170 files already
+  formatted`), `python -m compileall -q src/axiom_encode scripts`, working-tree
+  and branch `git diff --check`, and clean-status checks.
+- Completed a final independent review of the whole branch diff. It approved
+  with no actionable correctness, security, test, or documentation findings
+  and reconfirmed the descriptor semantics, normal proof ordering, adversarial
+  coverage, version synchronization, and narrow Belgium consequence.
+- Retried `git fetch origin --prune` and the GitHub PR query after validation;
+  both still failed before changing remote state because `github.com` and
+  `api.github.com` cannot be resolved. No push or draft PR was attempted.
 
 ## Next
 
-- No implementation work remains; deliver the local head and report.
+- Once network access is restored, fetch live `origin/main`, compare/rebase as
+  needed, resolve any version collision, and rerun proportionate validation.
+- Verify the resulting live base/head and draft PR body, then push and open only
+  a DRAFT PR if the refreshed tree and CI are green. Do not dispatch signing or
+  merge.

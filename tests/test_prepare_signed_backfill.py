@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+import scripts.prepare_signed_backfill as signed_backfill
 from axiom_encode.cli import _legacy_replacement_manifest_issues
 from axiom_encode.legacy_replacement import (
     migrate_legacy_exact_dependent_source_verification,
@@ -22,6 +24,7 @@ from scripts.prepare_signed_backfill import (
     MAX_SOURCE_BUNDLE_JSON_BYTES,
     REVIEWED_RULESPEC_PR_BASE_BRANCHES,
     REVIEWED_RULESPEC_REFS,
+    _checkout_path_exists_without_indirection,
     _normalize_required_test_cases,
     _retired_manifest_inventory_without_entry,
     authorize_legacy_index_manifest_shrink,
@@ -1124,8 +1127,8 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def _repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "rulespec-us"
+def _repo(tmp_path: Path, *, country: str = "us") -> Path:
+    repo = tmp_path / f"rulespec-{country}"
     repo.mkdir()
     _git(repo, "init", "-b", "main")
     _git(repo, "config", "user.name", "Test")
@@ -1165,31 +1168,36 @@ def _write_signed_change(repo: Path) -> tuple[Path, Path]:
 def _retired_inventory_replacement_repo(
     tmp_path: Path,
     *,
+    country: str = "us",
     inventory_text: str | None = None,
+    include_inventory: bool = True,
 ) -> tuple[Path, Path, Path, Path]:
-    repo = _repo(tmp_path)
-    target = repo / "us/policies/income_tax/schedule.yaml"
+    repo = _repo(tmp_path, country=country)
+    target = repo / f"{country}/policies/income_tax/schedule.yaml"
     target.parent.mkdir(parents=True)
     target.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
-    manifest = repo / ".axiom/encoding-manifests/us/policies/income_tax/schedule.json"
+    manifest = (
+        repo / f".axiom/encoding-manifests/{country}/policies/income_tax/schedule.json"
+    )
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
         json.dumps({"schema_version": "axiom-encode/applied-rulespec/v1"}) + "\n",
         encoding="utf-8",
     )
     inventory = repo / "tests/test_encoding_manifests.py"
-    inventory.parent.mkdir(parents=True)
-    manifest_relative = manifest.relative_to(repo).as_posix()
-    inventory.write_text(
-        inventory_text
-        or (
-            "KNOWN_RETIRED_SCHEMA_MANIFESTS: frozenset[str] = frozenset({\n"
-            f"    '{manifest_relative}',\n"
-            "    '.axiom/encoding-manifests/us/statutes/other.json',\n"
-            "})\n"
-        ),
-        encoding="utf-8",
-    )
+    if include_inventory:
+        inventory.parent.mkdir(parents=True)
+        manifest_relative = manifest.relative_to(repo).as_posix()
+        inventory.write_text(
+            inventory_text
+            or (
+                "KNOWN_RETIRED_SCHEMA_MANIFESTS: frozenset[str] = frozenset({\n"
+                f"    '{manifest_relative}',\n"
+                f"    '.axiom/encoding-manifests/{country}/statutes/other.json',\n"
+                "})\n"
+            ),
+            encoding="utf-8",
+        )
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "add retired target")
 
@@ -1221,6 +1229,38 @@ def _retired_inventory_replacement_repo(
         encoding="utf-8",
     )
     return repo, target, manifest, inventory
+
+
+def _ignore_retired_manifest_inventory(repo: Path) -> None:
+    exclude = repo / ".git/info/exclude"
+    exclude.write_text(
+        exclude.read_text(encoding="utf-8") + "\ntests/test_encoding_manifests.py\n",
+        encoding="utf-8",
+    )
+
+
+def _record_retired_inventory_leaf_stats(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[int | None, bool]]:
+    original_stat = signed_backfill._DESCRIPTOR_STAT
+    calls: list[tuple[int | None, bool]] = []
+
+    def recording_stat(
+        path: str | bytes | int | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        if path == "test_encoding_manifests.py":
+            calls.append((dir_fd, follow_symlinks))
+        return original_stat(
+            path,
+            dir_fd=dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr(signed_backfill, "_DESCRIPTOR_STAT", recording_stat)
+    return calls
 
 
 def test_reconcile_retired_manifest_inventory_is_end_to_end_authorized(
@@ -1331,6 +1371,411 @@ def test_reconcile_retired_manifest_inventory_is_noop_when_absent(
         PurePosixPath(target.relative_to(repo).as_posix()),
         PurePosixPath(manifest.relative_to(repo).as_posix()),
     }
+
+
+def test_rulespec_be_reconcile_is_noop_without_retired_manifest_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, target, manifest, inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        country="be",
+        include_inventory=False,
+    )
+    inventory.parent.mkdir()
+    leaf_stats = _record_retired_inventory_leaf_stats(monkeypatch)
+
+    assert not inventory.exists()
+    assert (
+        _git(
+            repo,
+            "ls-tree",
+            "--full-tree",
+            "HEAD",
+            "--",
+            inventory.relative_to(repo).as_posix(),
+        )
+        == ""
+    )
+    assert (
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+        is None
+    )
+    assert len(leaf_stats) == 1
+    assert leaf_stats[0][0] is not None
+    assert leaf_stats[0][1] is False
+    assert authorized_changed_paths(repo) == {
+        PurePosixPath(target.relative_to(repo).as_posix()),
+        PurePosixPath(manifest.relative_to(repo).as_posix()),
+    }
+
+
+@pytest.mark.parametrize("entry_kind", ["regular", "dangling-symlink"])
+def test_reconcile_retired_manifest_inventory_rejects_ignored_worktree_entry(
+    tmp_path: Path,
+    entry_kind: str,
+) -> None:
+    repo, target, _manifest, inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        include_inventory=False,
+    )
+    _ignore_retired_manifest_inventory(repo)
+    inventory.parent.mkdir(parents=True)
+    if entry_kind == "regular":
+        inventory.write_text("ignored but present\n", encoding="utf-8")
+        assert inventory.is_file()
+        assert not inventory.is_symlink()
+    else:
+        inventory.symlink_to("missing-test_encoding_manifests.py")
+        assert inventory.is_symlink()
+        assert not inventory.exists()
+
+    with pytest.raises(
+        ValueError,
+        match="absent from HEAD but not safely absent from the worktree",
+    ):
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+
+
+def test_reconcile_retired_manifest_inventory_rejects_appearing_leaf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, target, _manifest, inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        include_inventory=False,
+    )
+    _ignore_retired_manifest_inventory(repo)
+    inventory.parent.mkdir(parents=True)
+    original_open = signed_backfill._DESCRIPTOR_OPEN
+    appeared = False
+    required_flags = os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+    def appear_after_parent_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal appeared
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if path == "tests" and dir_fd is not None and not appeared:
+            assert flags & required_flags == required_flags
+            inventory.write_text("appeared before leaf probe\n", encoding="utf-8")
+            appeared = True
+        return descriptor
+
+    monkeypatch.setattr(
+        signed_backfill,
+        "_DESCRIPTOR_OPEN",
+        appear_after_parent_open,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="absent from HEAD but not safely absent from the worktree",
+    ):
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+    assert appeared
+    assert inventory.read_text(encoding="utf-8") == "appeared before leaf probe\n"
+
+
+def test_reconcile_retired_manifest_inventory_rejects_symlinked_ancestor(
+    tmp_path: Path,
+) -> None:
+    repo, target, _manifest, inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        include_inventory=False,
+    )
+    outside = tmp_path / "outside-tests"
+    outside.mkdir()
+    outside_inventory = outside / inventory.name
+    outside_inventory.write_text("outside sentinel\n", encoding="utf-8")
+    inventory.parent.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(
+        ValueError,
+        match="absent from HEAD but not safely absent from the worktree",
+    ):
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+
+    assert outside_inventory.read_text(encoding="utf-8") == "outside sentinel\n"
+
+
+def test_reconcile_retired_manifest_inventory_pins_replaced_ancestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, target, _manifest, inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        include_inventory=False,
+    )
+    _ignore_retired_manifest_inventory(repo)
+    inventory.parent.mkdir()
+    inventory.write_text("pinned inventory\n", encoding="utf-8")
+    pinned_parent = repo / "tests-pinned"
+    outside = tmp_path / "outside-tests"
+    outside.mkdir()
+    original_stat = signed_backfill._DESCRIPTOR_STAT
+    replaced = False
+
+    def replace_parent_before_leaf_stat(
+        path: str | bytes | int | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal replaced
+        if path == inventory.name and dir_fd is not None and not replaced:
+            assert follow_symlinks is False
+            inventory.parent.rename(pinned_parent)
+            inventory.parent.symlink_to(outside, target_is_directory=True)
+            replaced = True
+        return original_stat(
+            path,
+            dir_fd=dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr(
+        signed_backfill,
+        "_DESCRIPTOR_STAT",
+        replace_parent_before_leaf_stat,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="absent from HEAD but not safely absent from the worktree",
+    ):
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+
+    assert replaced
+    assert (pinned_parent / inventory.name).read_text(encoding="utf-8") == (
+        "pinned inventory\n"
+    )
+    assert not (outside / inventory.name).exists()
+
+
+def test_checkout_presence_rejects_symlinked_repo_root(tmp_path: Path) -> None:
+    actual_repo = tmp_path / "rulespec-us-actual"
+    inventory = actual_repo / "tests/test_encoding_manifests.py"
+    inventory.parent.mkdir(parents=True)
+    inventory.write_text("original inventory\n", encoding="utf-8")
+    repo = tmp_path / "rulespec-us"
+    repo.symlink_to(actual_repo, target_is_directory=True)
+
+    with pytest.raises(ValueError) as raised:
+        _checkout_path_exists_without_indirection(
+            repo,
+            PurePosixPath("tests/test_encoding_manifests.py"),
+            label="retired manifest inventory",
+        )
+
+    assert isinstance(raised.value.__cause__, OSError)
+    assert inventory.read_text(encoding="utf-8") == "original inventory\n"
+
+
+def test_checkout_presence_pins_open_repo_across_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "rulespec-us"
+    inventory = repo / "tests/test_encoding_manifests.py"
+    inventory.parent.mkdir(parents=True)
+    inventory.write_text("original inventory\n", encoding="utf-8")
+    pinned_repo = tmp_path / "rulespec-us-pinned"
+    original_open = signed_backfill._DESCRIPTOR_OPEN
+    replaced = False
+    required_flags = os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+    def replace_repo_after_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal replaced
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if dir_fd is None and Path(path) == repo and not replaced:
+            assert flags & required_flags == required_flags
+            repo.rename(pinned_repo)
+            (repo / "tests").mkdir(parents=True)
+            replaced = True
+        return descriptor
+
+    monkeypatch.setattr(signed_backfill, "_DESCRIPTOR_OPEN", replace_repo_after_open)
+
+    assert _checkout_path_exists_without_indirection(
+        repo,
+        PurePosixPath("tests/test_encoding_manifests.py"),
+        label="retired manifest inventory",
+    )
+    assert replaced
+    assert (pinned_repo / "tests/test_encoding_manifests.py").is_file()
+    assert not (repo / "tests/test_encoding_manifests.py").exists()
+
+
+@pytest.mark.parametrize("phase", ["root-open", "ancestor-open", "leaf-stat"])
+def test_checkout_presence_rejects_unexpected_descriptor_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+) -> None:
+    repo = tmp_path / "rulespec-us"
+    (repo / "tests").mkdir(parents=True)
+    triggered = False
+    if phase == "root-open":
+        original_open = signed_backfill._DESCRIPTOR_OPEN
+
+        def fail_root_open(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            nonlocal triggered
+            if dir_fd is None and Path(path) == repo:
+                triggered = True
+                raise OSError(errno.EIO, "simulated repository inspection failure")
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(
+            signed_backfill,
+            "_DESCRIPTOR_OPEN",
+            fail_root_open,
+        )
+    elif phase == "ancestor-open":
+        original_open = signed_backfill._DESCRIPTOR_OPEN
+
+        def fail_ancestor_open(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            nonlocal triggered
+            if path == "tests" and dir_fd is not None:
+                triggered = True
+                raise OSError(errno.EIO, "simulated ancestor inspection failure")
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(
+            signed_backfill,
+            "_DESCRIPTOR_OPEN",
+            fail_ancestor_open,
+        )
+    else:
+        original_stat = signed_backfill._DESCRIPTOR_STAT
+
+        def fail_leaf_stat(
+            path: str | bytes | int | os.PathLike[str] | os.PathLike[bytes],
+            *,
+            dir_fd: int | None = None,
+            follow_symlinks: bool = True,
+        ) -> os.stat_result:
+            nonlocal triggered
+            if path == "test_encoding_manifests.py" and dir_fd is not None:
+                triggered = True
+                raise OSError(errno.EIO, "simulated leaf inspection failure")
+            return original_stat(
+                path,
+                dir_fd=dir_fd,
+                follow_symlinks=follow_symlinks,
+            )
+
+        monkeypatch.setattr(
+            signed_backfill,
+            "_DESCRIPTOR_STAT",
+            fail_leaf_stat,
+        )
+
+    with pytest.raises(ValueError) as raised:
+        _checkout_path_exists_without_indirection(
+            repo,
+            PurePosixPath("tests/test_encoding_manifests.py"),
+            label="retired manifest inventory",
+        )
+
+    assert triggered
+    assert isinstance(raised.value.__cause__, OSError)
+    assert raised.value.__cause__.errno == errno.EIO
+
+
+@pytest.mark.parametrize("entry_kind", ["directory", "fifo"])
+def test_reconcile_retired_manifest_inventory_rejects_nonregular_leaf(
+    tmp_path: Path,
+    entry_kind: str,
+) -> None:
+    if entry_kind == "fifo" and not hasattr(os, "mkfifo"):
+        pytest.skip("FIFO creation is unavailable")
+    repo, target, _manifest, inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        include_inventory=False,
+    )
+    _ignore_retired_manifest_inventory(repo)
+    inventory.parent.mkdir()
+    if entry_kind == "directory":
+        inventory.mkdir()
+    else:
+        os.mkfifo(inventory)
+
+    with pytest.raises(
+        ValueError,
+        match="absent from HEAD but not safely absent from the worktree",
+    ):
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("capability", "unsupported_value"),
+    [
+        ("_DESCRIPTOR_OS_IS_POSIX", False),
+        ("_DESCRIPTOR_O_DIRECTORY", None),
+        ("_DESCRIPTOR_O_NOFOLLOW", None),
+        ("_DESCRIPTOR_O_CLOEXEC", None),
+        ("_DESCRIPTOR_OPEN_SUPPORTS_DIR_FD", False),
+        ("_DESCRIPTOR_STAT_SUPPORTS_DIR_FD", False),
+        ("_DESCRIPTOR_STAT_SUPPORTS_NOFOLLOW", False),
+    ],
+)
+def test_checkout_presence_rejects_unsupported_descriptor_traversal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capability: str,
+    unsupported_value: object,
+) -> None:
+    repo = tmp_path / "rulespec-us"
+    repo.mkdir()
+    monkeypatch.setattr(signed_backfill, capability, unsupported_value)
+
+    with pytest.raises(ValueError, match="descriptor traversal is unsupported"):
+        _checkout_path_exists_without_indirection(
+            repo,
+            PurePosixPath("tests/test_encoding_manifests.py"),
+            label="retired manifest inventory",
+        )
 
 
 def test_reconcile_retired_manifest_inventory_is_noop_without_inventory_symbol(
@@ -1496,8 +1941,13 @@ def test_stage_rejects_nonexact_retired_manifest_inventory_edit(
 
 def test_reconcile_retired_manifest_inventory_requires_normal_model_apply(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repo, target, manifest, _inventory = _retired_inventory_replacement_repo(tmp_path)
+    repo, target, manifest, _inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        include_inventory=False,
+    )
+    leaf_stats = _record_retired_inventory_leaf_stats(monkeypatch)
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     payload["tool"] = "axiom-encode encode --apply --replace-legacy-rulespec-path"
     manifest.write_text(json.dumps(payload) + "\n", encoding="utf-8")
@@ -1507,6 +1957,64 @@ def test_reconcile_retired_manifest_inventory_requires_normal_model_apply(
             repo,
             target.relative_to(repo).as_posix(),
         )
+    assert leaf_stats == []
+
+
+def test_reconcile_absent_retired_inventory_requires_changed_apply_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, target, manifest, _inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        include_inventory=False,
+    )
+    leaf_stats = _record_retired_inventory_leaf_stats(monkeypatch)
+    manifest.write_text(
+        json.dumps({"schema_version": "axiom-encode/applied-rulespec/v1"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="lacks its exact changed apply manifest"):
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+    assert leaf_stats == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["wrong-digest", "missing-target", "duplicate-target"],
+)
+def test_reconcile_absent_retired_inventory_requires_exact_target_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    repo, target, manifest, _inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        include_inventory=False,
+    )
+    leaf_stats = _record_retired_inventory_leaf_stats(monkeypatch)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    applied_files = payload["applied_files"]
+    assert isinstance(applied_files, list)
+    target_record = applied_files[0]
+    assert isinstance(target_record, dict)
+    if mutation == "wrong-digest":
+        target_record["sha256"] = "0" * 64
+    elif mutation == "missing-target":
+        target_record["path"] = "us/policies/income_tax/other.yaml"
+    else:
+        applied_files.append(dict(target_record))
+    manifest.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="does not bind exact target bytes"):
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+    assert leaf_stats == []
 
 
 def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
