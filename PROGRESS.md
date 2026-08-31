@@ -12,8 +12,14 @@ that open cannot redirect traversal. The local `origin/main` remains
 `f1bfe0a4`; live fetch, GitHub CLI, and GitHub page queries are currently
 blocked by DNS/network access. Focused and workflow validation are green, and
 the independent re-review approves with no actionable findings. The required
-encoder version is now `0.2.1751`; full-suite validation and live publication
-checks remain required before publication.
+encoder version is now `0.2.1751`. A complete configured run passed 13,955
+tests and exposed 15 host/environment failures: ten select a user-owned
+Homebrew Git where the supervisor tests require root-owned system Git, one
+cannot create the sandbox-forbidden `/var/tmp` alias fixture, one sees Apple
+Git's sandbox temp-directory warnings, one does not preserve a set-id bit on a
+temporary executable, and two workflow subprocesses import the stale installed
+`corpus_resolver` without `PYTHONPATH=src`. A corrected-environment full run and
+live publication checks remain required before publication.
 
 ## Done
 
@@ -105,13 +111,28 @@ checks remain required before publication.
   download the declared Hatchling build requirement while DNS is unavailable;
   final checks therefore use `uv run --no-sync` with the existing project
   environment and configured `pythonpath = ["src"]`.
+- Diagnosed the first full-run canonical-root failure as a pre-existing,
+  load-sensitive two-second Git probe timeout: the exact predecessor pair, the
+  ordered prefix through the target (`664 passed`), and the complete ordered
+  CLI file (`1,314 passed, 1 skipped`) all passed, and the relevant CLI/routing
+  files are identical to `origin/main`. Two independent audits found no leaked
+  mock, environment, ContextVar, or temporary Git checkout.
+- Completed a second configured repository-wide run: `13,955 passed, 33
+  skipped, 15 failed` in 949.05 seconds. The changed prepare-signed-backfill
+  suite and the formerly flaky CLI node passed. The failure tracebacks isolate
+  host/sandbox setup rather than the optional-inventory implementation: the
+  selected `/opt/homebrew` Git is not root-owned, `/var/tmp` creation is denied,
+  Apple Git emits sandbox temp warnings, set-id metadata is not retained, and
+  two workflow subprocesses need the already-proven `PYTHONPATH=src` override.
 
 ## Next
 
-- Run broader prepare/signing-supervisor tests and full pytest on the committed
-  `0.2.1751` tree, then repeat the
-  repository-wide Ruff/format, compileall, status, and diff checks on the final
-  tree.
+- Re-run the failed selections with root-owned `/usr/bin/git` first on `PATH`
+  and `PYTHONPATH=src`; distinguish the remaining macOS sandbox-only cases,
+  then run the complete configured suite under the corrected environment.
+- Run broader prepare/signing-supervisor tests on the committed `0.2.1751`
+  tree, then repeat repository-wide Ruff/format, compileall, status, and diff
+  checks on the final tree.
 - Retry live upstream comparison, verify the exact commits and draft PR body,
   and only then push/open a draft PR if all checks are green. Do not dispatch
   signing or merge; write the final report to the task output file.
