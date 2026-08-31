@@ -3,14 +3,15 @@
 ## State
 
 The recovered descriptor-relative implementation and deterministic adversarial
-suite are committed at `026a5b5a` on
+suite are committed at `026a5b5a`, with formatter follow-up `4737e6e3`, on
 `fix/optional-retired-manifest-inventory`; the worktree is clean. The helper now
 selects the repository root with one atomic no-follow directory open and pins
 all later ancestor/leaf inspection to descriptors, so a root replacement after
 that open cannot redirect traversal. The local `origin/main` remains
 `f1bfe0a4`; live fetch, GitHub CLI, and GitHub page queries are currently
-blocked by DNS/network access. Focused validation is green, and independent
-re-review plus broad validation remain required before publication.
+blocked by DNS/network access. Focused and workflow validation are green, and
+the independent re-review approves with no actionable findings. Full-suite
+validation and live publication checks remain required before publication.
 
 ## Done
 
@@ -77,13 +78,24 @@ re-review plus broad validation remain required before publication.
 - Passed 36 focused retired-inventory/descriptor tests, focused Ruff,
   `compileall`, and `git diff --check`; committed the source/test step as
   `026a5b5a` (`Harden optional retired inventory traversal`).
+- Passed the three exact targeted-reencode workflow checks: shell syntax, exact
+  one-canonical/two-replacement invocation binding, and executable canonical
+  refresh ordering (`3 passed`).
+- Passed repository-wide Ruff lint and compileall. Applied only Ruff's
+  mechanical wrapping in the two touched files, re-passed the 36 focused tests,
+  focused lint/format/compile/diff checks, and committed it as `4737e6e3`
+  (`Format optional inventory hardening`).
+- Completed the independent review-fix cycle: the reviewer approved the atomic
+  root-open linearization, descriptor-relative ancestors, single leaf probe,
+  fail-closed errors/capabilities, proof ordering, and adversarial coverage with
+  no actionable findings; their independent revised root/error run passed 5
+  tests.
 
 ## Next
 
-- Run the exact workflow tests, broader prepare/signing-supervisor tests, full
-  pytest, repository-wide Ruff/format checks, compileall, and diff checks.
-- Complete the independent review-fix cycle with no actionable findings and
-  record its verdict plus final checks.
+- Run broader prepare/signing-supervisor tests and full pytest, then repeat the
+  repository-wide Ruff/format, compileall, status, and diff checks on the final
+  tree.
 - Retry live upstream comparison, verify the exact commits and draft PR body,
   and only then push/open a draft PR if all checks are green. Do not dispatch
   signing or merge; write the final report to the task output file.
