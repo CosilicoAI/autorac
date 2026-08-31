@@ -2199,15 +2199,33 @@ _ARMENIAN_AMENDMENT_HISTORY_ARTICLE = re.compile(
     r"(?:ին|րդ)\s+հոդվածը\s+(?P<history>.+?)\s*",
     flags=re.DOTALL,
 )
-_ARMENIAN_AMENDMENT_HISTORY_ACTION = re.compile(
-    r"(?:փոփ|լրաց|խմբ)(?:[.\u2024])?(?=\s|,|$)",
-    flags=re.IGNORECASE,
-)
-_ARMENIAN_AMENDMENT_HISTORY_CITATION = re.compile(
-    r"\d{2}[.\u2024]\d{2}[.\u2024]\d{2,4}\s+Հ(?:Օ)?"
+# Amendment-action abbreviations are matched case-insensitively, but the paired
+# `ՀՕ-N[-N]-Ն` law identifier is not: scope the case folding to the action
+# alternation so recognizing an uppercase action cannot also fold the
+# identifier's casing and admit a citation the prompt contract does not permit.
+_ARMENIAN_AMENDMENT_HISTORY_ACTION_TOKEN = r"(?i:փոփ|լրաց|խմբ)(?:[.\u2024])?"
+_ARMENIAN_AMENDMENT_HISTORY_CITATION_TOKEN = (
+    r"\d{2}[.\u2024]\d{2}[.\u2024]\d{2}(?:\d{2})?\s+Հ(?:Օ)?"
     rf"{_ARMENIAN_AMENDMENT_HISTORY_DASH}\d+(?:"
     rf"{_ARMENIAN_AMENDMENT_HISTORY_DASH}\d+)?"
-    rf"{_ARMENIAN_AMENDMENT_HISTORY_DASH}Ն",
+    rf"{_ARMENIAN_AMENDMENT_HISTORY_DASH}Ն"
+)
+_ARMENIAN_AMENDMENT_HISTORY_ACTION = re.compile(
+    _ARMENIAN_AMENDMENT_HISTORY_ACTION_TOKEN,
+)
+_ARMENIAN_AMENDMENT_HISTORY_CITATION = re.compile(
+    _ARMENIAN_AMENDMENT_HISTORY_CITATION_TOKEN,
+)
+# Possessive: no action or citation token can begin with a separator character,
+# so giving separator characters back never enables a match. Committing to the
+# longest run keeps the sequence scan linear on adversarial separator runs.
+_ARMENIAN_AMENDMENT_HISTORY_SEPARATOR = r"[\s,;]++"
+_ARMENIAN_AMENDMENT_HISTORY_SEQUENCE = re.compile(
+    rf"\s*(?:{_ARMENIAN_AMENDMENT_HISTORY_ACTION_TOKEN}|"
+    rf"{_ARMENIAN_AMENDMENT_HISTORY_CITATION_TOKEN})(?:"
+    rf"{_ARMENIAN_AMENDMENT_HISTORY_SEPARATOR}(?:"
+    rf"{_ARMENIAN_AMENDMENT_HISTORY_ACTION_TOKEN}|"
+    rf"{_ARMENIAN_AMENDMENT_HISTORY_CITATION_TOKEN}))*\s*",
 )
 _FORMULA_IDENTIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
 
@@ -11975,7 +11993,30 @@ def _strip_terminal_session_law_history(source_text: str) -> str:
 def _strip_standalone_armenian_amendment_history(source_text: str) -> str:
     """Remove only fully validated standalone ARLIS amendment-history ledgers."""
 
+    depth_before: list[int] | None = None
+
+    def parenthesis_depth_before(index: int) -> int:
+        # Built on first candidate only: sources with no standalone parenthetical
+        # never pay to map the whole text.
+        nonlocal depth_before
+        if depth_before is None:
+            depth_before = []
+            depth = 0
+            for character in source_text:
+                depth_before.append(depth)
+                if character == "(":
+                    depth += 1
+                elif character == ")":
+                    depth = max(0, depth - 1)
+        return depth_before[index]
+
     def replacement(match: re.Match[str]) -> str:
+        # A candidate whose opening parenthesis sits inside another parenthetical
+        # is nested, and the prompt contract keeps nested parentheticals as source
+        # content. Strip only candidates that open at depth zero.
+        if parenthesis_depth_before(match.start("body") - 1) != 0:
+            return match.group(0)
+
         article_history = _ARMENIAN_AMENDMENT_HISTORY_ARTICLE.fullmatch(
             match.group("body")
         )
@@ -11986,14 +12027,8 @@ def _strip_standalone_armenian_amendment_history(source_text: str) -> str:
         if (
             _ARMENIAN_AMENDMENT_HISTORY_ACTION.search(history) is None
             or _ARMENIAN_AMENDMENT_HISTORY_CITATION.search(history) is None
+            or _ARMENIAN_AMENDMENT_HISTORY_SEQUENCE.fullmatch(history) is None
         ):
-            return match.group(0)
-
-        residue = _ARMENIAN_AMENDMENT_HISTORY_ACTION.sub("", history)
-        residue = _ARMENIAN_AMENDMENT_HISTORY_CITATION.sub("", residue)
-        if re.sub(r"[\s,;]+", "", residue):
-            # Fail closed when the parenthetical contains anything besides the
-            # article label, amendment actions, dates, and instrument identifiers.
             return match.group(0)
         return ""
 

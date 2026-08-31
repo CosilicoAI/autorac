@@ -30,6 +30,7 @@ from axiom_encode.harness.validator_pipeline import (
     find_ungrounded_numeric_issues_scoped,
     numeric_value_is_grounded,
 )
+from axiom_encode.prompts.encoder import ENCODER_PROMPT
 
 CORPUS_CITATION_PATH = "de/statute/estg/32a"
 DE_NUMERIC_OCCURRENCE_EXTRACTOR = functools.partial(
@@ -23005,6 +23006,26 @@ def test_armenian_history_filter_accepts_uppercase_action_abbreviation():
     assert authoritative_numeric_recall_text(source) == "Շահառուին վճարել 500 դրամ:"
 
 
+def test_armenian_history_filter_accepts_semicolon_separator():
+    source = "Շահառուին վճարել 500 դրամ:\n(1-ին հոդվածը փոփ; 07.12.22 ՀՕ-538-Ն)"
+
+    cleaned = authoritative_numeric_recall_text(source)
+    result = _analyze(
+        "format: rulespec/v1\nrules: []\n",
+        source,
+        corpus_citation_path="am/statute/act-172160/article-1",
+        test_cases=[],
+        artifact_numeric_values=(500.0,),
+        extract_numeric_occurrences=functools.partial(
+            extract_typed_numeric_inventory_occurrences_from_text,
+            profile="legacy",
+        ),
+    )
+
+    assert cleaned == "Շահառուին վճարել 500 դրամ:"
+    assert not _has_issue(result, "numeric-recall")
+
+
 @pytest.mark.parametrize(
     "parenthetical",
     (
@@ -23039,6 +23060,223 @@ def test_armenian_history_filter_does_not_strip_inline_parenthetical():
 )
 def test_armenian_history_filter_keeps_shapes_outside_prompt_contract(parenthetical):
     source = f"Շահառուին վճարել 500 դրամ:\n{parenthetical}"
+
+    assert authoritative_numeric_recall_text(source) == source
+
+
+def test_armenian_history_filter_keeps_ledger_nested_inside_outer_parenthetical():
+    source = (
+        "Շահառուին վճարել 500 դրամ:\n"
+        "(անցումային պայման\n"
+        "(1-ին հոդվածը փոփ. 07.12.22 ՀՕ-538-Ն)\n"
+        ")"
+    )
+    result = _analyze(
+        "format: rulespec/v1\nrules: []\n",
+        source,
+        corpus_citation_path="am/statute/act-172160/article-1",
+        test_cases=[],
+        artifact_numeric_values=(500.0,),
+        extract_numeric_occurrences=functools.partial(
+            extract_typed_numeric_inventory_occurrences_from_text,
+            profile="legacy",
+        ),
+    )
+
+    assert authoritative_numeric_recall_text(source) == source
+    assert _has_issue(result, "numeric-recall", "value 538")
+
+
+@pytest.mark.parametrize(
+    ("parenthetical", "expected_recalled_value"),
+    (
+        ("(1-ին հոդվածը փոփ. 07.12.222 ՀՕ-538-Ն)", "value 538"),
+        (
+            "(1-ին հոդվածը փոփ. 07.12.22 ՀՕ-538-Ն08.12.22 ՀՕ-539-Ն)",
+            "value 539",
+        ),
+        ("(1֊ին հոդվածը 07.12.22 ՀՕ֊538֊ՆԽՄԲ.)", "value 1"),
+    ),
+)
+def test_armenian_history_filter_keeps_malformed_token_sequences(
+    parenthetical,
+    expected_recalled_value,
+):
+    source = f"Շահառուին վճարել 500 դրամ:\n{parenthetical}"
+    result = _analyze(
+        "format: rulespec/v1\nrules: []\n",
+        source,
+        corpus_citation_path="am/statute/act-172160/article-1",
+        test_cases=[],
+        artifact_numeric_values=(500.0,),
+        extract_numeric_occurrences=functools.partial(
+            extract_typed_numeric_inventory_occurrences_from_text,
+            profile="legacy",
+        ),
+    )
+
+    assert authoritative_numeric_recall_text(source) == source
+    assert _has_issue(result, "numeric-recall", expected_recalled_value)
+
+
+@pytest.mark.parametrize(
+    "law_identifier",
+    ("07.12.22 հօ-538-ն", "07.12.22 ՀՕ-538-ն", "07.12.22 հՕ-538-Ն"),
+)
+def test_armenian_history_filter_keeps_lowercased_law_identifier(law_identifier):
+    """Case folding covers the action abbreviation only, never the citation.
+
+    The prompt contract spells the identifier `Հ-N[-N]-Ն`/`ՀՕ-N[-N]-Ն`, so a
+    lowercased identifier is an unrecognized parenthetical whose numbers must
+    survive into the recall text.
+    """
+
+    source = (
+        "Շահառուին վճարել 500 դրամ:\n"
+        f"(1-ին հոդվածը փոփ. 07.12.22 ՀՕ-538-Ն, {law_identifier})"
+    )
+    result = _analyze(
+        "format: rulespec/v1\nrules: []\n",
+        source,
+        corpus_citation_path="am/statute/act-172160/article-1",
+        test_cases=[],
+        artifact_numeric_values=(500.0,),
+        extract_numeric_occurrences=functools.partial(
+            extract_typed_numeric_inventory_occurrences_from_text,
+            profile="legacy",
+        ),
+    )
+
+    assert authoritative_numeric_recall_text(source) == source
+    assert _has_issue(result, "numeric-recall", "value 538")
+
+
+def _armenian_prompt_contract() -> str:
+    """The Armenian ARLIS bullet as the encoder actually emits it."""
+
+    start = ENCODER_PROMPT.index("- In Armenian ARLIS text")
+    return ENCODER_PROMPT[start:][: ENCODER_PROMPT[start:].index("\n- ", 1)]
+
+
+@pytest.mark.parametrize(
+    "separator",
+    (" ", "\t", ", ", " , ", "; ", " ; ", ",", ";"),
+)
+def test_armenian_prompt_permitted_separators_are_stripped_by_validator(separator):
+    """Parity: every separator the prompt permits, the validator must accept.
+
+    A prompt-following encoder that omits a semicolon-separated ledger would
+    otherwise draw a spurious numeric-recall failure.
+    """
+
+    contract = _armenian_prompt_contract()
+    assert "only whitespace, commas, or semicolons may separate these items" in contract
+
+    source = (
+        "Շահառուին վճարել 500 դրամ:\n"
+        f"(1-ին հոդվածը փոփ.{separator}07.12.22 ՀՕ-538-Ն)"
+    )
+    result = _analyze(
+        "format: rulespec/v1\nrules: []\n",
+        source,
+        corpus_citation_path="am/statute/act-172160/article-1",
+        test_cases=[],
+        artifact_numeric_values=(500.0,),
+        extract_numeric_occurrences=functools.partial(
+            extract_typed_numeric_inventory_occurrences_from_text,
+            profile="legacy",
+        ),
+    )
+
+    assert authoritative_numeric_recall_text(source) == "Շահառուին վճարել 500 դրամ:"
+    assert not _has_issue(result, "numeric-recall")
+
+
+def test_armenian_prompt_permitted_year_widths_match_validator():
+    """Parity: the prompt permits `DD.MM.YY` and `DD.MM.YYYY`, and nothing else."""
+
+    contract = _armenian_prompt_contract()
+    assert "`DD.MM.YY` or\n  `DD.MM.YYYY` date" in contract
+
+    lead = "Շահառուին վճարել 500 դրամ:"
+    for year in ("22", "2022"):
+        source = f"{lead}\n(1-ին հոդվածը փոփ. 07.12.{year} ՀՕ-538-Ն)"
+        assert authoritative_numeric_recall_text(source) == lead
+    for year in ("2", "222", "20222"):
+        source = f"{lead}\n(1-ին հոդվածը փոփ. 07.12.{year} ՀՕ-538-Ն)"
+        assert authoritative_numeric_recall_text(source) == source
+
+
+def test_armenian_prompt_keeps_nested_parentheticals_per_contract():
+    """Parity: the prompt keeps nested parentheticals, so the validator must too."""
+
+    contract = _armenian_prompt_contract()
+    assert "contains no nested parenthetical" in contract
+    assert "unpaired-date, nested, or otherwise unrecognized parenthetical" in contract
+
+    ledger = "(1-ին հոդվածը փոփ. 07.12.22 ՀՕ-538-Ն)"
+    lead = "Շահառուին վճարել 500 դրամ:"
+    nested = f"{lead}\n(անցումային պայման\n{ledger}\n)"
+    standalone = f"{lead}\n{ledger}"
+
+    assert authoritative_numeric_recall_text(nested) == nested
+    assert authoritative_numeric_recall_text(standalone) == lead
+
+
+def test_armenian_history_filter_strips_ledger_after_closed_outer_parenthetical():
+    """Depth, not "is there a preceding `(`", decides nesting.
+
+    Once an outer parenthetical closes, the next standalone ledger is back at
+    depth zero and must still be recognized.
+    """
+
+    lead = "Շահառուին վճարել 500 դրամ:"
+    source = f"{lead}\n(արտաքին\nպայման)\n(1-ին հոդվածը փոփ. 07.12.22 ՀՕ-538-Ն)"
+
+    assert authoritative_numeric_recall_text(source) == (
+        f"{lead}\n(արտաքին\nպայման)"
+    )
+
+
+def test_armenian_history_filter_keeps_ledger_nested_two_levels_deep():
+    source = (
+        "Շահառուին վճարել 500 դրամ:\n"
+        "(արտաքին\n(ներքին\n(1-ին հոդվածը փոփ. 07.12.22 ՀՕ-538-Ն)\n)\n)"
+    )
+
+    assert authoritative_numeric_recall_text(source) == source
+
+
+def test_armenian_history_filter_separates_nested_and_standalone_ledgers():
+    """A nested ledger is kept while a standalone one in the same source goes."""
+
+    source = (
+        "Շահառուին վճարել 500 դրամ:\n"
+        "(անցումային պայման\n(1-ին հոդվածը փոփ. 07.12.22 ՀՕ-538-Ն)\n)\n"
+        "(2-րդ հոդվածը խմբ. 08.12.22 ՀՕ-539-Ն)"
+    )
+    cleaned = authoritative_numeric_recall_text(source)
+    result = _analyze(
+        "format: rulespec/v1\nrules: []\n",
+        source,
+        corpus_citation_path="am/statute/act-172160/article-1",
+        test_cases=[],
+        artifact_numeric_values=(500.0,),
+        extract_numeric_occurrences=functools.partial(
+            extract_typed_numeric_inventory_occurrences_from_text,
+            profile="legacy",
+        ),
+    )
+
+    assert "538" in cleaned
+    assert "539" not in cleaned
+    assert _has_issue(result, "numeric-recall", "value 538")
+
+
+def test_armenian_history_filter_keeps_ledger_under_unbalanced_open_parenthesis():
+    """An unclosed `(` upstream leaves the candidate nested; fail closed."""
+
+    source = "Շահառուին վճարել 500 դրամ: տես (ա\n(1-ին հոդվածը փոփ. 07.12.22 ՀՕ-538-Ն)"
 
     assert authoritative_numeric_recall_text(source) == source
 
