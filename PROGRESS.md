@@ -23,7 +23,10 @@ root-owned system Git and current source fixed 12; the remaining three
 reproduce unchanged on cached `origin/main` and are blocked by this managed
 macOS sandbox rather than repository behavior. The corrected runnable broad
 suite is green (`13,967 passed, 33 skipped, 3 deselected`). Final static/workflow
-checks and live publication checks remain required before publication.
+checks are green, and the final independent review approves with no actionable
+findings. Live fetch and GitHub API access still fail DNS resolution, so the
+branch has not been pushed and no draft PR has been opened against an
+unverified cached base.
 
 ## Done
 
@@ -142,12 +145,24 @@ checks and live publication checks remain required before publication.
   cached-base sandbox failures deselected: `13,967 passed, 33 skipped, 3
   deselected` in 798.66 seconds. This includes every changed test, all runnable
   prepare/signing-supervisor tests, and the formerly transient CLI node.
+- Re-passed the complete focused prepare-signed-backfill file (`214 passed`)
+  and the three exact targeted-reencode workflow checks (`3 passed`) on the
+  committed tree.
+- Re-passed repository-wide Ruff lint and format (`170 files already
+  formatted`), `python -m compileall -q src/axiom_encode scripts`, working-tree
+  and branch `git diff --check`, and clean-status checks.
+- Completed a final independent review of the whole branch diff. It approved
+  with no actionable correctness, security, test, or documentation findings
+  and reconfirmed the descriptor semantics, normal proof ordering, adversarial
+  coverage, version synchronization, and narrow Belgium consequence.
+- Retried `git fetch origin --prune` and the GitHub PR query after validation;
+  both still failed before changing remote state because `github.com` and
+  `api.github.com` cannot be resolved. No push or draft PR was attempted.
 
 ## Next
 
-- Repeat the focused descriptor/reconciliation and exact workflow checks, then
-  run repository-wide Ruff lint/format, compileall, status, and diff checks on
-  the final committed `0.2.1751` tree.
-- Retry live upstream comparison, verify the exact commits and draft PR body,
-  and only then push/open a draft PR if all checks are green. Do not dispatch
-  signing or merge; write the final report to the task output file.
+- Once network access is restored, fetch live `origin/main`, compare/rebase as
+  needed, resolve any version collision, and rerun proportionate validation.
+- Verify the resulting live base/head and draft PR body, then push and open only
+  a DRAFT PR if the refreshed tree and CI are green. Do not dispatch signing or
+  merge.
