@@ -2,16 +2,15 @@
 
 ## State
 
-Resumed on `fix/optional-retired-manifest-inventory` at review checkpoint
-`4602eaf2`. The working-tree implementation and tests are byte-for-byte the
-tree saved by salvage ref
-`refs/codex-salvage/fix-optional-retired-manifest-inventory-20260830-212800-64246`
-(`7a6782b9`) and remain deliberately uncommitted while they are audited. The
-local `origin/main` is `f1bfe0a4`; a live fetch and GitHub query were attempted
-but are currently blocked by DNS/network access. Independent review rejected
-the prior path-based absence proof, so the recovered descriptor-relative,
-fail-closed replacement and adversarial tests must be validated and reviewed
-before publication.
+The recovered descriptor-relative implementation and deterministic adversarial
+suite are committed at `026a5b5a` on
+`fix/optional-retired-manifest-inventory`; the worktree is clean. The helper now
+selects the repository root with one atomic no-follow directory open and pins
+all later ancestor/leaf inspection to descriptors, so a root replacement after
+that open cannot redirect traversal. The local `origin/main` remains
+`f1bfe0a4`; live fetch, GitHub CLI, and GitHub page queries are currently
+blocked by DNS/network access. Focused validation is green, and independent
+re-review plus broad validation remain required before publication.
 
 ## Done
 
@@ -61,16 +60,30 @@ before publication.
 - Attempted both `git fetch origin --prune` and a GitHub PR query; both failed
   before changing state because this environment cannot currently resolve
   GitHub hosts.
+- Replaced every checkout ancestor probe with descriptor-relative opens using
+  `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`, followed by one no-follow leaf
+  metadata probe where only `ENOENT` proves absence; unsupported capability
+  and every other syscall result fail closed.
+- Removed an avoidable repository-root stat/open pair in favor of one atomic
+  no-follow root open plus `fstat`, which supplies the traversal linearization
+  point and pins the selected root across rename/replacement.
+- Added deterministic coverage for clean Belgium absence, ignored regular and
+  dangling-symlink leaves, appearance before the sole leaf probe, symlinked and
+  replaced ancestors, symlinked and replaced repository roots, root/ancestor/
+  leaf errors, directory/FIFO leaves, and unsupported descriptor capability.
+- Added instrumentation proving malformed/non-normal apply manifests and
+  wrong, missing, or duplicate target bindings fail before optional inventory
+  probing.
+- Passed 36 focused retired-inventory/descriptor tests, focused Ruff,
+  `compileall`, and `git diff --check`; committed the source/test step as
+  `026a5b5a` (`Harden optional retired inventory traversal`).
 
 ## Next
 
-- Audit and, where needed, correct the recovered descriptor-relative traversal
-  and deterministic appearance, ancestor-replacement, symlink, dangling-link,
-  non-regular-leaf, unsupported-platform, and syscall-error tests.
-- Commit the coherent implementation/test step after its focused checks pass,
-  then update and commit this ledger after each subsequent coherent step.
-- Run focused and broad validation, then complete the required independent
-  review-fix cycle with no actionable findings.
+- Run the exact workflow tests, broader prepare/signing-supervisor tests, full
+  pytest, repository-wide Ruff/format checks, compileall, and diff checks.
+- Complete the independent review-fix cycle with no actionable findings and
+  record its verdict plus final checks.
 - Retry live upstream comparison, verify the exact commits and draft PR body,
   and only then push/open a draft PR if all checks are green. Do not dispatch
   signing or merge; write the final report to the task output file.
