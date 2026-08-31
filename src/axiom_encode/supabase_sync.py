@@ -234,9 +234,7 @@ def _is_missing_column_error(error: Exception) -> bool:
     """True when a Supabase/PostgREST error reports an unknown column."""
     text = str(error)
     return (
-        "PGRST204" in text
-        or "Could not find the" in text
-        or "does not exist" in text
+        "PGRST204" in text or "Could not find the" in text or "does not exist" in text
     )
 
 
@@ -781,8 +779,7 @@ def sync_agent_sessions_to_supabase(
                 fallback_session_data = {
                     key: value
                     for key, value in session_data.items()
-                    if key
-                    not in ("cache_creation_tokens", "reasoning_output_tokens")
+                    if key not in ("cache_creation_tokens", "reasoning_output_tokens")
                 }
                 if fallback_session_data == session_data or not (
                     _is_missing_column_error(session_error)

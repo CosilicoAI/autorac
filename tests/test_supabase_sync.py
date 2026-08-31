@@ -1494,9 +1494,7 @@ class TestSyncRunCostLedger:
         mock_run = self._make_run_with_ledger()
 
         mock_client = MagicMock()
-        execute = (
-            mock_client.schema.return_value.table.return_value.upsert.return_value.execute
-        )
+        execute = mock_client.schema.return_value.table.return_value.upsert.return_value.execute
         execute.side_effect = Exception("Connection reset by peer")
 
         assert sync_run_to_supabase(mock_run, "ci_only", client=mock_client) is False
@@ -1510,9 +1508,7 @@ class TestSyncRunCostLedger:
         mock_run.outcome = {"final_success": True, "status": "apply_applied"}
 
         mock_client = MagicMock()
-        execute = (
-            mock_client.schema.return_value.table.return_value.upsert.return_value.execute
-        )
+        execute = mock_client.schema.return_value.table.return_value.upsert.return_value.execute
         execute.side_effect = [
             Exception("Could not find the 'input_tokens' column"),
             MagicMock(data=[{"id": "cost-123"}]),
@@ -1533,9 +1529,7 @@ class TestSyncRunCostLedger:
         mock_run.outcome = {"final_success": True, "status": "apply_applied"}
 
         mock_client = MagicMock()
-        execute = (
-            mock_client.schema.return_value.table.return_value.upsert.return_value.execute
-        )
+        execute = mock_client.schema.return_value.table.return_value.upsert.return_value.execute
         execute.side_effect = [
             Exception("Could not find the 'input_tokens' column"),
             Exception("Could not find the 'outcome' column"),
@@ -1621,9 +1615,7 @@ class TestSyncSessionTokenColumns:
         db_path = self._make_session_db(tmp_path)
 
         mock_client = MagicMock()
-        execute = (
-            mock_client.schema.return_value.table.return_value.upsert.return_value.execute
-        )
+        execute = mock_client.schema.return_value.table.return_value.upsert.return_value.execute
         execute.side_effect = [
             Exception("Could not find the 'cache_creation_tokens' column"),
             MagicMock(data=[{"id": "agent-test-1"}]),
@@ -1647,9 +1639,7 @@ class TestSyncSessionTokenColumns:
         db_path = self._make_session_db(tmp_path)
 
         mock_client = MagicMock()
-        execute = (
-            mock_client.schema.return_value.table.return_value.upsert.return_value.execute
-        )
+        execute = mock_client.schema.return_value.table.return_value.upsert.return_value.execute
         execute.side_effect = Exception("Connection reset by peer")
 
         with patch("axiom_encode.supabase_sync.ENCODINGS_DB", db_path):

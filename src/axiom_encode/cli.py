@@ -58996,8 +58996,7 @@ def _sum_attempt_cost(attempts: Sequence[Any], cost_field: str) -> float | None:
             costs.append(float(cost))
             continue
         if any(
-            int(getattr(attempt, field, 0) or 0) > 0
-            for field in _ATTEMPT_TOKEN_FIELDS
+            int(getattr(attempt, field, 0) or 0) > 0 for field in _ATTEMPT_TOKEN_FIELDS
         ):
             return None
     return sum(costs) if costs else None
