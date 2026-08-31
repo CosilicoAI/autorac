@@ -1798,6 +1798,24 @@ class TestEncoderSnapshotProvisioning:
         with pytest.raises(SystemExit, match="after the latest version bump"):
             self._export(repo, head, staging)
 
+    def test_allows_operational_reviewed_head_record_without_version_bump(
+        self, tmp_path
+    ):
+        repo = tmp_path / "axiom-encode"
+        self._init_encoder_repo(repo)
+        record = repo / "data" / "reviewed-rulespec-refs" / "us" / f"{'a' * 40}.json"
+        record.parent.mkdir(parents=True)
+        record.write_text('{"operational":"policy"}\n')
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", "admit reviewed head", "--no-verify")
+        head = self._git(repo, "rev-parse", "HEAD").stdout.strip()
+        staging = tmp_path / "staging"
+        staging.mkdir()
+
+        self._export(repo, head, staging)
+
+        assert not (staging / "data").exists()
+
     def test_rejects_shallow_history(self, tmp_path):
         repo = tmp_path / "axiom-encode"
         self._init_encoder_repo(repo)

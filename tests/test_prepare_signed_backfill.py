@@ -21,12 +21,15 @@ from scripts.prepare_signed_backfill import (
     MAX_DEFERRED_OUTPUT_REVIEW_CONTRACT_JSON_BYTES,
     MAX_SOURCE_BUNDLE_JSON_BYTES,
     REVIEWED_RULESPEC_PR_BASE_BRANCHES,
+    REVIEWED_RULESPEC_REF_SCHEMA,
     REVIEWED_RULESPEC_REFS,
+    _load_checkout_reviewed_rulespec_refs,
     _normalize_required_test_cases,
     _retired_manifest_inventory_without_entry,
     authorize_legacy_index_manifest_shrink,
     authorized_changed_paths,
     branch_name,
+    load_reviewed_rulespec_refs,
     parse_canonical_refresh_bundle,
     parse_existing_signed_imports,
     parse_source_bundle,
@@ -3653,6 +3656,167 @@ def test_validate_dependent_cascade_rejects_incomplete_direct_dependents(
         )
 
 
+def _write_reviewed_rulespec_ref(
+    root: Path,
+    country: str,
+    rulespec_ref: str,
+    *,
+    purpose: str = "Reviewed test head.",
+) -> Path:
+    path = root / country / f"{rulespec_ref}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "country": country,
+        "purpose": purpose,
+        "review_url": "https://github.com/TheAxiomFoundation/axiom-encode/pull/1",
+        "rulespec_ref": rulespec_ref,
+        "schema": REVIEWED_RULESPEC_REF_SCHEMA,
+    }
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_load_reviewed_rulespec_refs_accepts_independent_records(
+    tmp_path: Path,
+) -> None:
+    first = "1" * 40
+    second = "2" * 40
+    _write_reviewed_rulespec_ref(tmp_path, "us", first)
+    _write_reviewed_rulespec_ref(tmp_path, "dk", second)
+
+    assert load_reviewed_rulespec_refs(tmp_path) == frozenset(
+        {("us", first), ("dk", second)}
+    )
+
+
+def test_load_reviewed_rulespec_refs_removal_revokes_only_that_head(
+    tmp_path: Path,
+) -> None:
+    first = "1" * 40
+    second = "2" * 40
+    first_path = _write_reviewed_rulespec_ref(tmp_path, "us", first)
+    _write_reviewed_rulespec_ref(tmp_path, "us", second)
+
+    first_path.unlink()
+
+    assert load_reviewed_rulespec_refs(tmp_path) == frozenset({("us", second)})
+
+
+def test_checkout_loader_denies_exceptional_heads_when_registry_is_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.prepare_signed_backfill.REVIEWED_RULESPEC_REF_ROOT",
+        tmp_path / "absent",
+    )
+
+    assert _load_checkout_reviewed_rulespec_refs() == frozenset()
+
+
+def test_load_reviewed_rulespec_refs_rejects_path_payload_mismatch(
+    tmp_path: Path,
+) -> None:
+    path = _write_reviewed_rulespec_ref(tmp_path, "us", "1" * 40)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["rulespec_ref"] = "2" * 40
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="does not match its path"):
+        load_reviewed_rulespec_refs(tmp_path)
+
+
+def test_load_reviewed_rulespec_refs_rejects_malformed_filename(
+    tmp_path: Path,
+) -> None:
+    path = _write_reviewed_rulespec_ref(tmp_path, "us", "1" * 40)
+    path.rename(path.with_name(f"{'A' * 40}.json"))
+
+    with pytest.raises(ValueError, match="full lowercase commit SHA"):
+        load_reviewed_rulespec_refs(tmp_path)
+
+
+def test_load_reviewed_rulespec_refs_rejects_untrusted_review_url(
+    tmp_path: Path,
+) -> None:
+    path = _write_reviewed_rulespec_ref(tmp_path, "us", "1" * 40)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["review_url"] = "https://github.com/someone-else/repo/pull/1"
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="does not match its path"):
+        load_reviewed_rulespec_refs(tmp_path)
+
+
+def test_load_reviewed_rulespec_refs_rejects_duplicate_json_keys(
+    tmp_path: Path,
+) -> None:
+    path = _write_reviewed_rulespec_ref(tmp_path, "us", "1" * 40)
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            '  "country": "us",\n',
+            '  "country": "us",\n  "country": "us",\n',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        load_reviewed_rulespec_refs(tmp_path)
+
+
+def test_load_reviewed_rulespec_refs_rejects_noncanonical_json(
+    tmp_path: Path,
+) -> None:
+    path = _write_reviewed_rulespec_ref(tmp_path, "us", "1" * 40)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must use canonical JSON"):
+        load_reviewed_rulespec_refs(tmp_path)
+
+
+def test_load_reviewed_rulespec_refs_rejects_unsafe_file_mode(
+    tmp_path: Path,
+) -> None:
+    path = _write_reviewed_rulespec_ref(tmp_path, "us", "1" * 40)
+    path.chmod(0o600)
+
+    with pytest.raises(ValueError, match="regular 0644 file"):
+        load_reviewed_rulespec_refs(tmp_path)
+
+
+def test_load_reviewed_rulespec_refs_rejects_symlinked_record(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "registry"
+    country = registry / "us"
+    country.mkdir(parents=True)
+    target = tmp_path / "target.json"
+    target.write_text("{}\n", encoding="utf-8")
+    (country / f"{'1' * 40}.json").symlink_to(target)
+
+    with pytest.raises(ValueError, match="cannot safely open"):
+        load_reviewed_rulespec_refs(registry)
+
+
+def test_load_reviewed_rulespec_refs_rejects_unexpected_root_entry(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "README.md").write_text("unexpected\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid country entry"):
+        load_reviewed_rulespec_refs(tmp_path)
+
+
 def test_validate_rulespec_base_accepts_main_ancestor(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     base = _add_origin_main(repo)
@@ -3697,26 +3861,32 @@ def test_validate_rulespec_base_rejects_stale_main_pr_base(
         validate_rulespec_base(repo, "us", stale_base, open_pr=True)
 
 
-@pytest.mark.parametrize(
-    ("country", "reviewed_ref"),
-    [
+MIGRATED_REVIEWED_RULESPEC_REFS = frozenset(
+    {
+        ("ca", "f60f7a84c30e38c7d4961d70647eb0457e7d76c2"),
         ("dk", "06489d04e7d4b8d424d1711d99df883c6411248a"),
-        ("us", "b61918da93fe8a1a29b35b9330aef2085291a5d0"),
-        ("us", "251d8d66dabdebcb763d9e7c9b8322a281440c36"),
-        ("us", "68cca4a6fa806b63f95277c129575d88d2ac07f1"),
         ("us", "1e04e456ab404860050586c34eef51321eea95e9"),
-        ("us", "b1a6e07af093d62f613f83afe26fcb4dd87de491"),
+        ("us", "251d8d66dabdebcb763d9e7c9b8322a281440c36"),
+        ("us", "2a503a5c9a2227c363aceaece6c547429c3c0878"),
         ("us", "38ddc92d4160a0d39af13bfe232a446b554a15c5"),
+        ("us", "6535019ce780d9e78f10509f2fe7a2607fb2bdc4"),
+        ("us", "68cca4a6fa806b63f95277c129575d88d2ac07f1"),
+        ("us", "b1a6e07af093d62f613f83afe26fcb4dd87de491"),
+        ("us", "b61918da93fe8a1a29b35b9330aef2085291a5d0"),
+        ("us", "c482ef6506c50b54236354926bbce1bcd6434132"),
+        ("us", "dc87ef6212accbc4ff67b81f97b6ddf0cf3b5a5c"),
+        ("us", "e942ce50546b1c3a1c0c8f3f0404a217eddbe071"),
         ("us", "ef9dd5f72d529ebc70f539c42144361e536d7563"),
         ("us", "f4fd3203db560c0d4661542388b6ae2f353e0bd3"),
-        ("us", "e942ce50546b1c3a1c0c8f3f0404a217eddbe071"),
-        ("us", "dc87ef6212accbc4ff67b81f97b6ddf0cf3b5a5c"),
-        ("us", "2a503a5c9a2227c363aceaece6c547429c3c0878"),
-        ("us", "6535019ce780d9e78f10509f2fe7a2607fb2bdc4"),
-        ("us", "c482ef6506c50b54236354926bbce1bcd6434132"),
-        ("ca", "f60f7a84c30e38c7d4961d70647eb0457e7d76c2"),
-    ],
+    }
 )
+
+
+def test_reviewed_head_migration_preserves_every_existing_authorization() -> None:
+    assert MIGRATED_REVIEWED_RULESPEC_REFS <= REVIEWED_RULESPEC_REFS
+
+
+@pytest.mark.parametrize(("country", "reviewed_ref"), sorted(REVIEWED_RULESPEC_REFS))
 def test_validate_rulespec_base_accepts_exact_reviewed_head_artifact_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3724,25 +3894,7 @@ def test_validate_rulespec_base_accepts_exact_reviewed_head_artifact_only(
     reviewed_ref: str,
 ) -> None:
     repo = tmp_path / f"rulespec-{country}"
-    assert REVIEWED_RULESPEC_REFS == frozenset(
-        {
-            ("dk", "06489d04e7d4b8d424d1711d99df883c6411248a"),
-            ("us", "b61918da93fe8a1a29b35b9330aef2085291a5d0"),
-            ("us", "251d8d66dabdebcb763d9e7c9b8322a281440c36"),
-            ("us", "68cca4a6fa806b63f95277c129575d88d2ac07f1"),
-            ("us", "1e04e456ab404860050586c34eef51321eea95e9"),
-            ("us", "b1a6e07af093d62f613f83afe26fcb4dd87de491"),
-            ("us", "38ddc92d4160a0d39af13bfe232a446b554a15c5"),
-            ("us", "ef9dd5f72d529ebc70f539c42144361e536d7563"),
-            ("us", "f4fd3203db560c0d4661542388b6ae2f353e0bd3"),
-            ("us", "e942ce50546b1c3a1c0c8f3f0404a217eddbe071"),
-            ("us", "dc87ef6212accbc4ff67b81f97b6ddf0cf3b5a5c"),
-            ("us", "2a503a5c9a2227c363aceaece6c547429c3c0878"),
-            ("us", "6535019ce780d9e78f10509f2fe7a2607fb2bdc4"),
-            ("us", "c482ef6506c50b54236354926bbce1bcd6434132"),
-            ("ca", "f60f7a84c30e38c7d4961d70647eb0457e7d76c2"),
-        }
-    )
+    assert load_reviewed_rulespec_refs() == REVIEWED_RULESPEC_REFS
     assert REVIEWED_RULESPEC_PR_BASE_BRANCHES == frozenset(
         {("dk", "pin/dk-rulespec-2026-08-07"), ("us", "hard-cut/canonical-layout-us")}
     )

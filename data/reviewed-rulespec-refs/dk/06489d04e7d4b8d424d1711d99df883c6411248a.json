@@ -1,0 +1,7 @@
+{
+  "country": "dk",
+  "purpose": "Reviewed rulespec-dk re-pin head for the targeted signed re-encode workflow.",
+  "review_url": "https://github.com/TheAxiomFoundation/axiom-encode/pull/1476",
+  "rulespec_ref": "06489d04e7d4b8d424d1711d99df883c6411248a",
+  "schema": "axiom-encode/reviewed-rulespec-ref/v1"
+}

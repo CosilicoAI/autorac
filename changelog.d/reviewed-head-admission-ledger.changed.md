@@ -1,0 +1,1 @@
+Store exceptional reviewed RuleSpec head admissions as canonical one-record-per-SHA operational data, preserving exact-SHA fail-closed authorization while allowing independent admission pull requests to merge without rewriting a shared source set or package version.
