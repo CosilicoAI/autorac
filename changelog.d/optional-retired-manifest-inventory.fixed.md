@@ -1,0 +1,1 @@
+Allow targeted signed re-encodes to skip retired-manifest reconciliation only when the optional inventory is absent from both committed HEAD and the worktree, while retaining fail-closed manifest, target-binding, symlink, and race checks.

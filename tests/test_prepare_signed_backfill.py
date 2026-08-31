@@ -1125,8 +1125,8 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def _repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "rulespec-us"
+def _repo(tmp_path: Path, *, country: str = "us") -> Path:
+    repo = tmp_path / f"rulespec-{country}"
     repo.mkdir()
     _git(repo, "init", "-b", "main")
     _git(repo, "config", "user.name", "Test")
@@ -1166,14 +1166,18 @@ def _write_signed_change(repo: Path) -> tuple[Path, Path]:
 def _retired_inventory_replacement_repo(
     tmp_path: Path,
     *,
+    country: str = "us",
     inventory_text: str | None = None,
     include_inventory: bool = True,
 ) -> tuple[Path, Path, Path, Path]:
-    repo = _repo(tmp_path)
-    target = repo / "us/policies/income_tax/schedule.yaml"
+    repo = _repo(tmp_path, country=country)
+    target = repo / f"{country}/policies/income_tax/schedule.yaml"
     target.parent.mkdir(parents=True)
     target.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
-    manifest = repo / ".axiom/encoding-manifests/us/policies/income_tax/schedule.json"
+    manifest = (
+        repo
+        / f".axiom/encoding-manifests/{country}/policies/income_tax/schedule.json"
+    )
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
         json.dumps({"schema_version": "axiom-encode/applied-rulespec/v1"}) + "\n",
@@ -1188,7 +1192,7 @@ def _retired_inventory_replacement_repo(
             or (
                 "KNOWN_RETIRED_SCHEMA_MANIFESTS: frozenset[str] = frozenset({\n"
                 f"    '{manifest_relative}',\n"
-                "    '.axiom/encoding-manifests/us/statutes/other.json',\n"
+                f"    '.axiom/encoding-manifests/{country}/statutes/other.json',\n"
                 "})\n"
             ),
             encoding="utf-8",
@@ -1336,11 +1340,12 @@ def test_reconcile_retired_manifest_inventory_is_noop_when_absent(
     }
 
 
-def test_reconcile_retired_manifest_inventory_is_noop_without_inventory_file(
+def test_rulespec_be_reconcile_is_noop_without_retired_manifest_inventory(
     tmp_path: Path,
 ) -> None:
     repo, target, manifest, inventory = _retired_inventory_replacement_repo(
         tmp_path,
+        country="be",
         include_inventory=False,
     )
 

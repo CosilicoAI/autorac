@@ -1821,6 +1821,33 @@ def reconcile_retired_manifest_inventory(
         raise ValueError(
             "retired manifest inventory changed before exact reconciliation"
         )
+    inventory_tree_entry = _git(
+        repo,
+        "ls-tree",
+        "--full-tree",
+        "-z",
+        "HEAD",
+        "--",
+        RETIRED_MANIFEST_INVENTORY.as_posix(),
+    )
+    if not inventory_tree_entry:
+        try:
+            inventory_present = _checkout_path_exists_without_indirection(
+                repo,
+                RETIRED_MANIFEST_INVENTORY,
+                label="retired manifest inventory",
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "retired manifest inventory is absent from HEAD but not safely "
+                "absent from the worktree"
+            ) from exc
+        if inventory_present:
+            raise ValueError(
+                "retired manifest inventory is absent from HEAD but not safely "
+                "absent from the worktree"
+            )
+        return None
     try:
         base_raw = _git(
             repo,
