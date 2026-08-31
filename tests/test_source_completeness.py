@@ -22975,6 +22975,7 @@ def test_terminal_armenian_amendment_history_is_not_numeric_recall():
     (
         ("147-րդ", "ՀՕ-538-Ն"),
         ("293․1‑ին", "Հ-538-Ն"),
+        ("1֊ին", "ՀՕ֊538֊Ն"),
     ),
 )
 def test_armenian_history_filter_accepts_arlis_punctuation_variants(
@@ -22998,6 +22999,12 @@ def test_armenian_history_filter_accepts_crlf_source_text():
     )
 
 
+def test_armenian_history_filter_accepts_uppercase_action_abbreviation():
+    source = "Շահառուին վճարել 500 դրամ:\n(1-ին հոդվածը Փոփ. 07.12.22 ՀՕ-538-Ն)"
+
+    assert authoritative_numeric_recall_text(source) == "Շահառուին վճարել 500 դրամ:"
+
+
 @pytest.mark.parametrize(
     "parenthetical",
     (
@@ -23015,6 +23022,35 @@ def test_armenian_history_filter_does_not_strip_inline_parenthetical():
     source = "Շահառուին վճարել 500 դրամ: (1-ին հոդվածը փոփ. 07.12.22 ՀՕ-538-Ն)"
 
     assert authoritative_numeric_recall_text(source) == source
+
+
+@pytest.mark.parametrize(
+    "parenthetical",
+    (
+        "(1-ին հոդվածը փոփ. 07.12.22)",
+        "(1-ին և 2-րդ հոդվածները փոփ. 07.12.22 ՀՕ-538-Ն)",
+        "(հոդվածը փոփ. 07.12.22 ՀՕ-538-Ն)",
+        "(1-ին հոդվածը ուժը կորցրել 07.12.22 ՀՕ-538-Ն)",
+        "(Օրենքը փոփ. 07.12.22 ՀՕ-538-Ն)",
+        "(1-ին հոդվածը փոփ. 07.12.22 ՀՕ-538-Ա)",
+        "(1-ին հոդվածը փոփ. 7.12.22 ՀՕ-538-Ն)",
+        "(1-ին հոդվածը փոփ. (տե՛ս) 07.12.22 ՀՕ-538-Ն)",
+    ),
+)
+def test_armenian_history_filter_keeps_shapes_outside_prompt_contract(parenthetical):
+    source = f"Շահառուին վճարել 500 դրամ:\n{parenthetical}"
+
+    assert authoritative_numeric_recall_text(source) == source
+
+
+def test_armenian_history_filter_continues_after_rejected_ledger():
+    rejected = "(1-ին հոդվածը փոփ. 07.12.22)"
+    accepted = "(2-րդ հոդվածը խմբ. 08.12.22 ՀՕ-539-Ն)"
+    source = f"Շահառուին վճարել 500 դրամ:\n{rejected}\n{accepted}"
+
+    assert authoritative_numeric_recall_text(source) == (
+        f"Շահառուին վճարել 500 դրամ:\n{rejected}"
+    )
 
 
 def test_armenian_history_filter_strips_adjacent_standalone_ledgers():

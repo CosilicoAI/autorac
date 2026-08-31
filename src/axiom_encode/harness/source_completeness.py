@@ -2192,7 +2192,7 @@ _ALABAMA_TERMINAL_CODE_HISTORY_ENTRY = re.compile(
     flags=re.IGNORECASE,
 )
 _ARMENIAN_AMENDMENT_HISTORY_DASH = (
-    r"[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d]"
+    r"[-\u058a\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d]"
 )
 _ARMENIAN_AMENDMENT_HISTORY_ARTICLE = re.compile(
     rf"\s*\d+(?:[.\u2024]\d+)?{_ARMENIAN_AMENDMENT_HISTORY_DASH}"
@@ -2201,6 +2201,7 @@ _ARMENIAN_AMENDMENT_HISTORY_ARTICLE = re.compile(
 )
 _ARMENIAN_AMENDMENT_HISTORY_ACTION = re.compile(
     r"(?:փոփ|լրաց|խմբ)(?:[.\u2024])?(?=\s|,|$)",
+    flags=re.IGNORECASE,
 )
 _ARMENIAN_AMENDMENT_HISTORY_CITATION = re.compile(
     r"\d{2}[.\u2024]\d{2}[.\u2024]\d{2,4}\s+Հ(?:Օ)?"

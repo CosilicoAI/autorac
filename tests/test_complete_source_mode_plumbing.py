@@ -152,7 +152,12 @@ def test_generic_encoder_prompt_adds_completeness_only_when_enabled():
     assert "omit oracle inputs or expectations" in complete_prompt
     assert "scalar-only source unit may remain parameter-only" in complete_prompt
     assert "In Armenian ARLIS text" in default_prompt
-    assert "uses an amendment-action abbreviation" in default_prompt
+    assert "only a parenthetical on\n  its own line" in default_prompt
+    assert "single ordinal-numbered article label" in default_prompt
+    assert "date immediately followed by" in default_prompt
+    assert "Keep every inline, plural or unnumbered" in default_prompt
+    assert "unpaired-date, nested, or otherwise unrecognized" in default_prompt
+    assert "otherwise lists only amendment dates" not in default_prompt
     assert "parenthetical that states an operative amount" in complete_prompt
     assert "single-principal-output case pairs" in complete_prompt
     assert "one large omnibus case" in complete_prompt
