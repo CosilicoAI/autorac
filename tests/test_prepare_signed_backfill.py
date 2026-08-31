@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -1166,6 +1167,7 @@ def _retired_inventory_replacement_repo(
     tmp_path: Path,
     *,
     inventory_text: str | None = None,
+    include_inventory: bool = True,
 ) -> tuple[Path, Path, Path, Path]:
     repo = _repo(tmp_path)
     target = repo / "us/policies/income_tax/schedule.yaml"
@@ -1178,18 +1180,19 @@ def _retired_inventory_replacement_repo(
         encoding="utf-8",
     )
     inventory = repo / "tests/test_encoding_manifests.py"
-    inventory.parent.mkdir(parents=True)
-    manifest_relative = manifest.relative_to(repo).as_posix()
-    inventory.write_text(
-        inventory_text
-        or (
-            "KNOWN_RETIRED_SCHEMA_MANIFESTS: frozenset[str] = frozenset({\n"
-            f"    '{manifest_relative}',\n"
-            "    '.axiom/encoding-manifests/us/statutes/other.json',\n"
-            "})\n"
-        ),
-        encoding="utf-8",
-    )
+    if include_inventory:
+        inventory.parent.mkdir(parents=True)
+        manifest_relative = manifest.relative_to(repo).as_posix()
+        inventory.write_text(
+            inventory_text
+            or (
+                "KNOWN_RETIRED_SCHEMA_MANIFESTS: frozenset[str] = frozenset({\n"
+                f"    '{manifest_relative}',\n"
+                "    '.axiom/encoding-manifests/us/statutes/other.json',\n"
+                "})\n"
+            ),
+            encoding="utf-8",
+        )
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "add retired target")
 
@@ -1331,6 +1334,87 @@ def test_reconcile_retired_manifest_inventory_is_noop_when_absent(
         PurePosixPath(target.relative_to(repo).as_posix()),
         PurePosixPath(manifest.relative_to(repo).as_posix()),
     }
+
+
+def test_reconcile_retired_manifest_inventory_is_noop_without_inventory_file(
+    tmp_path: Path,
+) -> None:
+    repo, target, manifest, inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        include_inventory=False,
+    )
+
+    assert not inventory.exists()
+    assert (
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+        is None
+    )
+    assert authorized_changed_paths(repo) == {
+        PurePosixPath(target.relative_to(repo).as_posix()),
+        PurePosixPath(manifest.relative_to(repo).as_posix()),
+    }
+
+
+@pytest.mark.parametrize("entry_kind", ["regular", "dangling-symlink"])
+def test_reconcile_retired_manifest_inventory_rejects_ignored_worktree_entry(
+    tmp_path: Path,
+    entry_kind: str,
+) -> None:
+    repo, target, _manifest, inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        include_inventory=False,
+    )
+    exclude = repo / ".git/info/exclude"
+    exclude.write_text(
+        exclude.read_text(encoding="utf-8")
+        + "\ntests/test_encoding_manifests.py\n",
+        encoding="utf-8",
+    )
+    inventory.parent.mkdir(parents=True)
+    if entry_kind == "regular":
+        inventory.write_text("ignored but present\n", encoding="utf-8")
+    else:
+        inventory.symlink_to("missing-test_encoding_manifests.py")
+
+    with pytest.raises(
+        ValueError,
+        match="absent from HEAD but not safely absent from the worktree",
+    ):
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+
+
+def test_reconcile_retired_manifest_inventory_rejects_ambiguous_absence_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, target, _manifest, inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        include_inventory=False,
+    )
+    inventory.parent.mkdir(parents=True)
+    original_lstat = Path.lstat
+
+    def raced_lstat(path: Path) -> os.stat_result:
+        if path == inventory:
+            raise OSError(errno.ELOOP, "simulated symlink race", path)
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", raced_lstat)
+
+    with pytest.raises(
+        ValueError,
+        match="absent from HEAD but not safely absent from the worktree",
+    ):
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
 
 
 def test_reconcile_retired_manifest_inventory_is_noop_without_inventory_symbol(
@@ -1497,12 +1581,47 @@ def test_stage_rejects_nonexact_retired_manifest_inventory_edit(
 def test_reconcile_retired_manifest_inventory_requires_normal_model_apply(
     tmp_path: Path,
 ) -> None:
-    repo, target, manifest, _inventory = _retired_inventory_replacement_repo(tmp_path)
+    repo, target, manifest, _inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        include_inventory=False,
+    )
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     payload["tool"] = "axiom-encode encode --apply --replace-legacy-rulespec-path"
     manifest.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="not an exact signed-v5 model apply"):
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["wrong-digest", "missing-target", "duplicate-target"],
+)
+def test_reconcile_absent_retired_inventory_requires_exact_target_binding(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    repo, target, manifest, _inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        include_inventory=False,
+    )
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    applied_files = payload["applied_files"]
+    assert isinstance(applied_files, list)
+    target_record = applied_files[0]
+    assert isinstance(target_record, dict)
+    if mutation == "wrong-digest":
+        target_record["sha256"] = "0" * 64
+    elif mutation == "missing-target":
+        target_record["path"] = "us/policies/income_tax/other.yaml"
+    else:
+        applied_files.append(dict(target_record))
+    manifest.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="does not bind exact target bytes"):
         reconcile_retired_manifest_inventory(
             repo,
             target.relative_to(repo).as_posix(),
