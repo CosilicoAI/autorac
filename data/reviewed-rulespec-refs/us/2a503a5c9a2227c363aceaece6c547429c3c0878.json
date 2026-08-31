@@ -1,0 +1,7 @@
+{
+  "country": "us",
+  "purpose": "Reviewed current rulespec-us hard-cut tip for protected targeted re-encode publication.",
+  "review_url": "https://github.com/TheAxiomFoundation/axiom-encode/pull/1459",
+  "rulespec_ref": "2a503a5c9a2227c363aceaece6c547429c3c0878",
+  "schema": "axiom-encode/reviewed-rulespec-ref/v1"
+}

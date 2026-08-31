@@ -1,0 +1,7 @@
+{
+  "country": "us",
+  "purpose": "Initial reviewed head admitted with the protected signed-backfill staging repair.",
+  "review_url": "https://github.com/TheAxiomFoundation/axiom-encode/pull/1456",
+  "rulespec_ref": "b1a6e07af093d62f613f83afe26fcb4dd87de491",
+  "schema": "axiom-encode/reviewed-rulespec-ref/v1"
+}

@@ -1,0 +1,7 @@
+{
+  "country": "us",
+  "purpose": "Reviewed head admitted with the exact-dependent metadata reconciliation repair.",
+  "review_url": "https://github.com/TheAxiomFoundation/axiom-encode/pull/1457",
+  "rulespec_ref": "dc87ef6212accbc4ff67b81f97b6ddf0cf3b5a5c",
+  "schema": "axiom-encode/reviewed-rulespec-ref/v1"
+}

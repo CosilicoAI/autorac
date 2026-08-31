@@ -68,69 +68,14 @@ MAX_REQUIRED_TEST_CASE_FIELDS = 64
 MAX_DEFERRED_OUTPUT_REVIEW_CONTRACT_JSON_BYTES = 64 * 1024
 DEFERRED_OUTPUT_REVIEW_CONTRACT_SCHEMA = "axiom-encode/review-contract/v1"
 STRUCTURED_REVIEW_CONTRACT_SCHEMA = "axiom-encode/review-contract/v2"
-REVIEWED_RULESPEC_REFS = frozenset(
-    {
-        (
-            "dk",
-            "06489d04e7d4b8d424d1711d99df883c6411248a",
-        ),
-        (
-            "us",
-            "b61918da93fe8a1a29b35b9330aef2085291a5d0",
-        ),
-        (
-            "us",
-            "251d8d66dabdebcb763d9e7c9b8322a281440c36",
-        ),
-        (
-            "us",
-            "68cca4a6fa806b63f95277c129575d88d2ac07f1",
-        ),
-        (
-            "us",
-            "1e04e456ab404860050586c34eef51321eea95e9",
-        ),
-        (
-            "us",
-            "b1a6e07af093d62f613f83afe26fcb4dd87de491",
-        ),
-        (
-            "us",
-            "38ddc92d4160a0d39af13bfe232a446b554a15c5",
-        ),
-        (
-            "us",
-            "ef9dd5f72d529ebc70f539c42144361e536d7563",
-        ),
-        (
-            "us",
-            "f4fd3203db560c0d4661542388b6ae2f353e0bd3",
-        ),
-        (
-            "us",
-            "e942ce50546b1c3a1c0c8f3f0404a217eddbe071",
-        ),
-        (
-            "us",
-            "dc87ef6212accbc4ff67b81f97b6ddf0cf3b5a5c",
-        ),
-        (
-            "us",
-            "2a503a5c9a2227c363aceaece6c547429c3c0878",
-        ),
-        (
-            "us",
-            "6535019ce780d9e78f10509f2fe7a2607fb2bdc4",
-        ),
-        (
-            "us",
-            "c482ef6506c50b54236354926bbce1bcd6434132",
-        ),
-        (
-            "ca",
-            "f60f7a84c30e38c7d4961d70647eb0457e7d76c2",
-        ),
-    }
+REVIEWED_RULESPEC_REF_SCHEMA = "axiom-encode/reviewed-rulespec-ref/v1"
+REVIEWED_RULESPEC_REF_ROOT = (
+    Path(__file__).resolve().parents[2] / "data" / "reviewed-rulespec-refs"
+)
+REVIEWED_RULESPEC_REF_MAX_BYTES = 16 * 1024
+REVIEWED_RULESPEC_REF_URL_PATTERN = re.compile(
+    r"https://github\.com/TheAxiomFoundation/"
+    r"(?:axiom-encode|rulespec-[a-z]{2})/(?:issues|pull)/[1-9][0-9]*"
 )
 REVIEWED_RULESPEC_PR_BASE_BRANCHES = frozenset(
     {
@@ -152,6 +97,161 @@ def _load_unambiguous_json(raw: str, *, label: str) -> object:
         return decoded
 
     return json.loads(raw, object_pairs_hook=reject_duplicates)
+
+
+def _read_reviewed_rulespec_ref_record(path: Path) -> bytes:
+    """Read one regular 0644 admission record without following symlinks."""
+
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise RuntimeError("reviewed RuleSpec admissions require O_NOFOLLOW")
+    flags = os.O_RDONLY | os.O_CLOEXEC | nofollow
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"cannot safely open reviewed RuleSpec ref: {path}") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != 0o644
+        ):
+            raise ValueError(
+                f"reviewed RuleSpec ref must be a regular 0644 file: {path}"
+            )
+        if metadata.st_size > REVIEWED_RULESPEC_REF_MAX_BYTES:
+            raise ValueError(f"reviewed RuleSpec ref is too large: {path}")
+        chunks: list[bytes] = []
+        remaining = REVIEWED_RULESPEC_REF_MAX_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 64 * 1024))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > REVIEWED_RULESPEC_REF_MAX_BYTES:
+            raise ValueError(f"reviewed RuleSpec ref is too large: {path}")
+        return raw
+    finally:
+        os.close(descriptor)
+
+
+def load_reviewed_rulespec_refs(
+    root: Path = REVIEWED_RULESPEC_REF_ROOT,
+) -> frozenset[tuple[str, str]]:
+    """Load exact reviewed heads from canonical append-only checkout records."""
+
+    root = Path(root)
+    try:
+        root_metadata = root.lstat()
+    except OSError as exc:
+        raise ValueError("reviewed RuleSpec ref registry is unavailable") from exc
+    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+        raise ValueError("reviewed RuleSpec ref registry must be a directory")
+
+    reviewed: set[tuple[str, str]] = set()
+    for country_path in sorted(root.iterdir(), key=lambda value: value.name):
+        try:
+            country_metadata = country_path.lstat()
+        except OSError as exc:
+            raise ValueError(
+                f"cannot inspect reviewed RuleSpec country directory: {country_path}"
+            ) from exc
+        country = country_path.name
+        if (
+            COUNTRY_PATTERN.fullmatch(country) is None
+            or stat.S_ISLNK(country_metadata.st_mode)
+            or not stat.S_ISDIR(country_metadata.st_mode)
+        ):
+            raise ValueError(
+                f"reviewed RuleSpec registry contains an invalid country entry: "
+                f"{country_path}"
+            )
+        for record_path in sorted(country_path.iterdir(), key=lambda value: value.name):
+            expected_suffix = ".json"
+            if not record_path.name.endswith(expected_suffix):
+                raise ValueError(
+                    f"reviewed RuleSpec registry contains an unexpected file: "
+                    f"{record_path}"
+                )
+            rulespec_ref = record_path.name[: -len(expected_suffix)]
+            if COMMIT_PATTERN.fullmatch(rulespec_ref) is None:
+                raise ValueError(
+                    f"reviewed RuleSpec record filename must be a full lowercase "
+                    f"commit SHA: {record_path}"
+                )
+            raw = _read_reviewed_rulespec_ref_record(record_path)
+            try:
+                text = raw.decode("utf-8")
+                payload = _load_unambiguous_json(
+                    text,
+                    label=f"reviewed RuleSpec ref {country}/{rulespec_ref}",
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    f"reviewed RuleSpec ref is not canonical JSON: {record_path}"
+                ) from exc
+            expected_fields = {
+                "country",
+                "purpose",
+                "review_url",
+                "rulespec_ref",
+                "schema",
+            }
+            if not isinstance(payload, dict) or set(payload) != expected_fields:
+                raise ValueError(
+                    f"reviewed RuleSpec ref has an invalid schema: {record_path}"
+                )
+            purpose = payload.get("purpose")
+            if (
+                payload.get("schema") != REVIEWED_RULESPEC_REF_SCHEMA
+                or payload.get("country") != country
+                or payload.get("rulespec_ref") != rulespec_ref
+                or not isinstance(payload.get("review_url"), str)
+                or REVIEWED_RULESPEC_REF_URL_PATTERN.fullmatch(payload["review_url"])
+                is None
+                or not isinstance(purpose, str)
+                or not purpose
+                or len(purpose) > 280
+                or purpose != purpose.strip()
+                or any(
+                    ord(character) < 32 or ord(character) == 127
+                    for character in purpose
+                )
+            ):
+                raise ValueError(
+                    f"reviewed RuleSpec ref metadata does not match its path: "
+                    f"{record_path}"
+                )
+            canonical = (
+                json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+            ).encode("utf-8")
+            if raw != canonical:
+                raise ValueError(
+                    f"reviewed RuleSpec ref must use canonical JSON: {record_path}"
+                )
+            identity = (country, rulespec_ref)
+            if identity in reviewed:
+                raise ValueError(f"duplicate reviewed RuleSpec ref: {identity}")
+            reviewed.add(identity)
+    return frozenset(reviewed)
+
+
+def _load_checkout_reviewed_rulespec_refs() -> frozenset[tuple[str, str]]:
+    """Load checkout policy, or deny every exceptional head outside a checkout."""
+
+    try:
+        REVIEWED_RULESPEC_REF_ROOT.lstat()
+    except FileNotFoundError:
+        # Operational admission data is deliberately not packaged in the wheel.
+        # An installed distribution can still serve normal main-ancestor paths,
+        # but it cannot authorize an exceptional unmerged RuleSpec head.
+        return frozenset()
+    return load_reviewed_rulespec_refs()
+
+
+REVIEWED_RULESPEC_REFS = _load_checkout_reviewed_rulespec_refs()
 
 
 def _read_bounded_regular(
