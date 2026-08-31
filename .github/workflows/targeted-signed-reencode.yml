@@ -157,9 +157,60 @@ jobs:
         run: |
           python3 "$GITHUB_WORKSPACE/axiom-encode/scripts/enforce_attempt_budget.py"
 
+  scope_preflight:
+    name: Validate citation and primary target scope
+    needs: attempt_budget
+    if: >-
+      ${{
+        !cancelled()
+        && (
+          needs.attempt_budget.result == 'success'
+          || needs.attempt_budget.result == 'skipped'
+        )
+        && github.event_name == 'workflow_dispatch'
+        && github.ref == 'refs/heads/main'
+        && (
+          inputs.queue_id == ''
+          || (
+            github.actor == 'github-actions[bot]'
+            && github.run_attempt == 1
+          )
+        )
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout axiom-encode
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: axiom-encode
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.7"
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install encoder
+        working-directory: axiom-encode
+        run: uv sync --locked --python 3.13 --no-dev
+
+      - name: Validate primary target scope
+        env:
+          CITATION: ${{ inputs.citation }}
+          REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
+        run: |
+          axiom-encode/.venv/bin/python \
+            axiom-encode/scripts/prepare_signed_backfill.py \
+            validate-primary-target-scope \
+            "$CITATION" "$REPLACE_RULESPEC_PATH"
+
   encode:
     name: Queue protected signed RuleSpec re-encode
-    needs: attempt_budget
+    needs: [attempt_budget, scope_preflight]
     # !cancelled() disables the implicit success() gate so a skipped
     # attempt_budget (queue dispatch) still admits encode; an explicit
     # failure (budget exhausted) or infrastructure failure of the guard
@@ -171,6 +222,7 @@ jobs:
           needs.attempt_budget.result == 'success'
           || needs.attempt_budget.result == 'skipped'
         )
+        && needs.scope_preflight.result == 'success'
         && github.event_name == 'workflow_dispatch'
         && github.ref == 'refs/heads/main'
         && (
@@ -738,6 +790,10 @@ jobs:
             echo "queue-authorized re-encodes cannot add source inputs until queue generation identity binds them" >&2
             exit 1
           fi
+          axiom-encode/.venv/bin/python \
+            axiom-encode/scripts/prepare_signed_backfill.py \
+            validate-primary-target-scope \
+            "$CITATION" "$REPLACE_RULESPEC_PATH" > /dev/null
 
       - name: Fetch pinned signed corpus release object
         shell: bash

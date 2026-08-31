@@ -35,6 +35,7 @@ from scripts.prepare_signed_backfill import (
     stage_authorized_changes,
     validate_country,
     validate_dependent_cascade,
+    validate_primary_target_scope,
     validate_queue_tracking,
     validate_rulespec_base,
     validate_source_add_targets,
@@ -442,6 +443,67 @@ def test_parse_source_bundle_cli_emits_normalized_json_array(
     prepare_signed_backfill_main()
 
     assert capsys.readouterr().out == '["us-ri/statute/44-30-1"]\n'
+
+
+@pytest.mark.parametrize(
+    ("citation", "replacement", "expected"),
+    [
+        (
+            "us/regulation/45/1302/12",
+            "",
+            "us/regulations/45-cfr/1302/12.yaml",
+        ),
+        (
+            "us/regulation/45/1302/12/i/1/ii",
+            "us/regulations/45-cfr/1302/12/i/1/ii.yaml",
+            "us/regulations/45-cfr/1302/12/i/1/ii.yaml",
+        ),
+    ],
+)
+def test_validate_primary_target_scope_accepts_canonical_target(
+    citation: str,
+    replacement: str,
+    expected: str,
+) -> None:
+    assert validate_primary_target_scope(citation, replacement) == PurePosixPath(
+        expected
+    )
+
+
+def test_validate_primary_target_scope_rejects_section_for_leaf() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "primary replacement path must equal the citation's canonical RuleSpec path"
+        ),
+    ) as error:
+        validate_primary_target_scope(
+            "us/regulation/45/1302/12",
+            "us/regulations/45-cfr/1302/12/i/1/ii.yaml",
+        )
+
+    assert "us/regulations/45-cfr/1302/12.yaml" in str(error.value)
+    assert "us/regulations/45-cfr/1302/12/i/1/ii.yaml" in str(error.value)
+
+
+def test_validate_primary_target_scope_cli_reports_canonical_child(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prepare_signed_backfill.py",
+            "validate-primary-target-scope",
+            "us/regulation/45/1302/12/i/1/ii",
+            "us/regulations/45-cfr/1302/12/i/1/ii.yaml",
+        ],
+    )
+
+    prepare_signed_backfill_main()
+
+    assert capsys.readouterr().out == ("us/regulations/45-cfr/1302/12/i/1/ii.yaml\n")
 
 
 def test_validate_source_add_targets_accepts_absent_primary_and_bundle(
