@@ -3,15 +3,17 @@
 ## State
 
 The recovered descriptor-relative implementation and deterministic adversarial
-suite are committed at `026a5b5a`, with formatter follow-up `4737e6e3`, on
+suite are committed at `026a5b5a`, with formatter follow-up `4737e6e3` and
+version-contract follow-up `58e85a4d`, on
 `fix/optional-retired-manifest-inventory`; the worktree is clean. The helper now
 selects the repository root with one atomic no-follow directory open and pins
 all later ancestor/leaf inspection to descriptors, so a root replacement after
 that open cannot redirect traversal. The local `origin/main` remains
 `f1bfe0a4`; live fetch, GitHub CLI, and GitHub page queries are currently
 blocked by DNS/network access. Focused and workflow validation are green, and
-the independent re-review approves with no actionable findings. Full-suite
-validation and live publication checks remain required before publication.
+the independent re-review approves with no actionable findings. The required
+encoder version is now `0.2.1751`; full-suite validation and live publication
+checks remain required before publication.
 
 ## Done
 
@@ -90,10 +92,24 @@ validation and live publication checks remain required before publication.
   fail-closed errors/capabilities, proof ordering, and adversarial coverage with
   no actionable findings; their independent revised root/error run passed 5
   tests.
+- Started the full configured 14,003-test suite and stopped after 765 passes,
+  one skip, and one expected failure identified the repository's mandatory
+  version-provenance gate; no other failure had appeared. This superseded-tree
+  run is diagnostic only and is not a final green claim.
+- Synchronized the encoder version from `0.2.1750` to `0.2.1751` across
+  `pyproject.toml`, the package, `uv.lock`, and all exact version fixtures, then
+  committed it as `58e85a4d` (`Bump encoder version to 0.2.1751`). The version
+  provenance, package metadata, exact registry, and synchronized fixture checks
+  pass (`29 passed`).
+- Recorded that ordinary `uv run` now attempts an editable rebuild and cannot
+  download the declared Hatchling build requirement while DNS is unavailable;
+  final checks therefore use `uv run --no-sync` with the existing project
+  environment and configured `pythonpath = ["src"]`.
 
 ## Next
 
-- Run broader prepare/signing-supervisor tests and full pytest, then repeat the
+- Run broader prepare/signing-supervisor tests and full pytest on the committed
+  `0.2.1751` tree, then repeat the
   repository-wide Ruff/format, compileall, status, and diff checks on the final
   tree.
 - Retry live upstream comparison, verify the exact commits and draft PR body,
