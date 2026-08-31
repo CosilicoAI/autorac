@@ -2,10 +2,11 @@
 
 ## State
 
-The optional retired-manifest inventory exception is implemented and committed
-on local `origin/main` at `f1bfe0a4`. Focused regression, adversarial, workflow,
-lint, and compile checks pass. Live upstream comparison remains blocked by
-sandbox DNS, so the terminal version bump and GitHub publication are pending.
+Resumed from clean head `5db9f866` with the prior implementation and tests
+preserved. The implementation is not approved: independent review found that
+the absent-from-HEAD worktree check can fail open because it uses path-based
+component probes. A descriptor-relative, fail-closed replacement and focused
+race/error coverage are now required before broader validation or publication.
 
 ## Done
 
@@ -34,12 +35,26 @@ sandbox DNS, so the terminal version bump and GitHub publication are pending.
   the current `required_mode` argument.
 - Completed three read-only audits; their actionable test and two-probe race
   findings are addressed.
+- Re-read the repository instructions, exact four-commit branch history and
+  diff, current implementation/tests, and the independent review report at
+  `20260830-194816-delegate-output-gntsoo-4-md/out.md`.
+- Confirmed the branch is clean at `5db9f866`, four commits ahead of the local
+  `origin/main` reference, with no prior work to discard or recreate.
+- Confirmed the outstanding P2: `_checkout_path_exists_without_indirection`
+  still relies on `Path.lstat()` component probes and cannot prove absence
+  safely across appearance races, symlinked ancestors, or inspection errors.
+- Attempted the repository-graph debugging workflow; its query tools are not
+  available in this session, so direct source, call-site, and Git inspection is
+  the active fallback.
 
 ## Next
 
-- Fetch and compare live `origin/main`, rebase if needed without losing WIP,
-  and apply the live-main-next synchronized encoder version bump.
-- Run relevant broader tests and full Ruff/compile/diff hygiene.
-- Complete the required post-implementation independent review-fix cycle.
-- Write the final output report, verify commit and PR text, push, and open a
-  draft PR without dispatching signing jobs or merging.
+- Replace the absent-from-HEAD proof with descriptor-relative traversal rooted
+  at a verified repository directory descriptor and one fail-closed leaf
+  metadata probe.
+- Add deterministic adversarial coverage for appearance, ancestor replacement,
+  symlink, dangling-link, non-regular leaf, and unexpected syscall errors.
+- Run focused and broad validation, then complete the required independent
+  review-fix cycle with no actionable findings.
+- Verify the exact commits and draft PR body; only then push/open a draft PR,
+  without dispatching signing or merging, and write the final output report.
