@@ -527,7 +527,9 @@ def _checkout_path_exists_without_indirection(
             descriptors.append(repo_fd)
             opened_repo = os.fstat(repo_fd)
             if not stat.S_ISDIR(opened_repo.st_mode):
-                raise ValueError(f"cannot inspect {label}: repository is not a directory")
+                raise ValueError(
+                    f"cannot inspect {label}: repository is not a directory"
+                )
         except (TypeError, NotImplementedError) as exc:
             raise ValueError(
                 f"cannot inspect {label} safely: descriptor traversal is unsupported"

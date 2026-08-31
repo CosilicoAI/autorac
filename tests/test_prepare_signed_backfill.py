@@ -1177,8 +1177,7 @@ def _retired_inventory_replacement_repo(
     target.parent.mkdir(parents=True)
     target.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
     manifest = (
-        repo
-        / f".axiom/encoding-manifests/{country}/policies/income_tax/schedule.json"
+        repo / f".axiom/encoding-manifests/{country}/policies/income_tax/schedule.json"
     )
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
@@ -1235,8 +1234,7 @@ def _retired_inventory_replacement_repo(
 def _ignore_retired_manifest_inventory(repo: Path) -> None:
     exclude = repo / ".git/info/exclude"
     exclude.write_text(
-        exclude.read_text(encoding="utf-8")
-        + "\ntests/test_encoding_manifests.py\n",
+        exclude.read_text(encoding="utf-8") + "\ntests/test_encoding_manifests.py\n",
         encoding="utf-8",
     )
 
