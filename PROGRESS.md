@@ -19,7 +19,10 @@ cannot create the sandbox-forbidden `/var/tmp` alias fixture, one sees Apple
 Git's sandbox temp-directory warnings, one does not preserve a set-id bit on a
 temporary executable, and two workflow subprocesses import the stale installed
 `corpus_resolver` without `PYTHONPATH=src`. A corrected-environment full run and
-live publication checks remain required before publication.
+live publication checks remain required before publication. Re-running the 15
+failures with root-owned system Git and current source fixed 12; the remaining
+three reproduce unchanged on cached `origin/main` and are blocked by this
+managed macOS sandbox rather than repository behavior.
 
 ## Done
 
@@ -124,12 +127,22 @@ live publication checks remain required before publication.
   selected `/opt/homebrew` Git is not root-owned, `/var/tmp` creation is denied,
   Apple Git emits sandbox temp warnings, set-id metadata is not retained, and
   two workflow subprocesses need the already-proven `PYTHONPATH=src` override.
+- Re-ran those exact 15 nodes with `/usr/bin/git` first on `PATH` and
+  `PYTHONPATH=src`: 12 passed. The trusted-Git/provision cluster and both stale
+  import workflow failures are therefore corrected by the intended test
+  invocation.
+- Checked out cached `origin/main` into a temporary worktree and reproduced all
+  three remaining failures there: this sandbox strips `S_ISUID` from the copied
+  executable (`100755` after `chmod`), denies creation under `/var/tmp`, and
+  makes root-owned Apple Git emit `DARWIN_USER_TEMP_DIR` warnings inside the
+  protected launcher. Removed the temporary worktree after the comparison.
 
 ## Next
 
-- Re-run the failed selections with root-owned `/usr/bin/git` first on `PATH`
-  and `PYTHONPATH=src`; distinguish the remaining macOS sandbox-only cases,
-  then run the complete configured suite under the corrected environment.
+- Run the complete configured suite under the corrected environment while
+  deselecting only the three exact sandbox-incompatible nodes reproduced on
+  cached `origin/main`; record both that runnable-suite result and the separate
+  baseline failure evidence without claiming those three passed locally.
 - Run broader prepare/signing-supervisor tests on the committed `0.2.1751`
   tree, then repeat repository-wide Ruff/format, compileall, status, and diff
   checks on the final tree.
