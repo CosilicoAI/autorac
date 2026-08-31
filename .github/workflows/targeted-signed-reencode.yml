@@ -1082,6 +1082,9 @@ jobs:
       - name: Encode, review, validate, and apply
         id: encode_apply
         env:
+          # Flush encoder output as it is produced so a timeout or crash
+          # still leaves attempt records in the job log.
+          PYTHONUNBUFFERED: "1"
           AXIOM_ENCODE_APPLY_SIGNING_KEY: ${{ secrets.AXIOM_ENCODE_APPLY_SIGNING_KEY }}
           ATOMIC_SOURCE_JSON: ${{ inputs.source_bundle_json }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
