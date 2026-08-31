@@ -23173,8 +23173,7 @@ def test_armenian_prompt_permitted_separators_are_stripped_by_validator(separato
     assert "only whitespace, commas, or semicolons may separate these items" in contract
 
     source = (
-        "Շահառուին վճարել 500 դրամ:\n"
-        f"(1-ին հոդվածը փոփ.{separator}07.12.22 ՀՕ-538-Ն)"
+        f"Շահառուին վճարել 500 դրամ:\n(1-ին հոդվածը փոփ.{separator}07.12.22 ՀՕ-538-Ն)"
     )
     result = _analyze(
         "format: rulespec/v1\nrules: []\n",
@@ -23233,9 +23232,7 @@ def test_armenian_history_filter_strips_ledger_after_closed_outer_parenthetical(
     lead = "Շահառուին վճարել 500 դրամ:"
     source = f"{lead}\n(արտաքին\nպայման)\n(1-ին հոդվածը փոփ. 07.12.22 ՀՕ-538-Ն)"
 
-    assert authoritative_numeric_recall_text(source) == (
-        f"{lead}\n(արտաքին\nպայման)"
-    )
+    assert authoritative_numeric_recall_text(source) == (f"{lead}\n(արտաքին\nպայման)")
 
 
 def test_armenian_history_filter_keeps_ledger_nested_two_levels_deep():
