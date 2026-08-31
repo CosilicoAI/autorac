@@ -18,11 +18,12 @@ Homebrew Git where the supervisor tests require root-owned system Git, one
 cannot create the sandbox-forbidden `/var/tmp` alias fixture, one sees Apple
 Git's sandbox temp-directory warnings, one does not preserve a set-id bit on a
 temporary executable, and two workflow subprocesses import the stale installed
-`corpus_resolver` without `PYTHONPATH=src`. A corrected-environment full run and
-live publication checks remain required before publication. Re-running the 15
-failures with root-owned system Git and current source fixed 12; the remaining
-three reproduce unchanged on cached `origin/main` and are blocked by this
-managed macOS sandbox rather than repository behavior.
+`corpus_resolver` without `PYTHONPATH=src`. Re-running the 15 failures with
+root-owned system Git and current source fixed 12; the remaining three
+reproduce unchanged on cached `origin/main` and are blocked by this managed
+macOS sandbox rather than repository behavior. The corrected runnable broad
+suite is green (`13,967 passed, 33 skipped, 3 deselected`). Final static/workflow
+checks and live publication checks remain required before publication.
 
 ## Done
 
@@ -136,16 +137,17 @@ managed macOS sandbox rather than repository behavior.
   executable (`100755` after `chmod`), denies creation under `/var/tmp`, and
   makes root-owned Apple Git emit `DARWIN_USER_TEMP_DIR` warnings inside the
   protected launcher. Removed the temporary worktree after the comparison.
+- Passed the corrected configured repository-wide runnable suite with
+  `/usr/bin/git` first on `PATH`, `PYTHONPATH=src`, and only the three exact
+  cached-base sandbox failures deselected: `13,967 passed, 33 skipped, 3
+  deselected` in 798.66 seconds. This includes every changed test, all runnable
+  prepare/signing-supervisor tests, and the formerly transient CLI node.
 
 ## Next
 
-- Run the complete configured suite under the corrected environment while
-  deselecting only the three exact sandbox-incompatible nodes reproduced on
-  cached `origin/main`; record both that runnable-suite result and the separate
-  baseline failure evidence without claiming those three passed locally.
-- Run broader prepare/signing-supervisor tests on the committed `0.2.1751`
-  tree, then repeat repository-wide Ruff/format, compileall, status, and diff
-  checks on the final tree.
+- Repeat the focused descriptor/reconciliation and exact workflow checks, then
+  run repository-wide Ruff lint/format, compileall, status, and diff checks on
+  the final committed `0.2.1751` tree.
 - Retry live upstream comparison, verify the exact commits and draft PR body,
   and only then push/open a draft PR if all checks are green. Do not dispatch
   signing or merge; write the final report to the task output file.
