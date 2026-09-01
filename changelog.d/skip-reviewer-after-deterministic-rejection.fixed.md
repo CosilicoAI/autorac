@@ -1,0 +1,1 @@
+Skip the per-attempt generalist reviewer in `encode` once compile or CI validation has already rejected the candidate; the retry loop only feeds deterministic findings back, so the reviewer call was pure latency on every repair round.

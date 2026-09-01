@@ -29737,6 +29737,7 @@ def _run_encode_attempt(
         review_findings_paths=review_findings_paths,
         include_tests=True,
         skip_reviewers=skip_reviewers,
+        reviewers_require_deterministic_pass=True,
         policyengine_rule_hint=policyengine_rule_hint,
         rulespec_dependency_roots=rulespec_dependency_roots,
         require_complete_source_unit=(
