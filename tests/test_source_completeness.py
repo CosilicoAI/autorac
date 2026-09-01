@@ -28869,6 +28869,35 @@ def test_inclusive_tax_year_range_dates_are_entirely_preface(source: str):
     assert preface_occurrences
 
 
+def test_formula_applicability_preface_spans_are_shared_per_source_text():
+    spans_for = completeness_module._formula_applicability_preface_spans
+    spans_for.cache_clear()
+    source = (
+        "A.(1) For taxable years beginning after 2025, twenty-five percent of income.\n"
+        "B.(1)(a) For taxable years beginning on or after 2026, fifty percent of income."
+    )
+
+    first = spans_for(source)
+    second = spans_for(source)
+
+    assert second is first
+    assert spans_for.cache_info().hits == 1
+    assert len(first) == 2
+    assert all("For taxable years" in source[start:end] for start, end in first)
+
+    occurrences = EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR(source)
+    preface_values = {
+        item.value
+        for item in occurrences
+        if completeness_module._temporal_occurrence_is_formula_applicability_preface(
+            item, source
+        )
+    }
+    assert preface_values >= {2025.0, 2026.0}
+    assert 0.25 not in preface_values
+    assert 0.5 not in preface_values
+
+
 def test_year_only_applicability_prefaces_are_recognized_in_later_branches():
     source = (
         "A.(1) For taxable years beginning after 2025, twenty-five percent of income.\n"
