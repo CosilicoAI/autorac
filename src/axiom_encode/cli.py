@@ -153,6 +153,7 @@ from .harness.dependency_stubs import (
     validate_rulespec_context_file,
 )
 from .harness.encoding_db import (
+    TOKEN_USAGE_FIELDS,
     EncodingDB,
     EncodingRun,
     Iteration,
@@ -58974,32 +58975,28 @@ def _rulespec_file_imports_target(
     return False
 
 
-_ATTEMPT_TOKEN_FIELDS = (
-    "input_tokens",
-    "output_tokens",
-    "cache_read_tokens",
-    "cache_creation_tokens",
-    "reasoning_output_tokens",
-)
+def _attempt_recorded_usage(attempt: Any) -> bool:
+    return any(int(getattr(attempt, field, 0) or 0) > 0 for field in TOKEN_USAGE_FIELDS)
 
 
 def _sum_attempt_cost(attempts: Sequence[Any], cost_field: str) -> float | None:
-    """Sum a per-attempt cost field, or None if any token-spending attempt lacks it.
+    """Sum a per-attempt cost field, or None unless every attempt priced it.
 
-    A partial sum would read as a real, too-low figure, so an attempt that
-    consumed tokens without reporting this cost poisons the aggregate.
+    A partial sum would read as a real, too-low figure, so any attempt
+    without a finite cost poisons the aggregate. An attempt with no recorded
+    usage poisons it too: every attempt calls a model, so a backend that
+    returned no usage (a killed process, an error reply) still spent tokens,
+    and a numeric cost next to all-zero counters is unmeasured, not $0.
     """
-    costs: list[float] = []
+    total = 0.0
     for attempt in attempts:
         cost = getattr(attempt, cost_field, None)
-        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
-            costs.append(float(cost))
-            continue
-        if any(
-            int(getattr(attempt, field, 0) or 0) > 0 for field in _ATTEMPT_TOKEN_FIELDS
-        ):
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)):
             return None
-    return sum(costs) if costs else None
+        if not math.isfinite(cost) or not _attempt_recorded_usage(attempt):
+            return None
+        total += float(cost)
+    return total if attempts else None
 
 
 def _aggregate_attempt_usage(attempts: Sequence[Any]) -> TokenUsage:
@@ -59007,7 +59004,7 @@ def _aggregate_attempt_usage(attempts: Sequence[Any]) -> TokenUsage:
     return TokenUsage(
         **{
             field: sum(int(getattr(attempt, field, 0) or 0) for attempt in attempts)
-            for field in _ATTEMPT_TOKEN_FIELDS
+            for field in TOKEN_USAGE_FIELDS
         }
     )
 

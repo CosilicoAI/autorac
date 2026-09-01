@@ -15,7 +15,7 @@ ALTER TABLE encodings.encoding_runs
     ADD COLUMN IF NOT EXISTS actual_cost_usd NUMERIC,
     ADD COLUMN IF NOT EXISTS generation_attempt_count INTEGER;
 
-ALTER TABLE telemetry.sdk_sessions
+ALTER TABLE IF EXISTS telemetry.sdk_sessions
     ADD COLUMN IF NOT EXISTS cache_creation_tokens BIGINT,
     ADD COLUMN IF NOT EXISTS reasoning_output_tokens BIGINT;
 

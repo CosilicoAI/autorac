@@ -13150,6 +13150,7 @@ class TestCmdEncode:
         result.success = success
         result.duration_ms = 123
         result.estimated_cost_usd = 0.01
+        result.actual_cost_usd = None
         result.input_tokens = 100
         result.output_tokens = 50
         result.cache_read_tokens = 0
@@ -13230,6 +13231,30 @@ class TestCmdEncode:
         assert persisted.estimated_cost_usd == pytest.approx(0.02)
         # Neither attempt reported a provider-billed cost, so it stays unknown.
         assert persisted.actual_cost_usd is None
+
+    def test_attempt_cost_sum_requires_recorded_usage_and_finite_cost(self):
+        from axiom_encode.cli import _sum_attempt_cost
+
+        priced = self._make_eval_result(True)
+        unmeasured = self._make_eval_result(False)
+        unmeasured.input_tokens = 0
+        unmeasured.output_tokens = 0
+        # A backend that returned no usage still spent tokens, so a $0 next to
+        # all-zero counters is unmeasured rather than free.
+        unmeasured.estimated_cost_usd = 0.0
+        assert _sum_attempt_cost([unmeasured, priced], "estimated_cost_usd") is None
+        assert _sum_attempt_cost([unmeasured], "estimated_cost_usd") is None
+
+        unpriced = self._make_eval_result(False)
+        unpriced.estimated_cost_usd = None
+        assert _sum_attempt_cost([unpriced, priced], "estimated_cost_usd") is None
+
+        non_finite = self._make_eval_result(True)
+        non_finite.actual_cost_usd = float("nan")
+        priced.actual_cost_usd = 0.25
+        assert _sum_attempt_cost([non_finite, priced], "actual_cost_usd") is None
+        assert _sum_attempt_cost([priced, priced], "actual_cost_usd") == 0.5
+        assert _sum_attempt_cost([], "estimated_cost_usd") is None
 
     @pytest.mark.parametrize(
         ("value", "expected"),

@@ -759,3 +759,52 @@ class TestRunCostLedger:
         assert retrieved.estimated_cost_usd is None
         assert retrieved.actual_cost_usd is None
         assert retrieved.generation_attempt_count == 0
+
+
+class TestLegacySessionCostBackfill:
+    """Pre-ledger databases defaulted session cost to 0; unmeasured rows heal."""
+
+    def _make_legacy_db(self, db_path):
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                run_id TEXT,
+                started_at TEXT,
+                ended_at TEXT,
+                model TEXT,
+                cwd TEXT,
+                event_count INTEGER DEFAULT 0,
+                total_tokens INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_creation_tokens INTEGER DEFAULT 0,
+                estimated_cost_usd REAL DEFAULT 0,
+                axiom_encode_version TEXT DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, started_at) VALUES ('legacy-unmeasured', '2024-01-01T00:00:00')"
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, started_at, input_tokens, estimated_cost_usd) "
+            "VALUES ('legacy-free', '2024-01-01T00:00:00', 12, 0)"
+        )
+        conn.commit()
+        conn.close()
+
+    def test_unmeasured_legacy_session_cost_becomes_unknown(self, tmp_path):
+        from axiom_encode.harness.encoding_db import EncodingDB
+
+        db_path = tmp_path / "encodings.db"
+        self._make_legacy_db(db_path)
+
+        db = EncodingDB(db_path)
+        assert db.get_session("legacy-unmeasured").estimated_cost_usd is None
+        # A measured $0 (tokens recorded) is a real value and survives.
+        assert db.get_session("legacy-free").estimated_cost_usd == 0.0
+        # Re-opening is idempotent.
+        assert EncodingDB(db_path).get_session("legacy-free").estimated_cost_usd == 0.0

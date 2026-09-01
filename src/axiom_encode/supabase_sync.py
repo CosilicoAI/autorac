@@ -6,6 +6,7 @@ Syncs local SQLite encoding DB to Supabase for the public dashboard.
 
 import hashlib
 import json
+import math
 import os
 import re
 from datetime import datetime
@@ -14,7 +15,12 @@ from typing import Optional
 
 from supabase import Client, create_client
 
-from .harness.encoding_db import RUN_COST_COLUMNS, TokenUsage
+from .harness.encoding_db import (
+    RUN_COST_COLUMNS,
+    SESSION_LEDGER_COLUMNS,
+    TOKEN_USAGE_FIELDS,
+    TokenUsage,
+)
 
 ENCODINGS_SCHEMA = "encodings"
 TELEMETRY_SCHEMA = "telemetry"
@@ -168,26 +174,20 @@ def sync_run_to_supabase(
     # NULL remotely, so "unknown" never reads as a real zero (manifest-only
     # runs, for example, carry no telemetry at all).
     tokens = getattr(run, "tokens", None)
-    if isinstance(tokens, TokenUsage) and tokens.has_recorded_usage:
-        data.update(
-            {
-                "input_tokens": tokens.input_tokens,
-                "output_tokens": tokens.output_tokens,
-                "cache_read_tokens": tokens.cache_read_tokens,
-                "cache_creation_tokens": tokens.cache_creation_tokens,
-                "reasoning_output_tokens": tokens.reasoning_output_tokens,
-            }
-        )
-    estimated_cost_usd = getattr(run, "estimated_cost_usd", None)
-    if isinstance(estimated_cost_usd, (int, float)) and not isinstance(
-        estimated_cost_usd, bool
-    ):
-        data["estimated_cost_usd"] = float(estimated_cost_usd)
-    actual_cost_usd = getattr(run, "actual_cost_usd", None)
-    if isinstance(actual_cost_usd, (int, float)) and not isinstance(
-        actual_cost_usd, bool
-    ):
-        data["actual_cost_usd"] = float(actual_cost_usd)
+    usage_recorded = isinstance(tokens, TokenUsage) and tokens.has_recorded_usage
+    if usage_recorded:
+        data.update({name: getattr(tokens, name) for name in TOKEN_USAGE_FIELDS})
+    # A cost only means something next to the usage it priced: a $0 next to
+    # no recorded tokens is unmeasured, not free, so it stays NULL remotely.
+    for cost_field in ("estimated_cost_usd", "actual_cost_usd"):
+        cost = getattr(run, cost_field, None)
+        if (
+            usage_recorded
+            and isinstance(cost, (int, float))
+            and not isinstance(cost, bool)
+            and math.isfinite(cost)
+        ):
+            data[cost_field] = float(cost)
     generation_attempt_count = getattr(run, "generation_attempt_count", 0)
     if isinstance(generation_attempt_count, int) and generation_attempt_count > 0:
         data["generation_attempt_count"] = generation_attempt_count
@@ -198,17 +198,13 @@ def sync_run_to_supabase(
         data["scores"] = _review_results_to_scores(run.review_results)
 
     # Retry with column groups removed only when Supabase reports an unknown
-    # column (a schema that predates a migration). Each tier starts from the
-    # full payload so a missing "outcome" column cannot cost the run its
-    # ledger data, and any non-schema error fails the sync loudly.
+    # column (a schema that predates a migration). Drops accumulate down the
+    # ladder because migrations apply in order: a remote still missing the
+    # 005 "outcome" column also lacks the 007 ledger columns. Any non-schema
+    # error fails the sync loudly.
     last_error: Exception | None = None
     attempted: list[dict] = []
-    for dropped in (
-        (),
-        RUN_COST_COLUMNS,
-        ("outcome",),
-        (*RUN_COST_COLUMNS, "outcome"),
-    ):
+    for dropped in ((), RUN_COST_COLUMNS, (*RUN_COST_COLUMNS, "outcome")):
         payload = {key: value for key, value in data.items() if key not in dropped}
         if any(payload == prior for prior in attempted):
             continue
@@ -230,12 +226,23 @@ def sync_run_to_supabase(
     return False
 
 
+_MISSING_COLUMN_MESSAGE = re.compile(
+    r"Could not find the '[^']+' column|column \S+ (?:of relation \S+ )?does not exist"
+)
+
+
 def _is_missing_column_error(error: Exception) -> bool:
-    """True when a Supabase/PostgREST error reports an unknown column."""
-    text = str(error)
-    return (
-        "PGRST204" in text or "Could not find the" in text or "does not exist" in text
-    )
+    """True when a Supabase/PostgREST error reports an unknown column.
+
+    PostgREST reports a column missing from its schema cache as PGRST204 and
+    Postgres as SQLSTATE 42703. A missing table or schema (PGRST205, 42P01)
+    must not trigger the column fallback, so a structured code decides when
+    present and only code-less errors fall back to the column message.
+    """
+    code = getattr(error, "code", None)
+    if isinstance(code, str) and code:
+        return code in ("PGRST204", "42703")
+    return bool(_MISSING_COLUMN_MESSAGE.search(str(error)))
 
 
 def _upsert_encoding_run(client: Client, data: dict):
@@ -715,6 +722,9 @@ def sync_agent_sessions_to_supabase(
 
     synced = 0
     failed = 0
+    # Columns the remote rejected once this sync: strip them up front for the
+    # remaining sessions instead of paying a failed upsert per session.
+    missing_remote_columns: set[str] = set()
 
     for session in sessions:
         try:
@@ -723,6 +733,10 @@ def sync_agent_sessions_to_supabase(
                 "SELECT * FROM session_events WHERE session_id = ? ORDER BY sequence",
                 (session["id"],),
             ).fetchall()
+
+            usage_recorded = any(
+                session[name] for name in TOKEN_USAGE_FIELDS if name in session_columns
+            )
 
             # Build session data
             session_data = {
@@ -735,19 +749,23 @@ def sync_agent_sessions_to_supabase(
                 "input_tokens": session["input_tokens"],
                 "output_tokens": session["output_tokens"],
                 "cache_read_tokens": session["cache_read_tokens"],
-                "estimated_cost_usd": (
-                    float(session["estimated_cost_usd"])
-                    if session["estimated_cost_usd"] is not None
-                    else None
-                ),
+                "estimated_cost_usd": _session_cost(session, usage_recorded),
                 "encoder_version": _row_value(
                     session, "axiom_encode_version", "autorac_version"
                 )
                 or None,
             }
-            for token_column in ("cache_creation_tokens", "reasoning_output_tokens"):
-                if token_column in session_columns:
-                    session_data[token_column] = session[token_column]
+            # Migration 007's session columns are nullable remotely: ship them
+            # only for sessions that recorded usage, so a legacy row (created
+            # before the ledger, defaulted to 0) stays NULL instead of reading
+            # as a measured zero.
+            if usage_recorded:
+                for token_column in SESSION_LEDGER_COLUMNS:
+                    if (
+                        token_column in session_columns
+                        and token_column not in missing_remote_columns
+                    ):
+                        session_data[token_column] = session[token_column]
 
             # Build events data
             events_data = [
@@ -768,26 +786,34 @@ def sync_agent_sessions_to_supabase(
                 for e in events
             ]
 
-            # Upsert session. Retry without the newest token columns only when
-            # Supabase reports an unknown column (a schema that predates
-            # migration 007); any other failure counts the session as failed.
+            # Upsert session. Retry without the migration 007 token columns
+            # only when Supabase reports an unknown column (a schema that
+            # predates the migration); any other failure counts the session
+            # as failed.
             try:
                 client.schema(TELEMETRY_SCHEMA).table("sdk_sessions").upsert(
                     session_data
                 ).execute()
             except Exception as session_error:
+                stripped = [
+                    key for key in SESSION_LEDGER_COLUMNS if key in session_data
+                ]
+                if not stripped or not _is_missing_column_error(session_error):
+                    raise
                 fallback_session_data = {
                     key: value
                     for key, value in session_data.items()
-                    if key not in ("cache_creation_tokens", "reasoning_output_tokens")
+                    if key not in stripped
                 }
-                if fallback_session_data == session_data or not (
-                    _is_missing_column_error(session_error)
-                ):
-                    raise
                 client.schema(TELEMETRY_SCHEMA).table("sdk_sessions").upsert(
                     fallback_session_data
                 ).execute()
+                missing_remote_columns.update(stripped)
+                print(
+                    f"  Synced session {session['id']} without "
+                    f"{'/'.join(stripped)} after Supabase rejected them: "
+                    f"{session_error}"
+                )
 
             # Upsert events (in batches of 100)
             for i in range(0, len(events_data), 100):
@@ -814,6 +840,21 @@ def sync_agent_sessions_to_supabase(
 
 def _sqlite_columns(conn, table_name: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})")}
+
+
+def _session_cost(row, usage_recorded: bool) -> float | None:
+    """A session's estimated cost, or None when it was never measured.
+
+    Databases migrated before the ledger defaulted the column to 0, so a $0
+    next to no recorded usage is the old default rather than a measurement.
+    """
+    value = row["estimated_cost_usd"]
+    if value is None:
+        return None
+    cost = float(value)
+    if not math.isfinite(cost) or (cost == 0 and not usage_recorded):
+        return None
+    return cost
 
 
 def _row_value(row, *keys: str):

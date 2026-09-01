@@ -11,7 +11,7 @@ import json
 import os
 import sqlite3
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
@@ -86,15 +86,15 @@ class TokenUsage:
     @property
     def has_recorded_usage(self) -> bool:
         """True when any token counter is non-zero (usage was measured)."""
-        return any(
-            (
-                self.input_tokens,
-                self.output_tokens,
-                self.cache_read_tokens,
-                self.cache_creation_tokens,
-                self.reasoning_output_tokens,
-            )
-        )
+        return any(getattr(self, name) for name in TOKEN_USAGE_FIELDS)
+
+
+# TokenUsage counters by name, so the attempt aggregation, the recorded-usage
+# check, and the sync payload cannot silently disagree on the field list.
+TOKEN_USAGE_FIELDS = tuple(f.name for f in fields(TokenUsage))
+
+# Session token columns added by migration 007 (nullable remotely).
+SESSION_LEDGER_COLUMNS = ("cache_creation_tokens", "reasoning_output_tokens")
 
 
 # Session event types
@@ -504,6 +504,22 @@ class EncodingDB:
                 cursor.execute(f"ALTER TABLE sessions ADD COLUMN {col} {col_type}")
             except sqlite3.OperationalError:
                 pass  # Column already exists
+
+        # Databases migrated before the ledger created that column as
+        # "REAL DEFAULT 0", and SQLite cannot drop a column default. A session
+        # with no recorded usage and a $0 cost was never measured, so restore
+        # NULL (unknown) for those rows. The update is idempotent.
+        cursor.execute(
+            """
+            UPDATE sessions SET estimated_cost_usd = NULL
+            WHERE estimated_cost_usd = 0
+              AND COALESCE(input_tokens, 0) = 0
+              AND COALESCE(output_tokens, 0) = 0
+              AND COALESCE(cache_read_tokens, 0) = 0
+              AND COALESCE(cache_creation_tokens, 0) = 0
+              AND COALESCE(reasoning_output_tokens, 0) = 0
+            """
+        )
 
         conn.commit()
         conn.close()
