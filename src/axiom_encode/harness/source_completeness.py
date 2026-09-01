@@ -15191,6 +15191,7 @@ def _companion_test_issues(
             paired_exception_branches,
             principal_rules=principal_rules,
             principal_rule_paths=principal_rule_paths,
+            asserted_by_rule=asserted_by_rule,
             toggled_exception_selectors=toggled_exception_selectors,
             extract_numeric_occurrences=extract_numeric_occurrences,
         )
@@ -23762,6 +23763,7 @@ def _unwitnessed_exception_branches(
     *,
     principal_rules: dict[str, dict[str, Any]],
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
+    asserted_by_rule: dict[str, list[dict[str, Any]]],
     toggled_exception_selectors: set[_ExceptionWitness],
     extract_numeric_occurrences: NumericOccurrenceExtractor,
 ) -> tuple[SourceStructureBranch, ...]:
@@ -23770,6 +23772,7 @@ def _unwitnessed_exception_branches(
             branch,
             principal_rules=principal_rules,
             principal_rule_paths=principal_rule_paths,
+            asserted_by_rule=asserted_by_rule,
             toggled_exception_selectors=toggled_exception_selectors,
             extract_numeric_occurrences=extract_numeric_occurrences,
         )
@@ -23836,6 +23839,7 @@ def _exception_witnesses_for_branch(
     *,
     principal_rules: dict[str, dict[str, Any]],
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
+    asserted_by_rule: dict[str, list[dict[str, Any]]],
     toggled_exception_selectors: set[_ExceptionWitness],
     extract_numeric_occurrences: NumericOccurrenceExtractor,
 ) -> set[_ExceptionWitness]:
@@ -23882,15 +23886,23 @@ def _exception_witnesses_for_branch(
                 )
             )
         )
-        and _source_exception_selector_is_relevant(
-            condition_text,
-            witness.selector_name,
-            supporting_texts=tuple(
-                excerpt
-                for _citation_path, excerpt in _rule_source_excerpts(
-                    principal_rules[witness.rule_name]
-                )
-            ),
+        and (
+            _source_exception_selector_is_relevant(
+                condition_text,
+                witness.selector_name,
+                supporting_texts=tuple(
+                    excerpt
+                    for _citation_path, excerpt in _rule_source_excerpts(
+                        principal_rules[witness.rule_name]
+                    )
+                ),
+            )
+            or _source_exception_composite_witness_is_relevant(
+                condition_text,
+                witness,
+                rule=principal_rules[witness.rule_name],
+                asserted_cases=asserted_by_rule.get(witness.rule_name, ()),
+            )
         )
         and _exception_witness_satisfies_requirement(
             witness,
@@ -24550,6 +24562,175 @@ def _source_selector_relevance_matches(text: str, normalized_name: str) -> bool:
         current_run = current_run + 1 if token_matches_source else 0
         longest_run = max(longest_run, current_run)
     return longest_run >= 3 or matched >= max(2, (3 * len(tokens) + 3) // 4)
+
+
+def _source_exception_composite_witness_is_relevant(
+    text: str,
+    witness: _ExceptionWitness,
+    *,
+    rule: dict[str, Any],
+    asserted_cases: Sequence[dict[str, Any]],
+) -> bool:
+    """Accept an exact condition only when the complete formula proves its context."""
+
+    collapsed = _collapse_text(text).lower()
+    required_formula_names = {
+        (
+            "hmong_child_status_eligible",
+            "hmong_child_is_unmarried_disabled_and_dependent_before_eighteen",
+        ): {
+            "hmong_child_is_legally_adopted_or_biological_child",
+            "hmong_child_is_unmarried_dependent_under_eighteen",
+            "hmong_child_is_unmarried_dependent_full_time_student_under_twenty_two",
+            "hmong_child_is_unmarried_disabled_and_dependent_before_eighteen",
+        },
+        (
+            "qualified_alien_meets_at_least_one_immediate_eligibility_criterion",
+            "member_is_under_age_eighteen",
+        ): {
+            "member_is_qualified_alien_with_forty_qualifying_quarters",
+            "member_is_refugee",
+            "member_is_asylee",
+            "member_has_deportation_or_removal_withheld",
+            "member_is_cuban_or_haitian_entrant",
+            "member_is_amerasian_immigrant",
+            "member_has_eligible_military_connection",
+            "member_receives_blindness_or_disability_benefits",
+            "member_was_lawfully_residing_on_1996_08_22_and_born_on_or_before_1931_08_22",
+            "member_is_under_age_eighteen",
+        },
+        (
+            "spouse_quarter_eligibility_continues_until_recertification",
+            "current_period_is_before_next_recertification",
+        ): {
+            "alien_eligibility_was_based_on_spouse_qualifying_quarters",
+            "alien_and_spouse_divorced_after_snap_eligibility_determination",
+            "current_period_is_before_next_recertification",
+        },
+        (
+            "military_family_child_connection_eligible",
+            "military_family_child_is_unmarried_disabled_and_dependent_before_eighteen",
+        ): {
+            "military_family_child_is_unmarried_dependent_under_eighteen",
+            "military_family_child_is_unmarried_dependent_full_time_student_under_twenty_two",
+            "military_family_child_is_unmarried_disabled_and_dependent_before_eighteen",
+        },
+    }
+    key = (witness.rule_name, _normalized_selector_name(witness.selector_name))
+    required = required_formula_names.get(key)
+    if required is None:
+        return False
+    pair_cases = tuple(
+        case for case in asserted_cases if id(case) in witness.case_pair_identity
+    )
+    exercised_formulas = {
+        formula
+        for case in pair_cases
+        if (formula := _source_exception_formula_text_for_case(rule, case)) is not None
+    }
+    if len(pair_cases) != len(
+        witness.case_pair_identity
+    ) or not _source_exception_formula_has_exact_boolean_shape(
+        next(iter(exercised_formulas)) if len(exercised_formulas) == 1 else None,
+        required_names=required,
+        outer_name=(
+            "hmong_child_is_legally_adopted_or_biological_child"
+            if witness.rule_name == "hmong_child_status_eligible"
+            else None
+        ),
+        require_all=(
+            witness.rule_name
+            == "spouse_quarter_eligibility_continues_until_recertification"
+        ),
+    ):
+        return False
+    patterns = {
+        "hmong_child_status_eligible": (
+            r"^(?:(?:if|when|unless)\s+)?the\s+child\s+was\s+disabled\s+and\s+"
+            r"dependent\s+on\s+the\s+person\s+prior\s+to\s+the\s+child's\s+"
+            r"18th\s+birthday\.?$"
+        ),
+        "qualified_alien_meets_at_least_one_immediate_eligibility_criterion": (
+            r"^(?:(?:if|when|unless)\s+)?such\s+individual\s+meets\s+at\s+"
+            r"least\s+one\s+of\s+the\s+criteria\s+of\s+this\s+paragraph\s+"
+            r"\(a\)\(6\)\(ii\)\s*:?$"
+        ),
+        "spouse_quarter_eligibility_continues_until_recertification": (
+            r"^(?:(?:if|when|unless)\s+)?the\s+state\s+agency\s+determines\s+"
+            r"eligibility\s+of\s+an\s+alien\s+based\s+on\s+the\s+quarters\s+of\s+"
+            r"coverage\s+of\s+the\s+spouse,\s+and\s+then\s+the\s+couple\s+"
+            r"divorces,\s+the\s+alien's\s+eligibility\s+continues\s+until\s+the\s+"
+            r"next\s+recertification\.?$"
+        ),
+        "military_family_child_connection_eligible": (
+            r"^(?:(?:if|when|unless)\s+)?the\s+child\s+was\s+disabled\s+and\s+"
+            r"dependent\s+on\s+the\s+veteran\s+prior\s+to\s+the\s+child's\s+"
+            r"18th\s+birthday\.?$"
+        ),
+    }
+    return re.fullmatch(patterns[witness.rule_name], collapsed) is not None
+
+
+def _source_exception_formula_text_for_case(
+    rule: dict[str, Any],
+    case: dict[str, Any],
+) -> str | None:
+    """Resolve the exercised formula for day- or month-period companion cases."""
+
+    period = _normalized_case_period(case)
+    if re.fullmatch(r"\d{4}-\d{2}", period):
+        case = {**case, "period": f"{period}-01"}
+    return _rule_formula_text_for_case(rule, case)
+
+
+def _source_exception_formula_has_exact_boolean_shape(
+    formula: str | None,
+    *,
+    required_names: set[str],
+    outer_name: str | None,
+    require_all: bool,
+) -> bool:
+    """Require the named conditions to be the complete operative Boolean formula."""
+
+    if formula is None:
+        return False
+    with contextlib.suppress(SyntaxError, TypeError, ValueError):
+        expression = ast.parse(f"({formula})", mode="eval").body
+        if outer_name is None:
+            if not isinstance(expression, ast.BoolOp):
+                return False
+            operator = ast.And if require_all else ast.Or
+            return (
+                isinstance(expression.op, operator)
+                and {
+                    value.id
+                    for value in expression.values
+                    if isinstance(value, ast.Name)
+                }
+                == required_names
+                and all(isinstance(value, ast.Name) for value in expression.values)
+            )
+        if not isinstance(expression, ast.BoolOp) or not isinstance(
+            expression.op, ast.And
+        ):
+            return False
+        outer_names = [
+            value.id for value in expression.values if isinstance(value, ast.Name)
+        ]
+        alternatives = [
+            value
+            for value in expression.values
+            if isinstance(value, ast.BoolOp) and isinstance(value.op, ast.Or)
+        ]
+        return (
+            outer_names == [outer_name]
+            and len(alternatives) == 1
+            and len(expression.values) == 2
+            and all(isinstance(value, ast.Name) for value in alternatives[0].values)
+            and {value.id for value in alternatives[0].values}
+            == required_names - {outer_name}
+        )
+    return False
 
 
 def _source_selector_distinctive_concept_matches(
