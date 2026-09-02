@@ -2035,6 +2035,7 @@ def test_targeted_signed_reencode_reconciles_retired_inventory_before_commits() 
 
     assert command.count(invocation) == 3
     assert '[ "$source_bundle_enabled" = "false" ]' in command
+    assert '[ "$source_repair_candidates_json" != "[]" ]' in command
     assert '[ -n "$REPLACE_RULESPEC_PATH" ]' in command
     assert '[ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]' in command
 
@@ -4571,7 +4572,7 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
             '    "$workflow_python" "$backfill_helper" \\\n'
             "      reconcile-retired-manifest-inventory \\\n"
             '      "$RULESPEC_CHECKOUT" "$REPLACE_RULESPEC_PATH"',
-            "    printf '%s\\n' 'retired manifest inventory unchanged'",
+            '    printf \'%s\\n\' "$REPLACE_RULESPEC_PATH" >> "$RECONCILIATIONS_PATH"',
         )
     )
     before_checkpoint, checkpoint_and_after = command.split(
@@ -4593,6 +4594,7 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
 
     calls_path = tmp_path / "calls.jsonl"
     checkpoints_path = tmp_path / "checkpoints.txt"
+    reconciliations_path = tmp_path / "reconciliations.txt"
     signer_stub = tmp_path / "signer-stub"
     signer_stub.write_text(
         """#!/usr/bin/env python3
@@ -4678,6 +4680,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
             "REPAIR_CANDIDATE_RULESPEC_SHA256": "b" * 64,
             "REPAIR_CANDIDATE_TESTS_SHA256": "c" * 64,
             "REPAIR_TESTS_ONLY": "false",
+            "RECONCILIATIONS_PATH": str(reconciliations_path),
             "REVIEW_FINDING": "Preserve the composed target semantics.",
             "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
             "RULESPEC_REF": "a" * 40,
@@ -4749,6 +4752,9 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     assert checkpoints_path.read_text(encoding="utf-8").splitlines() == (
         expected_checkpoints
     )
+    assert reconciliations_path.read_text(encoding="utf-8").splitlines() == [
+        replacement_path
+    ]
     assert canonical.is_file()
 
 

@@ -1755,7 +1755,8 @@ jobs:
                 "$primary_required_test_cases_json"
             fi
 
-            if [ "$source_bundle_enabled" = "false" ] && \
+            if { [ "$source_bundle_enabled" = "false" ] || \
+                 [ "$source_repair_candidates_json" != "[]" ]; } && \
                [ -n "$REPLACE_RULESPEC_PATH" ] && \
                [ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
               "$workflow_python" "$backfill_helper" \
