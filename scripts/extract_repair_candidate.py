@@ -241,7 +241,7 @@ def _expected_module_path(country: str, replace_rulespec_path: str) -> str:
 
 def _repair_lane_for_atomic_source(
     metadata: dict[str, object], expected_atomic_source: object
-) -> str:
+) -> tuple[str, list[str]]:
     try:
         expected = SPLIT_ATOMIC_SOURCE_INPUT(expected_atomic_source)
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -267,7 +267,27 @@ def _repair_lane_for_atomic_source(
             ) from exc
         if split != expected:
             raise ValueError("repair artifact metadata mismatch: atomic_source_input")
-        return "target-preflight" if expected["source_bundle"] else "target"
+        if not expected["source_bundle"]:
+            return "target", ["target"]
+        generated_lanes = metadata.get("generated_lanes")
+        if generated_lanes == ["target-preflight"]:
+            return "target-preflight", ["target-preflight"]
+        final_lanes = sorted(
+            [
+                "target",
+                "target-preflight",
+                *[
+                    f"source-{index:02d}"
+                    for index in range(1, len(expected["source_bundle"]) + 1)
+                ],
+            ]
+        )
+        if generated_lanes == final_lanes:
+            return "target", final_lanes
+        raise ValueError(
+            "repair artifact generated lanes do not bind a target preflight "
+            "or final composed target"
+        )
     if expected != {
         "canonical_refresh_bundle": [],
         "primary_required_test_cases": [],
@@ -285,7 +305,7 @@ def _repair_lane_for_atomic_source(
             "repair artifact is not a compatible single-target run: "
             "canonical_refresh_bundle_input"
         )
-    return "target"
+    return "target", ["target"]
 
 
 def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
@@ -336,14 +356,16 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
                 raise ValueError(
                     f"repair artifact is not a compatible single-target run: {field}"
                 )
-        repair_lane = _repair_lane_for_atomic_source(metadata, args.atomic_source_json)
+        repair_lane, expected_generated_lanes = _repair_lane_for_atomic_source(
+            metadata, args.atomic_source_json
+        )
         if metadata.get("workflow_run_attempt") != 1:
             raise ValueError("repair artifact must come from workflow attempt 1")
         if metadata.get("failed_steps") != ["encode_apply"]:
             raise ValueError(
                 "repair artifact is not an encode/apply validation failure"
             )
-        if metadata.get("generated_lanes") != [repair_lane]:
+        if metadata.get("generated_lanes") != expected_generated_lanes:
             raise ValueError(
                 f"repair artifact must contain only the {repair_lane} lane"
             )
