@@ -846,7 +846,8 @@ def test_retry_candidate_formatter_explicitly_handles_missing_tests():
     )
 
     assert "No companion test file was present" in section
-    assert "you may omit unchanged named rules" in section
+    assert "you may omit unchanged named inputs, named rules" in section
+    assert "input removal is accepted only after no repaired rule" in section
     assert "`repair_remove: true`" in section
 
 
@@ -1009,7 +1010,7 @@ def test_repair_candidate_overlay_restores_omitted_named_items(tmp_path):
     assert "resolved_deferred_output:us:section#added" in repairs
 
 
-def test_repair_candidate_overlay_rejects_input_removal(tmp_path):
+def test_repair_candidate_overlay_removes_unreferenced_input(tmp_path):
     artifact_root = tmp_path / "generated"
     rulespec_file = artifact_root / "regulations" / "section.yaml"
     rulespec_file.parent.mkdir(parents=True)
@@ -1033,7 +1034,69 @@ def test_repair_candidate_overlay_rejects_input_removal(tmp_path):
         )
     )
 
-    with pytest.raises(ValueError, match="cannot remove retained inputs"):
+    repairs = evals_module._overlay_validation_retry_candidate(
+        rulespec_file,
+        artifact_root=artifact_root,
+        candidate=candidate,
+    )
+
+    payload = yaml.safe_load(rulespec_file.read_text(encoding="utf-8"))
+    assert "inputs" not in payload
+    assert repairs == ("removed_input:required_fact",)
+
+
+@pytest.mark.parametrize("reference_location", ["rule", "test", "new_test"])
+def test_repair_candidate_overlay_rejects_referenced_input_removal(
+    tmp_path, reference_location
+):
+    artifact_root = tmp_path / "generated"
+    rulespec_file = artifact_root / "regulations" / "section.yaml"
+    rulespec_file.parent.mkdir(parents=True)
+    rule_formula = "required_fact" if reference_location == "rule" else "true"
+    rulespec_file.write_text(
+        "format: rulespec/v1\n"
+        "inputs:\n"
+        "  - name: required_fact\n"
+        "    repair_remove: true\n"
+        "rules:\n"
+        "  - name: result\n"
+        "    kind: derived\n"
+        "    entity: Person\n"
+        "    dtype: Judgment\n"
+        "    period: Month\n"
+        "    versions:\n"
+        "      - effective_from: '2026-01-01'\n"
+        f"        formula: {rule_formula}\n",
+        encoding="utf-8",
+    )
+    generated_test = (
+        "- name: result_case\n"
+        "  period: 2026-01\n"
+        "  input:\n"
+        "    us:regulations/section#input.required_fact: true\n"
+        "  output:\n"
+        "    us:regulations/section#result: holds\n"
+        if reference_location in {"test", "new_test"}
+        else "[]\n"
+    )
+    rulespec_file.with_suffix(".test.yaml").write_text(
+        generated_test,
+        encoding="utf-8",
+    )
+    candidate = ValidationRetryCandidate(
+        rulespec=(
+            "format: rulespec/v1\n"
+            "inputs:\n"
+            "  - name: required_fact\n"
+            "    entity: Person\n"
+            "    dtype: Boolean\n"
+            "    period: Month\n"
+            "rules: []\n"
+        ),
+        tests=None if reference_location == "new_test" else "[]\n",
+    )
+
+    with pytest.raises(ValueError, match="remain referenced: `required_fact`"):
         evals_module._overlay_validation_retry_candidate(
             rulespec_file,
             artifact_root=artifact_root,
