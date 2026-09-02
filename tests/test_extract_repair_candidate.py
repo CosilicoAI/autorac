@@ -326,6 +326,72 @@ def test_extracts_exactly_bound_source_preflight_candidate(tmp_path):
     assert result["runner"] == "openai-gpt-5.6-sol"
 
 
+def test_extracts_exactly_bound_final_composed_target_candidate(tmp_path):
+    atomic_source_input = json.dumps(
+        {
+            "schema": "axiom-encode/atomic-source-transaction/v2",
+            "source_bundle": [
+                "us/statute/7/2015/f",
+                "us/guidance/usda/fns/snap-obbb-alien-eligibility-implementation-memo",
+            ],
+            "canonical_refresh_bundle": [],
+            "primary_required_test_cases": [],
+        }
+    )
+    archive, metadata = _archive(tmp_path)
+    del metadata["source_bundle_input"]
+    metadata["atomic_source_input"] = atomic_source_input
+    metadata["generated_lanes"] = [
+        "source-01",
+        "source-02",
+        "target",
+        "target-preflight",
+    ]
+    replacement = _rewrite_metadata(
+        archive,
+        tmp_path / "final-composed-target.tar",
+        metadata,
+    )
+
+    result = extract_candidate(
+        _args(tmp_path, replacement, atomic_source_json=atomic_source_input)
+    )
+
+    assert result["runner"] == "openai-gpt-5.6-sol"
+
+
+def test_rejects_final_composed_target_with_incomplete_source_lanes(tmp_path):
+    atomic_source_input = json.dumps(
+        {
+            "schema": "axiom-encode/atomic-source-transaction/v2",
+            "source_bundle": [
+                "us/statute/7/2015/f",
+                "us/guidance/usda/fns/snap-obbb-alien-eligibility-implementation-memo",
+            ],
+            "canonical_refresh_bundle": [],
+            "primary_required_test_cases": [],
+        }
+    )
+    archive, metadata = _archive(tmp_path)
+    del metadata["source_bundle_input"]
+    metadata["atomic_source_input"] = atomic_source_input
+    metadata["generated_lanes"] = [
+        "source-01",
+        "target",
+        "target-preflight",
+    ]
+    replacement = _rewrite_metadata(
+        archive,
+        tmp_path / "incomplete-final-composed-target.tar",
+        metadata,
+    )
+
+    with pytest.raises(ValueError, match="generated lanes do not bind"):
+        extract_candidate(
+            _args(tmp_path, replacement, atomic_source_json=atomic_source_input)
+        )
+
+
 def test_rejects_source_preflight_candidate_for_different_bundle(tmp_path):
     atomic_source_input = json.dumps(
         {
