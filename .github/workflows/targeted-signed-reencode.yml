@@ -1701,6 +1701,7 @@ jobs:
               "$RUNNER_TEMP/canonical-refresh-bundle.json")
           else
             if [ "$source_bundle_enabled" = "true" ] && \
+               [ "$source_repair_candidates_json" = "[]" ] && \
                [ -n "$REPLACE_RULESPEC_PATH" ] && \
                [ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
               run_signed_encode \
