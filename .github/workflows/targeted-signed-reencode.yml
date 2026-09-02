@@ -183,7 +183,11 @@ jobs:
       }}
     environment: production-signing
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # A replacement with a composed source bundle performs a target preflight,
+    # each source lane, and the final target validation serially. Keep the
+    # fail-closed per-lane retry bounds, but allow enough wall time for all of
+    # those bounded retries to finish.
+    timeout-minutes: 240
     steps:
       - name: Checkout axiom-encode
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
