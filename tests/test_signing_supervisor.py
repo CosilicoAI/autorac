@@ -2472,16 +2472,20 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "$GITHUB_WORKSPACE/axiom-rules-engine/.axiom-targeted" not in command
     assert "printf '%s\\n' \"$review_finding\"" in command
     assert 'args+=(--review-findings "$review_finding_path")' in command
-    assert '--repair-candidate-root "$REPAIR_CANDIDATE_ROOT"' in command
+    assert '--repair-candidate-root "$candidate_root"' in command
     assert (
         'if [ -n "${REPAIR_CANDIDATE_ROOT:-}" ] && \\\n'
         '     [ -n "$replacement_path" ]; then'
     ) in command
-    assert '--repair-candidate-path "$REPAIR_CANDIDATE_PATH"' in command
+    assert '--repair-candidate-path "$candidate_path"' in command
     assert "--repair-candidate-rulespec-sha256" in command
-    assert '"$REPAIR_CANDIDATE_RULESPEC_SHA256"' in command
+    assert '"$candidate_rulespec_sha256"' in command
     assert "--repair-candidate-tests-sha256" in command
-    assert '"$REPAIR_CANDIDATE_TESTS_SHA256"' in command
+    assert '"$candidate_tests_sha256"' in command
+    assert '[[ "$output_lane" =~ ^source-[0-9]{2}$ ]]' in command
+    assert ".lane == $lane and .citation == $citation" in command
+    assert '--source-rulespec-paths-json "$source_rulespec_paths_json"' in command
+    assert 'source_repair_candidates_json="$(' in command
     assert "args+=(--repair-candidate-tests-only)" in command
     assert (
         len(
@@ -4546,8 +4550,9 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         )
 
 
+@pytest.mark.parametrize("replay_source_candidates", [False, True])
 def test_targeted_signed_reencode_composes_nonempty_source_bundle(
-    tmp_path: Path,
+    tmp_path: Path, replay_source_candidates: bool
 ) -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
@@ -4623,6 +4628,35 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         "us-ri/statute/44-30-1",
         "us-ri/guidance/revenue/2026/rate-schedule",
     ]
+    if replay_source_candidates:
+        source_candidates = [
+            {
+                "citation": citation,
+                "lane": f"source-{index:02d}",
+                "path": path.removeprefix("us-ri/"),
+                "root": str(tmp_path / f"source-candidate-{index:02d}"),
+                "runner": "openai-gpt-5.6-sol",
+                "rulespec_sha256": f"{index}" * 64,
+                "tests_sha256": f"{index + 2}" * 64,
+            }
+            for index, (citation, path) in enumerate(
+                zip(
+                    sources,
+                    [
+                        "us-ri/statutes/44-30-1.yaml",
+                        "us-ri/policies/revenue/2026/rate-schedule.yaml",
+                    ],
+                    strict=True,
+                ),
+                start=1,
+            )
+        ]
+        command = command.replace(
+            'source_repair_candidates_json="[]"',
+            "source_repair_candidates_json=\"$(printf '%s' "
+            + shlex.quote(json.dumps(source_candidates))
+            + ')"',
+        )
 
     subprocess.run(
         ["bash", "-c", command],
@@ -4677,7 +4711,14 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         assert encode_args[index][-1] == source
         assert "--apply-target-only" in encode_args[index]
         assert "--required-import-rulespec-path" not in encode_args[index]
-        assert "--repair-candidate-root" not in encode_args[index]
+        assert ("--repair-candidate-root" in encode_args[index]) is (
+            replay_source_candidates
+        )
+        if replay_source_candidates:
+            candidate_index = encode_args[index].index("--repair-candidate-root")
+            assert encode_args[index][candidate_index + 1] == str(
+                tmp_path / f"source-candidate-{index:02d}"
+            )
 
     primary_args = encode_args[-1]
     assert primary_args[-1] == primary

@@ -1086,12 +1086,15 @@ jobs:
           ATOMIC_SOURCE_JSON: ${{ inputs.source_bundle_json }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CITATION: ${{ inputs.citation }}
+          CORPUS_REF: ${{ inputs.corpus_ref }}
+          COUNTRY: ${{ inputs.country }}
           REVIEW_FINDING: ${{ inputs.review_finding }}
           REPAIR_CANDIDATE_PATH: ${{ steps.repair_candidate.outputs.path }}
           REPAIR_CANDIDATE_ROOT: ${{ steps.repair_candidate.outputs.root }}
           REPAIR_CANDIDATE_RULESPEC_SHA256: ${{ steps.repair_candidate.outputs.rulespec_sha256 }}
           REPAIR_CANDIDATE_TESTS_SHA256: ${{ steps.repair_candidate.outputs.tests_sha256 }}
           REPAIR_TESTS_ONLY: ${{ steps.repair_candidate.outputs.tests_only }}
+          REPAIR_RUN_ID: ${{ inputs.repair_run_id }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
@@ -1105,6 +1108,7 @@ jobs:
           EXISTING_SIGNED_IMPORTS_JSON: ${{ inputs.existing_signed_imports_json }}
           RULESPEC_CHECKOUT: ${{ github.workspace }}/rulespec-${{ inputs.country }}
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
+          RULES_ENGINE_REF: ${{ inputs.rules_engine_ref }}
         run: |
           set -euo pipefail
           : "${REPAIR_TESTS_ONLY:=false}"
@@ -1133,6 +1137,7 @@ jobs:
           : "${SECOND_DEPENDENT_REVIEW_FINDING:=}"
           dependent_rulespec_path=""
           second_dependent_rulespec_path=""
+          source_repair_candidates_json="[]"
 
           run_signed_encode() {
             local citation="$1"
@@ -1146,6 +1151,11 @@ jobs:
             local required_test_cases_json="${9:-[]}"
             local review_finding_path=""
             local review_contract_json=""
+            local candidate_root=""
+            local candidate_path=""
+            local candidate_rulespec_sha256=""
+            local candidate_tests_sha256=""
+            local source_candidate=""
             mkdir -p "$RUNNER_TEMP/generated/$output_lane"
             local -a args=(
               /opt/axiom-verification/axiom-encode encode
@@ -1259,18 +1269,47 @@ jobs:
             fi
             if [ -n "${REPAIR_CANDIDATE_ROOT:-}" ] && \
                [ -n "$replacement_path" ]; then
-              test -n "${REPAIR_CANDIDATE_PATH:-}" \
-                && test -n "${REPAIR_CANDIDATE_RULESPEC_SHA256:-}" \
-                && test -n "${REPAIR_CANDIDATE_TESTS_SHA256:-}"
+              candidate_root="$REPAIR_CANDIDATE_ROOT"
+              candidate_path="$REPAIR_CANDIDATE_PATH"
+              candidate_rulespec_sha256="$REPAIR_CANDIDATE_RULESPEC_SHA256"
+              candidate_tests_sha256="$REPAIR_CANDIDATE_TESTS_SHA256"
+            elif [[ "$output_lane" =~ ^source-[0-9]{2}$ ]] && \
+                 [ "$source_repair_candidates_json" != "[]" ]; then
+              source_candidate="$(
+                jq -cer \
+                  --arg lane "$output_lane" \
+                  --arg citation "$citation" '
+                    [.[] | select(
+                      .lane == $lane and .citation == $citation
+                    )]
+                    | if length == 1 then .[0]
+                      else error("source repair candidate identity mismatch")
+                      end
+                  ' <<< "$source_repair_candidates_json"
+              )"
+              candidate_root="$(jq -er '.root' <<< "$source_candidate")"
+              candidate_path="$(jq -er '.path' <<< "$source_candidate")"
+              candidate_rulespec_sha256="$(
+                jq -er '.rulespec_sha256' <<< "$source_candidate"
+              )"
+              candidate_tests_sha256="$(
+                jq -er '.tests_sha256' <<< "$source_candidate"
+              )"
+            fi
+            if [ -n "$candidate_root" ]; then
+              test -n "$candidate_path" \
+                && test -n "$candidate_rulespec_sha256" \
+                && test -n "$candidate_tests_sha256"
               args+=(
-                --repair-candidate-root "$REPAIR_CANDIDATE_ROOT"
-                --repair-candidate-path "$REPAIR_CANDIDATE_PATH"
+                --repair-candidate-root "$candidate_root"
+                --repair-candidate-path "$candidate_path"
                 --repair-candidate-rulespec-sha256 \
-                  "$REPAIR_CANDIDATE_RULESPEC_SHA256"
+                  "$candidate_rulespec_sha256"
                 --repair-candidate-tests-sha256 \
-                  "$REPAIR_CANDIDATE_TESTS_SHA256"
+                  "$candidate_tests_sha256"
               )
-              if [ "$REPAIR_TESTS_ONLY" = "true" ]; then
+              if [ -n "$replacement_path" ] && \
+                 [ "$REPAIR_TESTS_ONLY" = "true" ]; then
                 args+=(--repair-candidate-tests-only)
               fi
             fi
@@ -1492,6 +1531,39 @@ jobs:
           source_bundle_enabled=false
           if [ "$source_bundle_count" -gt 0 ]; then
             source_bundle_enabled=true
+          fi
+          if [ "$source_bundle_enabled" = "true" ] && \
+             [ -n "${REPAIR_RUN_ID:-}" ]; then
+            source_rulespec_paths_json="$(
+              jq -Rsc 'split("\n") | map(select(length > 0))' \
+                "$RUNNER_TEMP/source-bundle-rulespec-paths.txt"
+            )"
+            repair_encoder_commit="$(jq -er '.head_sha' \
+              "$RUNNER_TEMP/repair-run.json")"
+            source_repair_result="$(
+              "$workflow_python" \
+                axiom-encode/scripts/extract_repair_candidate.py \
+                "$RUNNER_TEMP/repair-download/targeted-reencode-failure.tar" \
+                "$RUNNER_TEMP/source-repair-candidate" \
+                --citation "$CITATION" \
+                --country "$COUNTRY" \
+                --encoder-commit "$repair_encoder_commit" \
+                --corpus-ref "$CORPUS_REF" \
+                --rules-engine-ref "$RULES_ENGINE_REF" \
+                --rulespec-ref "$RULESPEC_REF" \
+                --allow-rulespec-base-advance \
+                --atomic-source-json "$ATOMIC_SOURCE_JSON" \
+                --replace-rulespec-path "$REPLACE_RULESPEC_PATH" \
+                --source-rulespec-paths-json "$source_rulespec_paths_json" \
+                --workflow-run-id "$REPAIR_RUN_ID"
+            )"
+            source_repair_candidates_json="$(
+              jq -cer \
+                --argjson expected_count "$source_bundle_count" '
+                  .source_candidates
+                  | select(type == "array" and length == $expected_count)
+                ' <<< "$source_repair_result"
+            )"
           fi
           canonical_refresh_enabled=false
           if [ "$canonical_refresh_count" -gt 0 ]; then

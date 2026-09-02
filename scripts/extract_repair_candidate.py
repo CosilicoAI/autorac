@@ -308,7 +308,102 @@ def _repair_lane_for_atomic_source(
     return "target", ["target"]
 
 
-def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
+def _write_candidate_pair(
+    root: Path,
+    relative_path: str,
+    candidate: bytes,
+    tests: bytes,
+) -> None:
+    output = root / relative_path
+    test_output = output.with_suffix(".test.yaml")
+    output.parent.mkdir(parents=True, exist_ok=False)
+    for path, data in ((output, candidate), (test_output, tests)):
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb", closefd=True) as target:
+                descriptor = -1
+                target.write(data)
+                target.flush()
+                os.fsync(target.fileno())
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+
+def _source_repair_candidates(
+    bundle: tarfile.TarFile,
+    members: dict[str, tarfile.TarInfo],
+    files: dict[str, dict[str, object]],
+    *,
+    destination: Path,
+    country: str,
+    source_citations: list[str],
+    source_rulespec_paths_json: str | None,
+) -> list[dict[str, str]]:
+    if source_rulespec_paths_json is None:
+        return []
+    try:
+        source_rulespec_paths = json.loads(source_rulespec_paths_json)
+    except (json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError("expected source RuleSpec paths are invalid") from exc
+    if (
+        not isinstance(source_rulespec_paths, list)
+        or len(source_rulespec_paths) != len(source_citations)
+        or any(not isinstance(path, str) for path in source_rulespec_paths)
+    ):
+        raise ValueError("expected source RuleSpec paths are invalid")
+
+    extracted: list[dict[str, str]] = []
+    for index, (citation, rulespec_path) in enumerate(
+        zip(source_citations, source_rulespec_paths, strict=True), start=1
+    ):
+        lane = f"source-{index:02d}"
+        expected_module = _expected_module_path(country, rulespec_path)
+        candidate_pattern = re.compile(
+            rf"{re.escape(lane)}/({RUNNER_PATTERN.pattern})/"
+            rf"{re.escape(expected_module)}"
+        )
+        runners = sorted(
+            {
+                match.group(1)
+                for path in files
+                if (match := candidate_pattern.fullmatch(path)) is not None
+                and f"{lane}/{match.group(1)}/"
+                f"{expected_module.removesuffix('.yaml')}.test.yaml"
+                in files
+            }
+        )
+        if "openai-gpt-5.6-sol" in runners:
+            runner = "openai-gpt-5.6-sol"
+        elif len(runners) == 1:
+            runner = runners[0]
+        else:
+            raise ValueError(
+                f"repair artifact does not bind one final source candidate: {lane}"
+            )
+        candidate_path = f"{lane}/{runner}/{expected_module}"
+        tests_path = (
+            f"{lane}/{runner}/{expected_module.removesuffix('.yaml')}.test.yaml"
+        )
+        candidate = _verified_generated_file(bundle, members, files, candidate_path)
+        tests = _verified_generated_file(bundle, members, files, tests_path)
+        root = destination / "source-candidates" / lane / runner
+        _write_candidate_pair(root, expected_module, candidate, tests)
+        extracted.append(
+            {
+                "citation": citation,
+                "lane": lane,
+                "path": expected_module,
+                "root": str(root),
+                "runner": runner,
+                "rulespec_sha256": hashlib.sha256(candidate).hexdigest(),
+                "tests_sha256": hashlib.sha256(tests).hexdigest(),
+            }
+        )
+    return extracted
+
+
+def extract_candidate(args: argparse.Namespace) -> dict[str, object]:
     destination = Path(args.destination).resolve()
     destination.mkdir(parents=True, exist_ok=False)
     expected_fields = {
@@ -356,6 +451,10 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
                 raise ValueError(
                     f"repair artifact is not a compatible single-target run: {field}"
                 )
+        try:
+            expected_atomic_source = SPLIT_ATOMIC_SOURCE_INPUT(args.atomic_source_json)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("expected atomic source input is invalid") from exc
         repair_lane, expected_generated_lanes = _repair_lane_for_atomic_source(
             metadata, args.atomic_source_json
         )
@@ -415,21 +514,23 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
             candidate, tests = retained
             runner = "retained-best"
 
+        source_rulespec_paths_json = getattr(args, "source_rulespec_paths_json", None)
+        if source_rulespec_paths_json is not None and repair_lane != "target":
+            raise ValueError(
+                "source repair candidates require a final composed target artifact"
+            )
+        source_candidates = _source_repair_candidates(
+            bundle,
+            members,
+            files,
+            destination=destination,
+            country=args.country,
+            source_citations=expected_atomic_source["source_bundle"],
+            source_rulespec_paths_json=source_rulespec_paths_json,
+        )
+
     root = destination / runner
-    output = root / expected_module
-    test_output = output.with_suffix(".test.yaml")
-    output.parent.mkdir(parents=True, exist_ok=False)
-    for path, data in ((output, candidate), (test_output, tests)):
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            with os.fdopen(descriptor, "wb", closefd=True) as target:
-                descriptor = -1
-                target.write(data)
-                target.flush()
-                os.fsync(target.fileno())
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
+    _write_candidate_pair(root, expected_module, candidate, tests)
 
     return {
         "root": str(root),
@@ -438,6 +539,7 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
         "tests_sha256": hashlib.sha256(tests).hexdigest(),
         "runner": runner,
         "source_rulespec_ref": source_rulespec_ref,
+        "source_candidates": source_candidates,
     }
 
 
@@ -454,6 +556,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-rulespec-base-advance", action="store_true")
     parser.add_argument("--atomic-source-json", required=True)
     parser.add_argument("--replace-rulespec-path", required=True)
+    parser.add_argument("--source-rulespec-paths-json")
     parser.add_argument("--workflow-run-id", required=True)
     return parser
 
