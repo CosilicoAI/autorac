@@ -8943,6 +8943,158 @@ rules: []
         assert metrics.generalist_review_score is None
         assert metrics.generalist_review_issues == []
 
+    def test_evaluate_artifact_skips_reviewer_after_deterministic_rejection(
+        self, tmp_path
+    ):
+        rulespec_file = _generated_rulespec_file_path(tmp_path, "statutes/24/a.yaml")
+        rulespec_file.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  summary: Source text says the amount is $1,000.\n"
+            "rules:\n"
+            "  - name: ctc_amount\n"
+            "    kind: parameter\n"
+            "    dtype: Money\n"
+            "    unit: USD\n"
+            "    versions:\n"
+            "      - effective_from: '2018-01-01'\n"
+            "        formula: 1000\n"
+        )
+        ci_issue = "Ungrounded generated numeric literal: 7455.7"
+
+        with (
+            patch.object(
+                ValidatorPipeline,
+                "_run_compile_check",
+                return_value=ValidationResult("compile", passed=True),
+            ),
+            patch.object(
+                ValidatorPipeline,
+                "_run_ci",
+                return_value=ValidationResult("ci", passed=False, issues=[ci_issue]),
+            ),
+            patch.object(ValidatorPipeline, "_run_reviewer") as mock_reviewer,
+        ):
+            metrics = evaluate_artifact(
+                local_corpus_release=_write_test_corpus_provision(
+                    tmp_path / "bound-release"
+                ),
+                rulespec_file=rulespec_file,
+                policy_repo_root=_canonical_rulespec_content_root(tmp_path, "us"),
+                axiom_rules_path=Path("/tmp/axiom-rules-engine"),
+                source_text="Source text says the amount is $1,000.",
+                reviewers_require_deterministic_pass=True,
+            )
+
+        mock_reviewer.assert_not_called()
+        assert not metrics.ci_pass
+        assert ci_issue in metrics.ci_issues
+        assert metrics.generalist_review_score is None
+
+    def test_evaluate_artifact_reviews_rejected_candidates_by_default(self, tmp_path):
+        rulespec_file = _generated_rulespec_file_path(tmp_path, "statutes/24/a.yaml")
+        rulespec_file.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  summary: Source text says the amount is $1,000.\n"
+            "rules:\n"
+            "  - name: ctc_amount\n"
+            "    kind: parameter\n"
+            "    dtype: Money\n"
+            "    unit: USD\n"
+            "    versions:\n"
+            "      - effective_from: '2018-01-01'\n"
+            "        formula: 1000\n"
+        )
+
+        with (
+            patch.object(
+                ValidatorPipeline,
+                "_run_compile_check",
+                return_value=ValidationResult("compile", passed=True),
+            ),
+            patch.object(
+                ValidatorPipeline,
+                "_run_ci",
+                return_value=ValidationResult(
+                    "ci", passed=False, issues=["Ungrounded literal"]
+                ),
+            ),
+            patch.object(
+                ValidatorPipeline,
+                "_run_reviewer",
+                return_value=ValidationResult(
+                    "generalist-reviewer",
+                    passed=False,
+                    score=3.0,
+                    issues=["magic number"],
+                ),
+            ) as mock_reviewer,
+        ):
+            metrics = evaluate_artifact(
+                local_corpus_release=_write_test_corpus_provision(
+                    tmp_path / "bound-release"
+                ),
+                rulespec_file=rulespec_file,
+                policy_repo_root=_canonical_rulespec_content_root(tmp_path, "us"),
+                axiom_rules_path=Path("/tmp/axiom-rules-engine"),
+                source_text="Source text says the amount is $1,000.",
+            )
+
+        mock_reviewer.assert_called_once()
+        assert metrics.generalist_review_score == 3.0
+        assert metrics.generalist_review_issues == ["magic number"]
+
+    def test_evaluate_artifact_reviews_when_deterministic_checks_pass(self, tmp_path):
+        rulespec_file = _generated_rulespec_file_path(tmp_path, "statutes/24/a.yaml")
+        rulespec_file.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  summary: Source text says the amount is $1,000.\n"
+            "rules:\n"
+            "  - name: ctc_amount\n"
+            "    kind: parameter\n"
+            "    dtype: Money\n"
+            "    unit: USD\n"
+            "    versions:\n"
+            "      - effective_from: '2018-01-01'\n"
+            "        formula: 1000\n"
+        )
+
+        with (
+            patch.object(
+                ValidatorPipeline,
+                "_run_compile_check",
+                return_value=ValidationResult("compile", passed=True),
+            ),
+            patch.object(
+                ValidatorPipeline,
+                "_run_ci",
+                return_value=ValidationResult("ci", passed=True),
+            ),
+            patch.object(
+                ValidatorPipeline,
+                "_run_reviewer",
+                return_value=ValidationResult(
+                    "generalist-reviewer", passed=True, score=9.0
+                ),
+            ) as mock_reviewer,
+        ):
+            metrics = evaluate_artifact(
+                local_corpus_release=_write_test_corpus_provision(
+                    tmp_path / "bound-release"
+                ),
+                rulespec_file=rulespec_file,
+                policy_repo_root=_canonical_rulespec_content_root(tmp_path, "us"),
+                axiom_rules_path=Path("/tmp/axiom-rules-engine"),
+                source_text="Source text says the amount is $1,000.",
+                reviewers_require_deterministic_pass=True,
+            )
+
+        mock_reviewer.assert_called_once()
+        assert metrics.generalist_review_pass
+        assert metrics.generalist_review_score == 9.0
+
     def test_generated_eval_revalidation_keeps_attached_amendments(self, tmp_path):
         amendment = CorpusAmendmentDocument(
             citation_path=(

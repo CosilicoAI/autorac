@@ -1566,6 +1566,7 @@ def run_model_eval(
     extra_context_paths: list[Path] | None = None,
     include_tests: bool = False,
     skip_reviewers: bool = False,
+    reviewers_require_deterministic_pass: bool = False,
     oracle: EvalOracleMode = "none",
     policyengine_runtime: PolicyEngineRuntime | None = None,
     policyengine_rule_hint: str | None = None,
@@ -1621,6 +1622,9 @@ def run_model_eval(
                         extra_context_paths=extra_context_paths or [],
                         include_tests=include_tests,
                         skip_reviewers=skip_reviewers,
+                        reviewers_require_deterministic_pass=(
+                            reviewers_require_deterministic_pass
+                        ),
                         oracle=oracle,
                         policyengine_runtime=policyengine_runtime,
                         policyengine_rule_hint=policyengine_rule_hint,
@@ -1658,6 +1662,7 @@ def run_source_eval(
     policyengine_runtime: PolicyEngineRuntime | None = None,
     policyengine_rule_hint: str | None = None,
     skip_reviewers: bool = False,
+    reviewers_require_deterministic_pass: bool = False,
     rulespec_dependency_roots: Sequence[Path] = (),
     review_findings_paths: list[Path] | None = None,
     require_complete_source_unit: bool = False,
@@ -1695,6 +1700,9 @@ def run_source_eval(
                     policyengine_runtime=policyengine_runtime,
                     policyengine_rule_hint=policyengine_rule_hint,
                     skip_reviewers=skip_reviewers,
+                    reviewers_require_deterministic_pass=(
+                        reviewers_require_deterministic_pass
+                    ),
                     local_corpus_release=local_corpus_release,
                     rulespec_dependency_roots=rulespec_dependency_roots,
                     review_findings_paths=review_findings_paths or [],
@@ -7246,6 +7254,7 @@ def evaluate_artifact(
     policyengine_runtime: PolicyEngineRuntime | None = None,
     policyengine_rule_hint: str | None = None,
     skip_reviewers: bool = False,
+    reviewers_require_deterministic_pass: bool = False,
     source_metadata: dict[str, object] | None = None,
     source_citation_path: str | None = None,
     rulespec_dependency_roots: Sequence[Path] = (),
@@ -7278,6 +7287,7 @@ def evaluate_artifact(
             policyengine_runtime=policyengine_runtime,
             policyengine_rule_hint=policyengine_rule_hint,
             skip_reviewers=skip_reviewers,
+            reviewers_require_deterministic_pass=reviewers_require_deterministic_pass,
             source_metadata=source_metadata,
             local_corpus_release=local_corpus_release,
             source_citation_path=source_citation_path,
@@ -7422,6 +7432,7 @@ def _evaluate_artifact_in_scope(
     policyengine_runtime: PolicyEngineRuntime | None = None,
     policyengine_rule_hint: str | None = None,
     skip_reviewers: bool = False,
+    reviewers_require_deterministic_pass: bool = False,
     source_metadata: dict[str, object] | None = None,
     source_citation_path: str | None = None,
     rulespec_dependency_roots: Sequence[Path] = (),
@@ -7529,7 +7540,13 @@ def _evaluate_artifact_in_scope(
                 "so a boolean day-predicate helper on `period: Day`, plus explicit trigger preconditions from the source text, "
                 "is an acceptable representation."
             )
-        if skip_reviewers:
+        # The encode retry loop feeds only compile/CI findings back to the
+        # model and never gates apply on the reviewer, so in that lane a
+        # reviewer call on an already-rejected candidate is pure latency.
+        deterministic_rejected = not compile_result.passed or not ci_result.passed
+        if skip_reviewers or (
+            reviewers_require_deterministic_pass and deterministic_rejected
+        ):
             generalist_review_result = ValidationResult(
                 validator_name="generalist-reviewer",
                 passed=True,
@@ -7820,6 +7837,7 @@ def _evaluate_generated_artifact_with_repairs(
     policyengine_runtime: PolicyEngineRuntime | None = None,
     policyengine_rule_hint: str | None = None,
     skip_reviewers: bool = False,
+    reviewers_require_deterministic_pass: bool = False,
     source_metadata: dict[str, object] | None = None,
     source_citation_path: str | None = None,
     rulespec_dependency_roots: Sequence[Path] = (),
@@ -7846,6 +7864,7 @@ def _evaluate_generated_artifact_with_repairs(
             policyengine_runtime=policyengine_runtime,
             policyengine_rule_hint=policyengine_rule_hint,
             skip_reviewers=skip_reviewers,
+            reviewers_require_deterministic_pass=reviewers_require_deterministic_pass,
             source_metadata=source_metadata,
             local_corpus_release=local_corpus_release,
             source_citation_path=source_citation_path,
@@ -8756,6 +8775,7 @@ def _run_single_eval(
     extra_context_paths: list[Path],
     include_tests: bool = False,
     skip_reviewers: bool = False,
+    reviewers_require_deterministic_pass: bool = False,
     oracle: EvalOracleMode = "none",
     policyengine_runtime: PolicyEngineRuntime | None = None,
     policyengine_rule_hint: str | None = None,
@@ -8960,6 +8980,7 @@ def _run_single_eval(
             policyengine_runtime=policyengine_runtime,
             policyengine_rule_hint=policyengine_rule_hint,
             skip_reviewers=skip_reviewers,
+            reviewers_require_deterministic_pass=reviewers_require_deterministic_pass,
             source_metadata=source_metadata_payload,
             local_corpus_release=corpus_release,
             source_citation_path=_source_metadata_citation_path(
@@ -9115,6 +9136,7 @@ def _run_single_source_eval(
     policyengine_rule_hint: str | None,
     local_corpus_release: _corpus_resolver.LocalCorpusRelease,
     skip_reviewers: bool = False,
+    reviewers_require_deterministic_pass: bool = False,
     rulespec_dependency_roots: Sequence[Path] = (),
     review_findings_paths: list[Path] | None = None,
     require_complete_source_unit: bool = False,
@@ -9197,6 +9219,7 @@ def _run_single_source_eval(
             policyengine_runtime=policyengine_runtime,
             policyengine_rule_hint=policyengine_rule_hint,
             skip_reviewers=skip_reviewers,
+            reviewers_require_deterministic_pass=reviewers_require_deterministic_pass,
             source_metadata=source_metadata_payload,
             local_corpus_release=local_corpus_release,
             source_citation_path=_source_metadata_citation_path(
