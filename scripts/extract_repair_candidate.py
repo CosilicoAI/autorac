@@ -272,18 +272,14 @@ def _repair_lane_for_atomic_source(
         generated_lanes = metadata.get("generated_lanes")
         if generated_lanes == ["target-preflight"]:
             return "target-preflight", ["target-preflight"]
-        final_lanes = sorted(
-            [
-                "target",
-                "target-preflight",
-                *[
-                    f"source-{index:02d}"
-                    for index in range(1, len(expected["source_bundle"]) + 1)
-                ],
-            ]
-        )
-        if generated_lanes == final_lanes:
-            return "target", final_lanes
+        source_lanes = [
+            f"source-{index:02d}"
+            for index in range(1, len(expected["source_bundle"]) + 1)
+        ]
+        final_lanes = sorted(["target", "target-preflight", *source_lanes])
+        replayed_final_lanes = sorted(["target", *source_lanes])
+        if generated_lanes in (final_lanes, replayed_final_lanes):
+            return "target", generated_lanes
         raise ValueError(
             "repair artifact generated lanes do not bind a target preflight "
             "or final composed target"

@@ -395,6 +395,35 @@ def test_extracts_exactly_bound_final_composed_target_candidate(tmp_path):
     assert result["runner"] == "openai-gpt-5.6-sol"
 
 
+def test_extracts_replayed_final_composition_without_redundant_preflight(tmp_path):
+    atomic_source_input = json.dumps(
+        {
+            "schema": "axiom-encode/atomic-source-transaction/v2",
+            "source_bundle": [
+                "us/statute/7/2015/f",
+                "us/guidance/usda/fns/snap-obbb-alien-eligibility-implementation-memo",
+            ],
+            "canonical_refresh_bundle": [],
+            "primary_required_test_cases": [],
+        }
+    )
+    archive, metadata = _archive(tmp_path)
+    del metadata["source_bundle_input"]
+    metadata["atomic_source_input"] = atomic_source_input
+    metadata["generated_lanes"] = ["source-01", "source-02", "target"]
+    replacement = _rewrite_metadata(
+        archive,
+        tmp_path / "replayed-final-composed-target.tar",
+        metadata,
+    )
+
+    result = extract_candidate(
+        _args(tmp_path, replacement, atomic_source_json=atomic_source_input)
+    )
+
+    assert result["runner"] == "openai-gpt-5.6-sol"
+
+
 def test_extracts_digest_bound_source_candidates_from_final_composition(tmp_path):
     source_citations = [
         "us/statute/7/2015/f",

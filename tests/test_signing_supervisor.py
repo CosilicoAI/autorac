@@ -2035,6 +2035,7 @@ def test_targeted_signed_reencode_reconciles_retired_inventory_before_commits() 
 
     assert command.count(invocation) == 3
     assert '[ "$source_bundle_enabled" = "false" ]' in command
+    assert '[ "$source_repair_candidates_json" != "[]" ]' in command
     assert '[ -n "$REPLACE_RULESPEC_PATH" ]' in command
     assert '[ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]' in command
 
@@ -4571,7 +4572,7 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
             '    "$workflow_python" "$backfill_helper" \\\n'
             "      reconcile-retired-manifest-inventory \\\n"
             '      "$RULESPEC_CHECKOUT" "$REPLACE_RULESPEC_PATH"',
-            "    printf '%s\\n' 'retired manifest inventory unchanged'",
+            '    printf \'%s\\n\' "$REPLACE_RULESPEC_PATH" >> "$RECONCILIATIONS_PATH"',
         )
     )
     before_checkpoint, checkpoint_and_after = command.split(
@@ -4593,6 +4594,7 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
 
     calls_path = tmp_path / "calls.jsonl"
     checkpoints_path = tmp_path / "checkpoints.txt"
+    reconciliations_path = tmp_path / "reconciliations.txt"
     signer_stub = tmp_path / "signer-stub"
     signer_stub.write_text(
         """#!/usr/bin/env python3
@@ -4678,6 +4680,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
             "REPAIR_CANDIDATE_RULESPEC_SHA256": "b" * 64,
             "REPAIR_CANDIDATE_TESTS_SHA256": "c" * 64,
             "REPAIR_TESTS_ONLY": "false",
+            "RECONCILIATIONS_PATH": str(reconciliations_path),
             "REVIEW_FINDING": "Preserve the composed target semantics.",
             "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
             "RULESPEC_REF": "a" * 40,
@@ -4692,31 +4695,34 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     calls = [
         json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
     ]
-    assert len(calls) == 4
+    expected_call_count = 3 if replay_source_candidates else 4
+    assert len(calls) == expected_call_count
     encode_args = [call[call.index("--") + 1 :] for call in calls]
-    preflight_args = encode_args[0]
-    assert preflight_args[-1] == primary
-    assert "--apply-target-only" not in preflight_args
-    review_index = preflight_args.index("--review-findings")
-    assert Path(preflight_args[review_index + 1]).read_text(encoding="utf-8") == (
-        "Preserve the composed target semantics.\n"
-    )
-    replacement_index = preflight_args.index("--replace-rulespec-path")
-    assert preflight_args[replacement_index + 1] == replacement_path
-    assert "--replace-legacy-rulespec-path" not in preflight_args
-    assert "--required-import-rulespec-path" not in preflight_args
-    assert "--repair-candidate-root" in preflight_args
+    source_offset = 0
+    if not replay_source_candidates:
+        preflight_args = encode_args[0]
+        assert preflight_args[-1] == primary
+        assert "--apply-target-only" not in preflight_args
+        review_index = preflight_args.index("--review-findings")
+        assert Path(preflight_args[review_index + 1]).read_text(encoding="utf-8") == (
+            "Preserve the composed target semantics.\n"
+        )
+        replacement_index = preflight_args.index("--replace-rulespec-path")
+        assert preflight_args[replacement_index + 1] == replacement_path
+        assert "--replace-legacy-rulespec-path" not in preflight_args
+        assert "--required-import-rulespec-path" not in preflight_args
+        assert "--repair-candidate-root" in preflight_args
+        source_offset = 1
 
     for index, source in enumerate(sources, start=1):
-        assert encode_args[index][-1] == source
-        assert "--apply-target-only" in encode_args[index]
-        assert "--required-import-rulespec-path" not in encode_args[index]
-        assert ("--repair-candidate-root" in encode_args[index]) is (
-            replay_source_candidates
-        )
+        source_args = encode_args[index - 1 + source_offset]
+        assert source_args[-1] == source
+        assert "--apply-target-only" in source_args
+        assert "--required-import-rulespec-path" not in source_args
+        assert ("--repair-candidate-root" in source_args) is (replay_source_candidates)
         if replay_source_candidates:
-            candidate_index = encode_args[index].index("--repair-candidate-root")
-            assert encode_args[index][candidate_index + 1] == str(
+            candidate_index = source_args.index("--repair-candidate-root")
+            assert source_args[candidate_index + 1] == str(
                 tmp_path / f"source-candidate-{index:02d}"
             )
 
@@ -4734,11 +4740,20 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         "us-ri/statutes/44-30-1.yaml",
         "us-ri/policies/revenue/2026/rate-schedule.yaml",
     ]
-    assert checkpoints_path.read_text(encoding="utf-8").splitlines() == [
-        "Canonicalize signed replacement target before source bundle",
+    expected_checkpoints = [
         f"Add signed source module for {sources[0]}",
         f"Add signed source module for {sources[1]}",
         f"Compose signed source bundle for {primary}",
+    ]
+    if not replay_source_candidates:
+        expected_checkpoints.insert(
+            0, "Canonicalize signed replacement target before source bundle"
+        )
+    assert checkpoints_path.read_text(encoding="utf-8").splitlines() == (
+        expected_checkpoints
+    )
+    assert reconciliations_path.read_text(encoding="utf-8").splitlines() == [
+        replacement_path
     ]
     assert canonical.is_file()
 
