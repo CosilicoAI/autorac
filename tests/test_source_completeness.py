@@ -21139,6 +21139,71 @@ rules:
             "alien_status_documentation_missing_or_unwilling",
             True,
         ),
+        (
+            "The benefit does not apply unless the child was disabled and dependent "
+            "on the person prior to the child's 18th birthday.",
+            "hmong_child_is_unmarried_disabled_and_dependent_before_eighteen",
+            True,
+        ),
+        (
+            "The benefit does not apply unless such individual meets at least one of "
+            "the criteria of this paragraph (a)(6)(ii):",
+            "member_is_under_age_eighteen",
+            True,
+        ),
+        (
+            "The benefit does not apply unless they are still married or the spouse "
+            "is deceased.",
+            "spouse_quarters_credited_during_marriage_or_after_spouse_death",
+            True,
+        ),
+        (
+            "The benefit applies if the State agency determines eligibility "
+            "of an alien based on the quarters of coverage of the spouse, and then "
+            "the couple divorces, the alien's eligibility continues until the next "
+            "recertification.",
+            "current_period_is_before_next_recertification",
+            True,
+        ),
+        (
+            "The benefit does not apply unless the child was disabled and dependent "
+            "on the veteran prior to the child's 18th birthday.",
+            "military_family_child_is_unmarried_disabled_and_dependent_before_eighteen",
+            True,
+        ),
+        (
+            "The benefit does not apply unless the notice states that if the child "
+            "was disabled and dependent on the person prior to the child's 18th "
+            "birthday, the agency acts.",
+            "hmong_child_is_unmarried_disabled_and_dependent_before_eighteen",
+            True,
+        ),
+        (
+            "The benefit does not apply unless the notice states that such individual "
+            "meets at least one of the criteria of this paragraph (a)(6)(ii).",
+            "member_is_under_age_eighteen",
+            True,
+        ),
+        (
+            "The benefit does not apply unless the notice states that they are still "
+            "married or the spouse is deceased.",
+            "spouse_quarters_credited_during_marriage_or_after_spouse_death",
+            True,
+        ),
+        (
+            "The benefit does not apply unless the notice states that if the State "
+            "agency determines eligibility of an alien based on the quarters of "
+            "coverage of the spouse, and then the couple divorces, the alien's "
+            "eligibility continues until the next recertification.",
+            "current_period_is_before_next_recertification",
+            True,
+        ),
+        (
+            "The benefit does not apply unless the notice states that the child was "
+            "disabled and dependent on the veteran prior to the child's 18th birthday.",
+            "military_family_child_is_unmarried_disabled_and_dependent_before_eighteen",
+            True,
+        ),
     ],
 )
 def test_bounded_selector_equivalence_requires_its_controlling_clause(
@@ -21175,6 +21240,264 @@ rules:
     result = _analyze(content, source, test_cases=cases)
 
     assert _has_issue(result, "exceptions or applicability", "paired") is expected_issue
+
+
+@pytest.mark.parametrize(
+    ("source", "rule_name", "selector", "formula", "stable_inputs"),
+    [
+        (
+            "The child is eligible if the child was disabled and dependent on the "
+            "person prior to the child's 18th birthday.",
+            "hmong_child_status_eligible",
+            "hmong_child_is_unmarried_disabled_and_dependent_before_eighteen",
+            "hmong_child_is_legally_adopted_or_biological_child and "
+            "(hmong_child_is_unmarried_dependent_under_eighteen or "
+            "hmong_child_is_unmarried_dependent_full_time_student_under_twenty_two "
+            "or hmong_child_is_unmarried_disabled_and_dependent_before_eighteen)",
+            {
+                "hmong_child_is_legally_adopted_or_biological_child": True,
+                "hmong_child_is_unmarried_dependent_under_eighteen": False,
+                "hmong_child_is_unmarried_dependent_full_time_student_under_twenty_two": False,
+            },
+        ),
+        (
+            "A qualified alien is eligible if such individual meets at least one of "
+            "the criteria of this paragraph (a)(6)(ii):",
+            "qualified_alien_meets_at_least_one_immediate_eligibility_criterion",
+            "member_is_under_age_eighteen",
+            "member_is_qualified_alien_with_forty_qualifying_quarters or "
+            "member_is_refugee or member_is_asylee or "
+            "member_has_deportation_or_removal_withheld or "
+            "member_is_cuban_or_haitian_entrant or "
+            "member_is_amerasian_immigrant or "
+            "member_has_eligible_military_connection or "
+            "member_receives_blindness_or_disability_benefits or "
+            "member_was_lawfully_residing_on_1996_08_22_and_born_on_or_before_1931_08_22 "
+            "or member_is_under_age_eighteen",
+            {
+                "member_is_qualified_alien_with_forty_qualifying_quarters": False,
+                "member_is_refugee": False,
+                "member_is_asylee": False,
+                "member_has_deportation_or_removal_withheld": False,
+                "member_is_cuban_or_haitian_entrant": False,
+                "member_is_amerasian_immigrant": False,
+                "member_has_eligible_military_connection": False,
+                "member_receives_blindness_or_disability_benefits": False,
+                "member_was_lawfully_residing_on_1996_08_22_and_born_on_or_before_1931_08_22": False,
+            },
+        ),
+        (
+            "If the State agency determines eligibility of an alien based on the "
+            "quarters of coverage of the spouse, and then the couple divorces, the "
+            "alien's eligibility continues until the next recertification.",
+            "spouse_quarter_eligibility_continues_until_recertification",
+            "current_period_is_before_next_recertification",
+            "alien_eligibility_was_based_on_spouse_qualifying_quarters and "
+            "alien_and_spouse_divorced_after_snap_eligibility_determination and "
+            "current_period_is_before_next_recertification",
+            {
+                "alien_eligibility_was_based_on_spouse_qualifying_quarters": True,
+                "alien_and_spouse_divorced_after_snap_eligibility_determination": True,
+            },
+        ),
+        (
+            "The child is eligible if the child was disabled and dependent on the "
+            "veteran prior to the child's 18th birthday.",
+            "military_family_child_connection_eligible",
+            "military_family_child_is_unmarried_disabled_and_dependent_before_eighteen",
+            "military_family_child_is_unmarried_dependent_under_eighteen or "
+            "military_family_child_is_unmarried_dependent_full_time_student_under_twenty_two "
+            "or military_family_child_is_unmarried_disabled_and_dependent_before_eighteen",
+            {
+                "military_family_child_is_unmarried_dependent_under_eighteen": False,
+                "military_family_child_is_unmarried_dependent_full_time_student_under_twenty_two": False,
+            },
+        ),
+    ],
+)
+def test_bounded_composite_selector_equivalence_requires_complete_formula_context(
+    source: str,
+    rule_name: str,
+    selector: str,
+    formula: str,
+    stable_inputs: dict[str, bool],
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/1
+rules:
+  - name: {rule_name}
+    kind: derived
+    dtype: Judgment
+    source: us-zz/statute/1
+    versions:
+      - formula: '{formula}'
+"""
+    cases = [
+        {
+            "name": "condition absent",
+            "period": "2026-01",
+            "input": {**stable_inputs, selector: False},
+            "output": {rule_name: False},
+        },
+        {
+            "name": "condition present",
+            "period": "2026-01",
+            "input": {**stable_inputs, selector: True},
+            "output": {rule_name: True},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not _has_issue(result, "exceptions or applicability", "paired")
+
+
+def test_bounded_composite_selector_rejects_required_names_in_wrong_formula_shape():
+    source = (
+        "If the State agency determines eligibility of an alien based on the "
+        "quarters of coverage of the spouse, and then the couple divorces, the "
+        "alien's eligibility continues until the next recertification."
+    )
+    selector = "current_period_is_before_next_recertification"
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/1
+rules:
+  - name: spouse_quarter_eligibility_continues_until_recertification
+    kind: derived
+    dtype: Judgment
+    source: us-zz/statute/1
+    versions:
+      - formula: '{selector} or (false and alien_eligibility_was_based_on_spouse_qualifying_quarters and alien_and_spouse_divorced_after_snap_eligibility_determination)'
+"""
+    cases = [
+        {
+            "name": "time condition absent",
+            "input": {
+                selector: False,
+                "alien_eligibility_was_based_on_spouse_qualifying_quarters": False,
+                "alien_and_spouse_divorced_after_snap_eligibility_determination": False,
+            },
+            "output": {
+                "spouse_quarter_eligibility_continues_until_recertification": False
+            },
+        },
+        {
+            "name": "time condition present without antecedents",
+            "input": {
+                selector: True,
+                "alien_eligibility_was_based_on_spouse_qualifying_quarters": False,
+                "alien_and_spouse_divorced_after_snap_eligibility_determination": False,
+            },
+            "output": {
+                "spouse_quarter_eligibility_continues_until_recertification": True
+            },
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exceptions or applicability", "paired")
+
+
+def test_bounded_composite_selector_rejects_extra_formula_identifier():
+    source = (
+        "If the State agency determines eligibility of an alien based on the "
+        "quarters of coverage of the spouse, and then the couple divorces, the "
+        "alien's eligibility continues until the next recertification."
+    )
+    selector = "current_period_is_before_next_recertification"
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/1
+rules:
+  - name: spouse_quarter_eligibility_continues_until_recertification
+    kind: derived
+    dtype: Judgment
+    source: us-zz/statute/1
+    versions:
+      - formula: '(alien_eligibility_was_based_on_spouse_qualifying_quarters and alien_and_spouse_divorced_after_snap_eligibility_determination and {selector}) or unrelated_override'
+"""
+    stable_inputs = {
+        "alien_eligibility_was_based_on_spouse_qualifying_quarters": True,
+        "alien_and_spouse_divorced_after_snap_eligibility_determination": True,
+        "unrelated_override": False,
+    }
+    cases = [
+        {
+            "name": "time condition absent",
+            "input": {**stable_inputs, selector: False},
+            "output": {
+                "spouse_quarter_eligibility_continues_until_recertification": False
+            },
+        },
+        {
+            "name": "time condition present",
+            "input": {**stable_inputs, selector: True},
+            "output": {
+                "spouse_quarter_eligibility_continues_until_recertification": True
+            },
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exceptions or applicability", "paired")
+
+
+def test_bounded_composite_selector_uses_formula_version_exercised_by_pair():
+    source = (
+        "If the State agency determines eligibility of an alien based on the "
+        "quarters of coverage of the spouse, and then the couple divorces, the "
+        "alien's eligibility continues until the next recertification."
+    )
+    selector = "current_period_is_before_next_recertification"
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/1
+rules:
+  - name: spouse_quarter_eligibility_continues_until_recertification
+    kind: derived
+    dtype: Judgment
+    source: us-zz/statute/1
+    versions:
+      - effective_from: '2025-01-01'
+        effective_to: '2025-12-31'
+        formula: 'alien_eligibility_was_based_on_spouse_qualifying_quarters and alien_and_spouse_divorced_after_snap_eligibility_determination and {selector}'
+      - effective_from: '2026-01-01'
+        formula: '{selector}'
+"""
+    cases = [
+        {
+            "name": "time condition absent in incomplete current version",
+            "period": "2026-01-01",
+            "input": {selector: False},
+            "output": {
+                "spouse_quarter_eligibility_continues_until_recertification": False
+            },
+        },
+        {
+            "name": "time condition present in incomplete current version",
+            "period": "2026-01-01",
+            "input": {selector: True},
+            "output": {
+                "spouse_quarter_eligibility_continues_until_recertification": True
+            },
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exceptions or applicability", "paired")
 
 
 @pytest.mark.parametrize(
@@ -31788,6 +32111,7 @@ def test_exception_branch_accepts_principal_rule_grounded_to_descendant():
         principal_rule_paths={
             "low_income_credit_amount": {("a", "1", "a", "i")},
         },
+        asserted_by_rule={},
         toggled_exception_selectors={witness},
         extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
     )
@@ -31848,6 +32172,7 @@ def test_numeric_transition_propagates_through_asserted_judgment_dependency():
             "low_income_applies": {("a", "1", "b")},
             "low_income_credit_amount": {("a", "1", "a", "i")},
         },
+        asserted_by_rule={name: cases for name in principal_rules},
         toggled_exception_selectors=witnesses,
         extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
     )
@@ -34208,6 +34533,7 @@ def test_boolean_selector_cannot_replace_numeric_exception_evidence():
             }
         },
         principal_rule_paths={"applicant_ineligible": {("1",)}},
+        asserted_by_rule={},
         toggled_exception_selectors={witness},
         extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
     )
