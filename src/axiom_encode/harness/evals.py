@@ -9950,14 +9950,16 @@ companion test file required by the task and deterministic validation.
         if tests_only
         else (
             "- Return syntactically complete RuleSpec and companion test YAML, but "
-            "you may omit unchanged named rules, imports, deferred outputs, and "
-            "named companion cases. The encoder overlays those omitted items from "
-            "the hash-bound candidate before validation. Re-emit the complete item "
-            "only when changing or replacing it. To remove an obsolete named rule "
-            "or companion case from this rejected candidate, emit an exact YAML "
-            "item containing only `name: <existing name>` and `repair_remove: true`; "
-            "the encoder removes that marker before validation. Never emit prose "
-            "or patch syntax.\n"
+            "you may omit unchanged named inputs, named rules, imports, deferred "
+            "outputs, and named companion cases. The encoder overlays those "
+            "omitted items from the hash-bound candidate before validation. Re-emit "
+            "the complete item only when changing or replacing it. To remove an "
+            "obsolete named input, rule, or companion case from this rejected "
+            "candidate, emit an exact YAML item containing only "
+            "`name: <existing name>` and `repair_remove: true`; input removal is "
+            "accepted only after no repaired rule or companion case references it. "
+            "The encoder removes accepted markers before validation. Never emit "
+            "prose or patch syntax.\n"
         )
     )
     return f"""
@@ -16999,6 +17001,37 @@ def _merge_named_yaml_items(
     return generated_items, restored, sorted(removed_names)
 
 
+def _repair_overlay_removed_input_references(
+    payload: object,
+    removed_inputs: Sequence[str],
+) -> list[str]:
+    """Return removed input names still referenced by the repaired artifact."""
+
+    patterns = {
+        name: re.compile(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])")
+        for name in removed_inputs
+    }
+    referenced: set[str] = set()
+
+    def visit(value: object) -> None:
+        if isinstance(value, str):
+            referenced.update(
+                name for name, pattern in patterns.items() if pattern.search(value)
+            )
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                visit(key)
+                visit(child)
+            return
+        if isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(payload)
+    return sorted(referenced)
+
+
 def _normalize_repair_deferred_source_roots(
     deferred_outputs: object,
     *,
@@ -17160,11 +17193,12 @@ def _overlay_validation_retry_candidate(
         preserved_inputs,
         label="inputs",
     )
-    if removed_inputs:
-        raise ValueError("repair overlay cannot remove retained inputs")
     if inputs:
         generated["inputs"] = inputs
+    else:
+        generated.pop("inputs", None)
     repairs.extend(f"input:{name}" for name in restored_inputs)
+    repairs.extend(f"removed_input:{name}" for name in removed_inputs)
 
     generated_rules = generated.get("rules")
     rules, restored_rules, removed_rules = _merge_named_yaml_items(
@@ -17243,6 +17277,7 @@ def _overlay_validation_retry_candidate(
             generated_module["deferred_outputs"] = deferred
 
     test_file = _rulespec_test_path(rulespec_file)
+    merged_test_payload: object | None = None
     if candidate.tests is not None:
         try:
             generated_tests = (
@@ -17275,16 +17310,43 @@ def _overlay_validation_retry_candidate(
             label="companion tests",
             allowed_missing_removals=candidate.allowed_missing_test_removals,
         )
-        merged_test_payload: object = (
+        merged_test_payload = (
             {"cases": merged_tests} if preserved_wrapper else merged_tests
         )
+        repairs.extend(f"test:{name}" for name in restored_tests)
+        repairs.extend(f"removed_test:{name}" for name in removed_tests)
+
+    if removed_inputs:
+        reference_payload: list[object] = [generated]
+        if merged_test_payload is not None:
+            reference_payload.append(merged_test_payload)
+        elif test_file.exists():
+            try:
+                generated_test_payload = yaml.safe_load(
+                    test_file.read_text(encoding="utf-8")
+                )
+            except (OSError, UnicodeError, yaml.YAMLError, RecursionError) as exc:
+                raise ValueError(
+                    "repair overlay tests must be valid UTF-8 YAML"
+                ) from exc
+            reference_payload.append(generated_test_payload)
+        referenced_removed_inputs = _repair_overlay_removed_input_references(
+            reference_payload,
+            removed_inputs,
+        )
+        if referenced_removed_inputs:
+            raise ValueError(
+                "repair overlay cannot remove retained inputs that remain "
+                "referenced: "
+                + ", ".join(f"`{name}`" for name in referenced_removed_inputs)
+            )
+
+    if merged_test_payload is not None:
         _write_eval_artifact_text(
             test_file,
             yaml.safe_dump(merged_test_payload, sort_keys=False, allow_unicode=True),
             artifact_root,
         )
-        repairs.extend(f"test:{name}" for name in restored_tests)
-        repairs.extend(f"removed_test:{name}" for name in removed_tests)
 
     _write_eval_artifact_text(
         rulespec_file,
