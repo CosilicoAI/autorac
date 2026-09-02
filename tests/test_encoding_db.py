@@ -503,6 +503,14 @@ class TestRowToRun:
             "Some lessons",
             "0.2.0",
             "{}",
+            100,
+            50,
+            10,
+            5,
+            2,
+            0.0123,
+            0.0111,
+            1,
         )
         run = experiment_db._row_to_run(row)
         assert run.id == "test-id"
@@ -547,6 +555,14 @@ class TestRowToRun:
             "",
             "0.2.0",
             "{}",
+            0,
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            0,
         )
 
         with pytest.raises(ValueError, match="unsupported schema"):
@@ -614,3 +630,181 @@ class TestUpdateSessionTokens:
                 "SELECT estimated_cost_usd FROM sessions WHERE id = 'token-test'"
             ).fetchone()[0]
         assert cost == 0.0123
+
+    def test_accumulates_across_writes(self, experiment_db):
+        """Each stage's write adds onto the session totals."""
+        experiment_db.start_session(
+            model="test-model", cwd="/tmp", session_id="accumulate-test"
+        )
+
+        experiment_db.update_session_tokens(
+            session_id="accumulate-test",
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read_tokens=200,
+            cache_creation_tokens=100,
+            reasoning_output_tokens=50,
+            estimated_cost_usd=0.01,
+        )
+        experiment_db.update_session_tokens(
+            session_id="accumulate-test",
+            input_tokens=2000,
+            output_tokens=1000,
+            cache_read_tokens=400,
+            cache_creation_tokens=200,
+            reasoning_output_tokens=100,
+            estimated_cost_usd=0.02,
+        )
+
+        session = experiment_db.get_session("accumulate-test")
+        assert session.input_tokens == 3000
+        assert session.output_tokens == 1500
+        assert session.cache_read_tokens == 600
+        assert session.cache_creation_tokens == 300
+        assert session.reasoning_output_tokens == 150
+        assert session.total_tokens == 4500
+        assert session.estimated_cost_usd == pytest.approx(0.03)
+
+    def test_unknown_cost_increment_poisons_total(self, experiment_db):
+        """A token-spending write without a cost keeps the total unknown."""
+        experiment_db.start_session(
+            model="test-model", cwd="/tmp", session_id="poison-test"
+        )
+
+        experiment_db.update_session_tokens(
+            session_id="poison-test",
+            input_tokens=1000,
+            output_tokens=500,
+            estimated_cost_usd=None,
+        )
+        experiment_db.update_session_tokens(
+            session_id="poison-test",
+            input_tokens=2000,
+            output_tokens=1000,
+            estimated_cost_usd=0.02,
+        )
+
+        session = experiment_db.get_session("poison-test")
+        assert session.input_tokens == 3000
+        assert session.estimated_cost_usd is None
+
+    def test_zero_token_costless_write_preserves_known_cost(self, experiment_db):
+        """A bookkeeping write that spends nothing must not wipe a known cost."""
+        experiment_db.start_session(
+            model="test-model", cwd="/tmp", session_id="preserve-test"
+        )
+
+        experiment_db.update_session_tokens(
+            session_id="preserve-test",
+            input_tokens=1000,
+            output_tokens=500,
+            estimated_cost_usd=0.05,
+        )
+        experiment_db.update_session_tokens(session_id="preserve-test")
+
+        session = experiment_db.get_session("preserve-test")
+        assert session.input_tokens == 1000
+        assert session.estimated_cost_usd == pytest.approx(0.05)
+
+    def test_new_session_cost_starts_unknown(self, experiment_db):
+        """A session that never records usage reports unknown cost, not $0."""
+        experiment_db.start_session(
+            model="test-model", cwd="/tmp", session_id="fresh-test"
+        )
+
+        session = experiment_db.get_session("fresh-test")
+        assert session.estimated_cost_usd is None
+
+    def test_missing_session_is_a_no_op(self, experiment_db):
+        """Writing to an unknown session id must not raise."""
+        experiment_db.update_session_tokens(
+            session_id="does-not-exist", input_tokens=100
+        )
+
+
+class TestRunCostLedger:
+    """Tests for per-run token usage and cost persistence."""
+
+    def test_run_token_ledger_round_trips(self, experiment_db, sample_encoding_run):
+        from axiom_encode.harness.encoding_db import TokenUsage
+
+        sample_encoding_run.tokens = TokenUsage(
+            input_tokens=76_000,
+            output_tokens=3_700,
+            cache_read_tokens=1_200,
+            cache_creation_tokens=800,
+            reasoning_output_tokens=400,
+        )
+        sample_encoding_run.estimated_cost_usd = 0.3322
+        sample_encoding_run.actual_cost_usd = 0.31
+        sample_encoding_run.generation_attempt_count = 2
+        experiment_db.log_run(sample_encoding_run)
+
+        retrieved = experiment_db.get_run(sample_encoding_run.id)
+        assert retrieved.tokens.input_tokens == 76_000
+        assert retrieved.tokens.output_tokens == 3_700
+        assert retrieved.tokens.cache_read_tokens == 1_200
+        assert retrieved.tokens.cache_creation_tokens == 800
+        assert retrieved.tokens.reasoning_output_tokens == 400
+        assert retrieved.estimated_cost_usd == pytest.approx(0.3322)
+        assert retrieved.actual_cost_usd == pytest.approx(0.31)
+        assert retrieved.generation_attempt_count == 2
+
+    def test_run_cost_defaults_to_unknown(self, experiment_db, sample_encoding_run):
+        """Runs without usage keep cost as None (unknown), never zero."""
+        experiment_db.log_run(sample_encoding_run)
+
+        retrieved = experiment_db.get_run(sample_encoding_run.id)
+        assert retrieved.tokens.input_tokens == 0
+        assert retrieved.estimated_cost_usd is None
+        assert retrieved.actual_cost_usd is None
+        assert retrieved.generation_attempt_count == 0
+
+
+class TestLegacySessionCostBackfill:
+    """Pre-ledger databases defaulted session cost to 0; unmeasured rows heal."""
+
+    def _make_legacy_db(self, db_path):
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                run_id TEXT,
+                started_at TEXT,
+                ended_at TEXT,
+                model TEXT,
+                cwd TEXT,
+                event_count INTEGER DEFAULT 0,
+                total_tokens INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_creation_tokens INTEGER DEFAULT 0,
+                estimated_cost_usd REAL DEFAULT 0,
+                axiom_encode_version TEXT DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, started_at) VALUES ('legacy-unmeasured', '2024-01-01T00:00:00')"
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, started_at, input_tokens, estimated_cost_usd) "
+            "VALUES ('legacy-free', '2024-01-01T00:00:00', 12, 0)"
+        )
+        conn.commit()
+        conn.close()
+
+    def test_unmeasured_legacy_session_cost_becomes_unknown(self, tmp_path):
+        from axiom_encode.harness.encoding_db import EncodingDB
+
+        db_path = tmp_path / "encodings.db"
+        self._make_legacy_db(db_path)
+
+        db = EncodingDB(db_path)
+        assert db.get_session("legacy-unmeasured").estimated_cost_usd is None
+        # A measured $0 (tokens recorded) is a real value and survives.
+        assert db.get_session("legacy-free").estimated_cost_usd == 0.0
+        # Re-opening is idempotent.
+        assert EncodingDB(db_path).get_session("legacy-free").estimated_cost_usd == 0.0

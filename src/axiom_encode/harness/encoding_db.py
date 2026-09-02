@@ -11,10 +11,23 @@ import json
 import os
 import sqlite3
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
+
+# Per-run token/cost ledger columns, shared with the Supabase sync so the
+# local schema, the payload, and the fallback ladder cannot drift apart.
+RUN_COST_COLUMNS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+    "reasoning_output_tokens",
+    "estimated_cost_usd",
+    "actual_cost_usd",
+    "generation_attempt_count",
+)
 
 RUN_COLUMNS = (
     "id",
@@ -35,6 +48,24 @@ RUN_COLUMNS = (
     "lessons",
     "axiom_encode_version",
     "outcome_json",
+) + RUN_COST_COLUMNS
+
+SESSION_COLUMNS = (
+    "id",
+    "run_id",
+    "started_at",
+    "ended_at",
+    "model",
+    "cwd",
+    "event_count",
+    "total_tokens",
+    "axiom_encode_version",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+    "reasoning_output_tokens",
+    "estimated_cost_usd",
 )
 
 
@@ -53,26 +84,17 @@ class TokenUsage:
         return self.input_tokens + self.output_tokens
 
     @property
-    def non_cached_input_tokens(self) -> int:
-        """Prompt tokens billed at the standard input rate."""
-        return max(
-            self.input_tokens - self.cache_read_tokens - self.cache_creation_tokens,
-            0,
-        )
+    def has_recorded_usage(self) -> bool:
+        """True when any token counter is non-zero (usage was measured)."""
+        return any(getattr(self, name) for name in TOKEN_USAGE_FIELDS)
 
-    @property
-    def estimated_cost_usd(self) -> float:
-        """Cost estimate using Opus 4.5 pricing (updated Feb 2026).
 
-        Rates: $5/M input, $25/M output, $0.50/M cache read, $6.25/M cache create.
-        Source: https://platform.claude.com/docs/en/about-claude/pricing
-        """
-        return (
-            self.non_cached_input_tokens * 5 / 1_000_000
-            + self.output_tokens * 25 / 1_000_000
-            + self.cache_read_tokens * 0.50 / 1_000_000
-            + self.cache_creation_tokens * 6.25 / 1_000_000
-        )
+# TokenUsage counters by name, so the attempt aggregation, the recorded-usage
+# check, and the sync payload cannot silently disagree on the field list.
+TOKEN_USAGE_FIELDS = tuple(f.name for f in fields(TokenUsage))
+
+# Session token columns added by migration 007 (nullable remotely).
+SESSION_LEDGER_COLUMNS = ("cache_creation_tokens", "reasoning_output_tokens")
 
 
 # Session event types
@@ -137,6 +159,12 @@ class Session:
     axiom_encode_version: str = ""
     event_count: int = 0
     total_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    reasoning_output_tokens: int = 0
+    estimated_cost_usd: Optional[float] = None
 
 
 @dataclass
@@ -254,6 +282,13 @@ class EncodingRun:
     axiom_encode_version: str = ""
     outcome: dict = field(default_factory=dict)
 
+    # Model usage across all generation attempts (cache-aware)
+    tokens: TokenUsage = field(default_factory=TokenUsage)
+    # None means "unknown" (some attempt lacked usage/pricing), never 0.
+    estimated_cost_usd: Optional[float] = None
+    actual_cost_usd: Optional[float] = None
+    generation_attempt_count: int = 0
+
     # Session linkage
     session_id: Optional[str] = None
 
@@ -336,7 +371,15 @@ class EncodingDB:
                 review_results_json TEXT,
                 lessons TEXT DEFAULT '',
                 axiom_encode_version TEXT DEFAULT '',
-                outcome_json TEXT DEFAULT '{}'
+                outcome_json TEXT DEFAULT '{}',
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_creation_tokens INTEGER DEFAULT 0,
+                reasoning_output_tokens INTEGER DEFAULT 0,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                generation_attempt_count INTEGER DEFAULT 0
             )
         """)
 
@@ -351,6 +394,14 @@ class EncodingDB:
             ("lessons", "TEXT", "''"),
             ("axiom_encode_version", "TEXT", "''"),
             ("outcome_json", "TEXT", "'{}'"),
+            ("input_tokens", "INTEGER", "0"),
+            ("output_tokens", "INTEGER", "0"),
+            ("cache_read_tokens", "INTEGER", "0"),
+            ("cache_creation_tokens", "INTEGER", "0"),
+            ("reasoning_output_tokens", "INTEGER", "0"),
+            ("estimated_cost_usd", "REAL", None),
+            ("actual_cost_usd", "REAL", None),
+            ("generation_attempt_count", "INTEGER", "0"),
         ]:
             try:
                 stmt = f"ALTER TABLE encoding_runs ADD COLUMN {col} {col_type}"
@@ -437,6 +488,7 @@ class EncodingDB:
             "output_tokens",
             "cache_read_tokens",
             "cache_creation_tokens",
+            "reasoning_output_tokens",
             "estimated_cost_usd",
             "axiom_encode_version",
         ]:
@@ -444,12 +496,30 @@ class EncodingDB:
                 if col == "axiom_encode_version":
                     col_type = "TEXT DEFAULT ''"
                 elif col == "estimated_cost_usd":
-                    col_type = "REAL DEFAULT 0"
+                    # No default: NULL means "cost unknown", which must stay
+                    # distinguishable from a measured $0.
+                    col_type = "REAL"
                 else:
                     col_type = "INTEGER DEFAULT 0"
                 cursor.execute(f"ALTER TABLE sessions ADD COLUMN {col} {col_type}")
             except sqlite3.OperationalError:
                 pass  # Column already exists
+
+        # Databases migrated before the ledger created that column as
+        # "REAL DEFAULT 0", and SQLite cannot drop a column default. A session
+        # with no recorded usage and a $0 cost was never measured, so restore
+        # NULL (unknown) for those rows. The update is idempotent.
+        cursor.execute(
+            """
+            UPDATE sessions SET estimated_cost_usd = NULL
+            WHERE estimated_cost_usd = 0
+              AND COALESCE(input_tokens, 0) = 0
+              AND COALESCE(output_tokens, 0) = 0
+              AND COALESCE(cache_read_tokens, 0) = 0
+              AND COALESCE(cache_creation_tokens, 0) = 0
+              AND COALESCE(reasoning_output_tokens, 0) = 0
+            """
+        )
 
         conn.commit()
         conn.close()
@@ -521,8 +591,12 @@ class EncodingDB:
             (id, timestamp, citation, file_path, source_text, complexity_json,
              iterations_json, total_duration_ms, agent_type, agent_model,
              rulespec_content, session_id, iteration, parent_run_id,
-             review_results_json, lessons, axiom_encode_version, outcome_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             review_results_json, lessons, axiom_encode_version, outcome_json,
+             input_tokens, output_tokens, cache_read_tokens,
+             cache_creation_tokens, reasoning_output_tokens,
+             estimated_cost_usd, actual_cost_usd, generation_attempt_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 run.id,
@@ -543,6 +617,14 @@ class EncodingDB:
                 run.lessons,
                 run.axiom_encode_version,
                 json.dumps(run.outcome or {}),
+                run.tokens.input_tokens,
+                run.tokens.output_tokens,
+                run.tokens.cache_read_tokens,
+                run.tokens.cache_creation_tokens,
+                run.tokens.reasoning_output_tokens,
+                run.estimated_cost_usd,
+                run.actual_cost_usd,
+                run.generation_attempt_count,
             ),
         )
 
@@ -713,6 +795,24 @@ class EncodingDB:
         lessons = values["lessons"]
         axiom_encode_version = values["axiom_encode_version"]
         outcome_json = values["outcome_json"]
+        tokens = TokenUsage(
+            input_tokens=int(values["input_tokens"] or 0),
+            output_tokens=int(values["output_tokens"] or 0),
+            cache_read_tokens=int(values["cache_read_tokens"] or 0),
+            cache_creation_tokens=int(values["cache_creation_tokens"] or 0),
+            reasoning_output_tokens=int(values["reasoning_output_tokens"] or 0),
+        )
+        estimated_cost_usd = (
+            float(values["estimated_cost_usd"])
+            if values["estimated_cost_usd"] is not None
+            else None
+        )
+        actual_cost_usd = (
+            float(values["actual_cost_usd"])
+            if values["actual_cost_usd"] is not None
+            else None
+        )
+        generation_attempt_count = int(values["generation_attempt_count"] or 0)
 
         # Parse complexity
         c = json.loads(complexity_json) if complexity_json else {}
@@ -798,6 +898,10 @@ class EncodingDB:
             axiom_encode_version=axiom_encode_version or "",
             outcome=json.loads(outcome_json) if outcome_json else {},
             rulespec_content=rulespec_content or "",
+            tokens=tokens,
+            estimated_cost_usd=estimated_cost_usd,
+            actual_cost_usd=actual_cost_usd,
+            generation_attempt_count=generation_attempt_count,
             session_id=session_id,
         )
 
@@ -830,9 +934,10 @@ class EncodingDB:
         cursor.execute(
             """
             INSERT INTO sessions (
-                id, run_id, started_at, model, cwd, event_count, total_tokens, axiom_encode_version
+                id, run_id, started_at, model, cwd, event_count, total_tokens,
+                estimated_cost_usd, axiom_encode_version
             )
-            VALUES (?, ?, ?, ?, ?, 0, 0, ?)
+            VALUES (?, ?, ?, ?, ?, 0, 0, NULL, ?)
         """,
             (
                 session.id,
@@ -928,9 +1033,8 @@ class EncodingDB:
         cursor = conn.cursor()
 
         cursor.execute(
-            """
-            SELECT id, run_id, started_at, ended_at, model, cwd,
-                   event_count, total_tokens, axiom_encode_version
+            f"""
+            SELECT {", ".join(SESSION_COLUMNS)}
             FROM sessions
             WHERE id = ?
         """,
@@ -942,16 +1046,40 @@ class EncodingDB:
         if not row:
             return None
 
+        return self._row_to_session(row)
+
+    @staticmethod
+    def _row_to_session(row) -> Session:
+        """Convert a SESSION_COLUMNS-ordered row to a Session."""
+        if len(row) != len(SESSION_COLUMNS):
+            raise ValueError(
+                f"Expected {len(SESSION_COLUMNS)} session columns, got {len(row)}"
+            )
+        values = dict(zip(SESSION_COLUMNS, row))
         return Session(
-            id=row[0],
-            run_id=row[1],
-            started_at=datetime.fromisoformat(row[2]) if row[2] else datetime.now(),
-            ended_at=datetime.fromisoformat(row[3]) if row[3] else None,
-            model=row[4] or "",
-            cwd=row[5] or "",
-            axiom_encode_version=row[8] or "",
-            event_count=row[6] or 0,
-            total_tokens=row[7] or 0,
+            id=values["id"],
+            run_id=values["run_id"],
+            started_at=datetime.fromisoformat(values["started_at"])
+            if values["started_at"]
+            else datetime.now(),
+            ended_at=datetime.fromisoformat(values["ended_at"])
+            if values["ended_at"]
+            else None,
+            model=values["model"] or "",
+            cwd=values["cwd"] or "",
+            axiom_encode_version=values["axiom_encode_version"] or "",
+            event_count=values["event_count"] or 0,
+            total_tokens=values["total_tokens"] or 0,
+            input_tokens=values["input_tokens"] or 0,
+            output_tokens=values["output_tokens"] or 0,
+            cache_read_tokens=values["cache_read_tokens"] or 0,
+            cache_creation_tokens=values["cache_creation_tokens"] or 0,
+            reasoning_output_tokens=values["reasoning_output_tokens"] or 0,
+            estimated_cost_usd=(
+                float(values["estimated_cost_usd"])
+                if values["estimated_cost_usd"] is not None
+                else None
+            ),
         )
 
     def get_session_events(self, session_id: str) -> list[SessionEvent]:
@@ -997,9 +1125,8 @@ class EncodingDB:
         cursor = conn.cursor()
 
         cursor.execute(
-            """
-            SELECT id, run_id, started_at, ended_at, model, cwd,
-                   event_count, total_tokens, axiom_encode_version
+            f"""
+            SELECT {", ".join(SESSION_COLUMNS)}
             FROM sessions
             ORDER BY started_at DESC
             LIMIT ?
@@ -1010,25 +1137,7 @@ class EncodingDB:
         rows = cursor.fetchall()
         conn.close()
 
-        sessions = []
-        for row in rows:
-            sessions.append(
-                Session(
-                    id=row[0],
-                    run_id=row[1],
-                    started_at=datetime.fromisoformat(row[2])
-                    if row[2]
-                    else datetime.now(),
-                    ended_at=datetime.fromisoformat(row[3]) if row[3] else None,
-                    model=row[4] or "",
-                    cwd=row[5] or "",
-                    axiom_encode_version=row[8] or "",
-                    event_count=row[6] or 0,
-                    total_tokens=row[7] or 0,
-                )
-            )
-
-        return sessions
+        return [self._row_to_session(row) for row in rows]
 
     def get_session_stats(self) -> dict:
         """Get session statistics."""
@@ -1075,36 +1184,72 @@ class EncodingDB:
     def update_session_tokens(
         self,
         session_id: str,
+        *,
         input_tokens: int = 0,
         output_tokens: int = 0,
         cache_read_tokens: int = 0,
         cache_creation_tokens: int = 0,
+        reasoning_output_tokens: int = 0,
         estimated_cost_usd: float | None = None,
     ) -> None:
-        """Update token usage and its provider/model-aware cost estimate."""
+        """Accumulate token usage and its provider/model-aware cost estimate.
+
+        Token counts add onto whatever the session has already recorded, so
+        each pipeline stage (generation, repair, review) can report its own
+        usage without clobbering earlier writes. The cost estimate follows
+        the same rule, except that a token-spending increment with an unknown
+        cost (``None``) poisons the session total to ``None``: a partial sum
+        would read as a real, too-low figure. A zero-token increment without
+        a cost leaves the total untouched, and once poisoned while tokens are
+        recorded the total stays ``None``. The whole write is one UPDATE so
+        concurrent stages cannot lose each other's cost contribution.
+        """
+        increment_token_sum = (
+            input_tokens
+            + output_tokens
+            + cache_read_tokens
+            + cache_creation_tokens
+            + reasoning_output_tokens
+        )
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
         cursor.execute(
             """
             UPDATE sessions
-            SET input_tokens = ?,
-                output_tokens = ?,
-                cache_read_tokens = ?,
-                cache_creation_tokens = ?,
-                total_tokens = ?,
-                estimated_cost_usd = ?
-            WHERE id = ?
+            SET estimated_cost_usd = CASE
+                    WHEN :has_cost = 0 AND :increment_tokens > 0 THEN NULL
+                    WHEN :has_cost = 0 THEN estimated_cost_usd
+                    WHEN estimated_cost_usd IS NULL
+                         AND COALESCE(input_tokens, 0)
+                             + COALESCE(output_tokens, 0)
+                             + COALESCE(cache_read_tokens, 0)
+                             + COALESCE(cache_creation_tokens, 0)
+                             + COALESCE(reasoning_output_tokens, 0) > 0
+                        THEN NULL
+                    ELSE COALESCE(estimated_cost_usd, 0.0) + :cost
+                END,
+                input_tokens = COALESCE(input_tokens, 0) + :input,
+                output_tokens = COALESCE(output_tokens, 0) + :output,
+                cache_read_tokens = COALESCE(cache_read_tokens, 0) + :cache_read,
+                cache_creation_tokens =
+                    COALESCE(cache_creation_tokens, 0) + :cache_creation,
+                reasoning_output_tokens =
+                    COALESCE(reasoning_output_tokens, 0) + :reasoning,
+                total_tokens = COALESCE(total_tokens, 0) + :input + :output
+            WHERE id = :session_id
         """,
-            (
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                cache_creation_tokens,
-                input_tokens + output_tokens,
-                estimated_cost_usd,
-                session_id,
-            ),
+            {
+                "session_id": session_id,
+                "input": input_tokens,
+                "output": output_tokens,
+                "cache_read": cache_read_tokens,
+                "cache_creation": cache_creation_tokens,
+                "reasoning": reasoning_output_tokens,
+                "increment_tokens": increment_token_sum,
+                "has_cost": 0 if estimated_cost_usd is None else 1,
+                "cost": float(estimated_cost_usd or 0.0),
+            },
         )
 
         conn.commit()
