@@ -143,6 +143,41 @@ def _rewrite_metadata(
     return destination
 
 
+def _add_generated_payloads(
+    source_archive: Path,
+    destination: Path,
+    metadata: dict,
+    payloads: dict[str, bytes],
+) -> Path:
+    metadata["files"].extend(
+        {
+            "path": path,
+            "size": len(body),
+            "sha256": hashlib.sha256(body).hexdigest(),
+        }
+        for path, body in sorted(payloads.items())
+    )
+    metadata["files"].sort(key=lambda entry: entry["path"])
+    with (
+        tarfile.open(source_archive, "r") as source,
+        tarfile.open(destination, "w") as target,
+    ):
+        for member in source.getmembers():
+            extracted = source.extractfile(member)
+            assert extracted is not None
+            body = extracted.read()
+            if member.name == "metadata.json":
+                body = json.dumps(metadata).encode()
+            info = tarfile.TarInfo(member.name)
+            info.size = len(body)
+            target.addfile(info, io.BytesIO(body))
+        for path, body in payloads.items():
+            info = tarfile.TarInfo(f"generated/{path}")
+            info.size = len(body)
+            target.addfile(info, io.BytesIO(body))
+    return destination
+
+
 def _args(tmp_path: Path, archive: Path, **overrides) -> Namespace:
     values = {
         "archive": archive,
@@ -358,6 +393,92 @@ def test_extracts_exactly_bound_final_composed_target_candidate(tmp_path):
     )
 
     assert result["runner"] == "openai-gpt-5.6-sol"
+
+
+def test_extracts_digest_bound_source_candidates_from_final_composition(tmp_path):
+    source_citations = [
+        "us/statute/7/2015/f",
+        "us/guidance/usda/fns/snap-obbb-alien-eligibility-implementation-memo",
+    ]
+    source_paths = [
+        "us/statutes/7/2015/f.yaml",
+        "us/policies/usda/fns/snap-obbb-alien-eligibility-implementation-memo.yaml",
+    ]
+    atomic_source_input = json.dumps(
+        {
+            "schema": "axiom-encode/atomic-source-transaction/v2",
+            "source_bundle": source_citations,
+            "canonical_refresh_bundle": [],
+            "primary_required_test_cases": [],
+        }
+    )
+    archive, metadata = _archive(tmp_path)
+    del metadata["source_bundle_input"]
+    metadata["atomic_source_input"] = atomic_source_input
+    metadata["generated_lanes"] = [
+        "source-01",
+        "source-02",
+        "target",
+        "target-preflight",
+    ]
+    source_one = b"format: rulespec/v1\n# final statute source\nrules: []\n"
+    source_two = b"format: rulespec/v1\n# final guidance source\nrules: []\n"
+    payloads = {
+        "source-01/openai-gpt-5.6-terra/statutes/7/2015/f.yaml": b"older\n",
+        "source-01/openai-gpt-5.6-terra/statutes/7/2015/f.test.yaml": b"[]\n",
+        "source-01/openai-gpt-5.6-sol/statutes/7/2015/f.yaml": source_one,
+        "source-01/openai-gpt-5.6-sol/statutes/7/2015/f.test.yaml": b"[]\n",
+        "source-02/openai-gpt-5.6-sol/policies/usda/fns/snap-obbb-alien-eligibility-implementation-memo.yaml": source_two,
+        "source-02/openai-gpt-5.6-sol/policies/usda/fns/snap-obbb-alien-eligibility-implementation-memo.test.yaml": b"[]\n",
+    }
+    replacement = _add_generated_payloads(
+        archive,
+        tmp_path / "composed-with-sources.tar",
+        metadata,
+        payloads,
+    )
+
+    result = extract_candidate(
+        _args(
+            tmp_path,
+            replacement,
+            atomic_source_json=atomic_source_input,
+            source_rulespec_paths_json=json.dumps(source_paths),
+        )
+    )
+
+    assert [candidate["citation"] for candidate in result["source_candidates"]] == (
+        source_citations
+    )
+    first, second = result["source_candidates"]
+    assert first["runner"] == "openai-gpt-5.6-sol"
+    assert (Path(first["root"]) / first["path"]).read_bytes() == source_one
+    assert (Path(second["root"]) / second["path"]).read_bytes() == source_two
+
+
+def test_rejects_source_candidates_without_final_composed_target(tmp_path):
+    atomic_source_input = json.dumps(
+        {
+            "schema": "axiom-encode/atomic-source-transaction/v2",
+            "source_bundle": ["us/statute/7/2015/f"],
+            "canonical_refresh_bundle": [],
+            "primary_required_test_cases": [],
+        }
+    )
+    archive, metadata = _archive(tmp_path)
+    replacement = _rewrite_as_source_preflight(
+        archive, tmp_path / "source-preflight.tar", metadata, atomic_source_input
+    )
+
+    with pytest.raises(ValueError, match="final composed target artifact"):
+        extract_candidate(
+            _args(
+                tmp_path,
+                replacement,
+                atomic_source_json=atomic_source_input,
+                source_rulespec_paths_json=json.dumps(["us/statutes/7/2015/f.yaml"]),
+            )
+        )
 
 
 def test_rejects_final_composed_target_with_incomplete_source_lanes(tmp_path):
