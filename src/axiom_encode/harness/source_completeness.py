@@ -17735,11 +17735,13 @@ def _formula_execution_matches_source_branch(
     )
 
 
-def _temporal_occurrence_is_formula_applicability_preface(
-    occurrence: NumericOccurrenceLike,
+# Every temporal occurrence in a source text asks the same question of the
+# same text, so the sentence scan is computed once per text and shared.
+@functools.lru_cache(maxsize=4096)
+def _formula_applicability_preface_spans(
     source_text: str,
-) -> bool:
-    """Separate leading temporal applicability from arithmetic operands."""
+) -> tuple[tuple[int, int], ...]:
+    """Locate every sentence-leading temporal applicability preface."""
 
     starts = [0]
     starts.extend(
@@ -17749,16 +17751,27 @@ def _temporal_occurrence_is_formula_applicability_preface(
             source_text,
         )
     )
+    spans: list[tuple[int, int]] = []
     for start in starts:
         preface = _FORMULA_APPLICABILITY_PREFACE.match(source_text[start:])
         if preface is None:
             continue
-        if (
-            occurrence.start >= start + preface.start()
-            and occurrence.end <= start + preface.end()
-        ):
-            return True
-    return False
+        spans.append((start + preface.start(), start + preface.end()))
+    return tuple(spans)
+
+
+def _temporal_occurrence_is_formula_applicability_preface(
+    occurrence: NumericOccurrenceLike,
+    source_text: str,
+) -> bool:
+    """Separate leading temporal applicability from arithmetic operands."""
+
+    return any(
+        occurrence.start >= preface_start and occurrence.end <= preface_end
+        for preface_start, preface_end in _formula_applicability_preface_spans(
+            source_text
+        )
+    )
 
 
 def _formula_operation_kinds(text: str) -> set[str]:

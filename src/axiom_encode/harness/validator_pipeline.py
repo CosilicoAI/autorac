@@ -8260,6 +8260,11 @@ def _occurrence_value_matches(left: float, right: float) -> bool:
     )
 
 
+# Complete-source-unit analysis re-tokenizes the same branch texts once per
+# formula rule they are matched against; on one module ~95% of calls repeat
+# an already-seen text. The result is a tuple of frozen occurrences, so it
+# is safe to share.
+@functools.lru_cache(maxsize=4096)
 def _tokenize_numeric_occurrences_from_text(
     text: str,
     *,
