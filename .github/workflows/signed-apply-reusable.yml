@@ -67,6 +67,12 @@ on:
       app-private-key:
         description: "GitHub App private key used only by the open_pr job."
         required: true
+      supabase-url:
+        description: "Optional Supabase project URL for the encoding cost ledger; when omitted the encoder logs supabase_sync=skipped."
+        required: false
+      supabase-secret-key:
+        description: "Optional Supabase service-role key for the encoding cost ledger; must be passed together with supabase-url."
+        required: false
 
 permissions:
   contents: read
@@ -441,6 +447,13 @@ jobs:
           # the supervised encoder. No other command inherits it.
           AXIOM_ENCODE_APPLY_SIGNING_KEY: ${{ secrets['apply-signing-key'] }}
           OPENAI_API_KEY: ${{ secrets['openai-api-key'] }}
+          # Ship each run's cost ledger row (tokens, spend, attempt count) to
+          # the ops dashboard. The supervisor forwards these two names into
+          # the encoder's rebuilt environment; without them the encoder logs
+          # the run to $RUNNER_TEMP/enc.db, prints "supabase_sync=skipped",
+          # and the ledger is discarded with the runner (encode#1577).
+          AXIOM_ENCODE_SUPABASE_URL: ${{ secrets['supabase-url'] }}
+          AXIOM_ENCODE_SUPABASE_SECRET_KEY: ${{ secrets['supabase-secret-key'] }}
           CITATION: ${{ matrix.item.citation }}
           INITIAL_MODEL: ${{ inputs['initial-model'] }}
           ESCALATE_AFTER: ${{ inputs['escalate-after'] }}
