@@ -1086,6 +1086,12 @@ jobs:
           # still leaves attempt records in the job log.
           PYTHONUNBUFFERED: "1"
           AXIOM_ENCODE_APPLY_SIGNING_KEY: ${{ secrets.AXIOM_ENCODE_APPLY_SIGNING_KEY }}
+          # Ship each run's cost ledger row (tokens, spend, attempt count) to
+          # the ops dashboard. Without these the encoder logs the run locally
+          # on the runner and prints "supabase_sync=skipped", and the ledger
+          # is discarded with the runner's temp dir.
+          AXIOM_ENCODE_SUPABASE_URL: ${{ secrets.AXIOM_ENCODE_SUPABASE_URL }}
+          AXIOM_ENCODE_SUPABASE_SECRET_KEY: ${{ secrets.AXIOM_ENCODE_SUPABASE_SECRET_KEY }}
           ATOMIC_SOURCE_JSON: ${{ inputs.source_bundle_json }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CITATION: ${{ inputs.citation }}
