@@ -1510,6 +1510,19 @@ _FORM_IMPLIED_CENTS_PATTERN = re.compile(
     r"(?P<cents>\d{2})[ \t]*$"
     r"(?=(?:[ \t]*\r?\n){1,3}[ \t]*=)",
 )
+# Flattened PDF forms (Revenu Québec work charts, for example) print the
+# cents of an amount as a separate column with no decimal separator and no
+# line breaks between cells: "0 00 7,455 70 17,571 30". A cell only counts
+# when it sits in a run of adjacent cells or its dollars are comma-grouped,
+# so prose such as "196 50 people" is never joined. These only feed literal
+# grounding; the inventory keeps seeing the unjoined tokens.
+_INLINE_FORM_IMPLIED_CENTS_CELL = r"(?:\d{1,3}(?:,\d{3})+|\d{1,3}) \d{2}"
+_INLINE_FORM_IMPLIED_CENTS_RUN_PATTERN = re.compile(
+    rf"(?<![\d,.]){_INLINE_FORM_IMPLIED_CENTS_CELL}(?: {_INLINE_FORM_IMPLIED_CENTS_CELL})*(?![\d,.%:])"
+)
+_INLINE_FORM_IMPLIED_CENTS_CELL_PATTERN = re.compile(
+    r"(?P<dollars>\d{1,3}(?:,\d{3})+|\d{1,3}) (?P<cents>\d{2})"
+)
 _TABLE_ROW_LABEL_PATTERN = re.compile(
     r"\b(?:size|household size|unit size)\s+\d+(?:\s+or\s+more)?(?=\s*:)",
     re.IGNORECASE,
@@ -4819,6 +4832,25 @@ def _iter_form_implied_cents_matches(
             dollars = float(match.group("dollars").replace(",", "").replace(" ", ""))
             cents = float(match.group("cents"))
             matches.append((match.span(), dollars + cents / 100))
+    return matches
+
+
+def _iter_inline_form_implied_cents_matches(
+    text: str,
+) -> list[tuple[tuple[int, int], float]]:
+    """Match inline "dollars cents" form cells whose decimal separator is omitted."""
+
+    matches: list[tuple[tuple[int, int], float]] = []
+    for run in _INLINE_FORM_IMPLIED_CENTS_RUN_PATTERN.finditer(text):
+        cells = list(_INLINE_FORM_IMPLIED_CENTS_CELL_PATTERN.finditer(run.group(0)))
+        for cell in cells:
+            if len(cells) < 2 and "," not in cell.group("dollars"):
+                continue
+            with contextlib.suppress(ValueError):
+                dollars = float(cell.group("dollars").replace(",", ""))
+                cents = float(cell.group("cents"))
+                span = (run.start() + cell.start(), run.start() + cell.end())
+                matches.append((span, dollars + cents / 100))
     return matches
 
 
@@ -8324,6 +8356,8 @@ def _tokenize_numeric_occurrences_from_text(
         add_both(cleaned_before_schedule_view, span, value)
     for span, value in implied_cents_matches:
         add_both(source_view, span, value)
+    for span, value in _iter_inline_form_implied_cents_matches(text):
+        collector.add_grounding(source_view, span, value)
 
     grounding_spans: list[tuple[int, int]] = []
     inventory_spans: list[tuple[int, int]] = []
