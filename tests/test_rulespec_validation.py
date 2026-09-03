@@ -6426,7 +6426,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1758"')
+        .startswith('__version__ = "0.2.1759"')
     )
 
 
@@ -6658,13 +6658,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1758"
+    assert encoder_package["version"] == "0.2.1759"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1758"
+    assert project["project"]["version"] == "0.2.1759"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1758"')
+        .startswith('__version__ = "0.2.1759"')
     )
 
 
@@ -6926,13 +6926,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1758"
+    assert encoder_package["version"] == "0.2.1759"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1758"
+    assert project["project"]["version"] == "0.2.1759"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1758"')
+        .startswith('__version__ = "0.2.1759"')
     )
 
 
@@ -9768,6 +9768,37 @@ def test_tokenize_numeric_occurrences_memoizes_repeated_source_text():
     assert tokenize.cache_info().misses == 2
     assert {occurrence.value for occurrence in first.grounding} >= {1000.0, 0.15}
     assert {occurrence.value for occurrence in other.grounding} == {2000.0}
+
+
+def test_inline_form_cents_columns_ground_literals_without_inventory_claims():
+    chart = (
+        "A B C D Taxable income (see the instructions above) 2 – 3 0 00 53,255 00 "
+        "106,495 00 129,590 00 Subtract line 3 from line 2. = 4 × 5 14% 19% 24% "
+        "25.75% Multiply line 4 by line 5. = 6 + 7 0 00 7,455 70 17,571 30 "
+        "23,114 10 Add lines 6 and 7. Carry the result to line 401 of your return."
+    )
+
+    grounding = extract_numbers_from_text(chart)
+    assert {7455.7, 17571.3, 23114.1, 53255.0, 106495.0, 129590.0} <= grounding
+
+    inventory = {
+        occurrence.value
+        for occurrence in extract_typed_numeric_inventory_occurrences_from_text(chart)
+    }
+    assert 7455.7 not in inventory
+    assert 7455.0 in inventory
+
+    content = """format: rulespec/v1
+rules:
+  - name: tax_base_amount_bracket_2
+    kind: parameter
+    dtype: Money
+    unit: CAD
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 7455.70
+"""
+    assert find_ungrounded_numeric_issues(content, source_text=chart) == []
 
 
 def test_typed_numeric_occurrences_map_repeated_cleaned_values_exactly():
