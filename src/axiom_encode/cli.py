@@ -39432,9 +39432,17 @@ def _try_repair_generated_nonexact_proof_excerpts(
         return []
     if not isinstance(payload, dict):
         return []
-    embedded_source_text = extract_embedded_source_text(
-        content
-    ) or _extract_source_verification_text(content)
+    embedded_source_text = extract_embedded_source_text(content)
+    if not embedded_source_text:
+        try:
+            embedded_source_text = _extract_source_verification_text(content)
+        except CorpusResolutionError:
+            # Retry candidates can omit embedded source text while the
+            # process-local corpus resolver is deliberately unbound. A proof
+            # re-anchoring optimization must not abort the entire remaining
+            # model retry sequence in that state. If a LocalCorpusRelease was
+            # supplied, the per-citation lookup below remains authoritative.
+            embedded_source_text = ""
     if not embedded_source_text and corpus_release is None:
         return []
 

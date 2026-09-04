@@ -300,6 +300,7 @@ from axiom_encode.constants import (
 )
 from axiom_encode.corpus_resolver import (
     PROOF_EVIDENCE_SEGMENT_SEPARATOR,
+    CorpusResolutionError,
     LocalCorpusRelease,
     UnsafeCorpusPathError,
     normalize_corpus_identifier,
@@ -8739,6 +8740,53 @@ rules:
         "corpus_citation_path": "ca/policy/example",
         "excerpt": "$533 with 2 children",
     }
+
+
+def test_repair_nonexact_proof_excerpt_does_not_abort_without_bound_corpus(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "out"
+    rules_file = output_root / "model" / "policies" / "benefit.yaml"
+    rules_file.parent.mkdir(parents=True)
+    original = """format: rulespec/v1
+rules:
+- name: benefit
+  kind: derived
+  entity: Person
+  dtype: Decimal
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: formula
+        source:
+          corpus_citation_path: us/policy/example
+          excerpt: nonexact source text
+  versions:
+  - effective_from: '2026-01-01'
+    formula: 1
+"""
+    rules_file.write_text(original)
+    monkeypatch.setattr(
+        "axiom_encode.cli._extract_source_verification_text",
+        lambda _content: (_ for _ in ()).throw(
+            CorpusResolutionError(
+                "Corpus source resolution requires a bound LocalCorpusRelease"
+            )
+        ),
+    )
+
+    repaired = _try_repair_generated_nonexact_proof_excerpts_for_apply(
+        SimpleNamespace(output_file=str(rules_file)),
+        output_root=output_root,
+        issues=[
+            "Proof source evidence not found: rule `benefit` proof atom 0 "
+            "`source.excerpt` does not appear in `us/policy/example`."
+        ],
+    )
+
+    assert repaired == []
+    assert rules_file.read_text() == original
 
 
 def test_repair_generated_nonexact_proof_excerpt_uses_atom_numeric_profile(tmp_path):
