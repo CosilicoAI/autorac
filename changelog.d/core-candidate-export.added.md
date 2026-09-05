@@ -1,0 +1,1 @@
+Add an unsigned candidate export command that preserves exact RuleSpec source bytes in an explicit Axiom core build spec, with optional candidate digest pinning and no change to generation, validation, or signed apply.

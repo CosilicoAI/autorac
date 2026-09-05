@@ -375,6 +375,56 @@ at encode time:
 callers should not derive that pin from sliced prompt text. Oracle runners can
 append `module.validation` entries as results land.
 
+## Export candidates to Axiom core
+
+`export-core-build-spec` packages a candidate and explicitly selected dependencies
+for the real `axiom-core` compiler. It preserves their exact UTF-8 bytes, including
+line endings, and emits an `axiom/build-spec/v0` JSON file:
+
+```bash
+axiom-encode export-core-build-spec \
+  --root us:statutes/26/32/a/1 \
+  --candidate /tmp/encodings/statutes/26/32/a/1.yaml \
+  --module us:statutes/26/32/b /explicit/rulespec-us/us/statutes/26/32/b.yaml \
+  --out /tmp/candidate.build-spec.json
+```
+
+Supply each dependency as its whole module, even when an import selects a symbol
+with `#fragment`. The exporter does not infer dependencies from eval context,
+hydrate a workspace, parse or repair RuleSpec, or normalize module targets. The
+core compiler checks target syntax, the complete import closure, and executable
+validity; it rejects missing and unused modules. An export can therefore succeed
+while compilation fails.
+
+The JSON file contains only `format`, `root`, and `modules`. A separate stdout
+receipt reports `assurance: "unvalidated_candidate"`, the SHA-256 of the emitted
+JSON bytes (including the final newline), the candidate's exact-byte SHA-256,
+and the module count. To bind the export to a recorded generation, pass
+`--expect-candidate-sha256` with its 64-character lowercase hexadecimal
+`EvalResult.generated_output_sha256`. This hashes the generated RuleSpec file;
+it is distinct from the corpus-body `source_sha256` described above. Neither hash
+establishes legal validity or authority to install the candidate.
+
+Inputs must be regular UTF-8 files; final-component symlinks and special files are
+rejected. Parent directories are caller-selected and are not authenticated or
+confined by this command. Each source, the combined sources, and the serialized
+build spec are limited to 16 MiB. The output parent must already exist. The output
+is created exclusively with owner-only permissions, so an existing file or
+symlink is never overwritten. An interrupted write can leave a partial new file.
+Generation, validation, and signed `--apply` retain their existing behavior.
+
+Run the cross-repository tests with a built, real core executable:
+
+```bash
+AXIOM_CORE_BIN=/absolute/path/to/axiom-core/target/debug/axiom-core \
+  uv run pytest --no-cov -q tests/test_core_export_integration.py
+```
+
+Without `AXIOM_CORE_BIN`, these tests skip explicitly; a configured but unusable
+binary fails. Public encoder CI runs the exporter tests. The private core
+repository can run the cross-repository tests against a pinned encoder revision
+without granting this public repository access to core.
+
 ## Eval suites and readiness gates
 
 Use manifest-driven benchmark suites when you want an explicit readiness answer instead
