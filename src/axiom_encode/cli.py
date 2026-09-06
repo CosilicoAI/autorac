@@ -50155,6 +50155,12 @@ def _rewrite_generated_yaml_without_non_ascii_escapes(
         return False
     if target.is_symlink() or not target.is_file():
         return False
+    if _generated_artifact_is_multiply_linked(target):
+        # A hard link is a regular file that resolves inside the output root
+        # and still shares its bytes with a name somewhere else; writing it in
+        # place would change that other file too. A generated artifact has one
+        # name.
+        return False
     if contained_in is not None and not _generated_artifact_is_contained_in(
         target,
         contained_in,
@@ -50167,8 +50173,34 @@ def _rewrite_generated_yaml_without_non_ascii_escapes(
     rewritten = _unescape_non_ascii_yaml_escapes(text)
     if rewritten is None:
         return False
-    target.write_text(rewritten, encoding="utf-8")
+    # Replace the directory entry rather than the inode: even if a second name
+    # for these bytes appeared between the check above and the write, it keeps
+    # the bytes it had.
+    _replace_file_contents_atomically(target, rewritten)
     return True
+
+
+def _generated_artifact_is_multiply_linked(target: Path) -> bool:
+    """True when `target` has more than one name on its filesystem."""
+    try:
+        return target.stat().st_nlink > 1
+    except OSError:
+        return True
+
+
+def _replace_file_contents_atomically(target: Path, text: str) -> None:
+    """Write `text` to a sibling temporary file and rename it over `target`."""
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temporary, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
 
 
 _SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -54909,6 +54941,16 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                 [
                     f"{relative_output}: generated artifact must be a regular "
                     f"file, not a link: {artifact.name}"
+                ],
+                {},
+            )
+        if _generated_artifact_is_multiply_linked(artifact):
+            return (
+                False,
+                [
+                    f"{relative_output}: generated artifact shares its bytes "
+                    f"with another name (hard link); refusing to rewrite it: "
+                    f"{artifact.name}"
                 ],
                 {},
             )

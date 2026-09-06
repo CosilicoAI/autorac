@@ -14812,73 +14812,75 @@ def test_numeric_extraction_reads_hebrew_ordinal_and_cardinal_words():
 
 
 def test_numeric_extraction_handles_unicode_fraction_slash():
-    # Income Tax Ordinance section 36 grants a quarter of a credit point,
-    # typeset with the Unicode fraction slash (U+2044) rather than a
-    # precomposed vulgar fraction. The value and the printed numerator and
-    # denominator are all substantive: an encoding may state either form.
-    numbers = extract_numbers_from_text("תובא בחשבון 1\u20444 נקודת זיכוי")
-    assert {0.25, 1.0, 4.0} <= numbers
-    # A mixed number resolves to its total as well as its printed parts.
-    assert {1.5, 1.0, 2.0} <= extract_numbers_from_text(
-        "a factor of 1 1\u20442 applies"
+    # U+2044 exists only to typeset fractions, so a run around it is a fraction
+    # without any context test: Income Tax Ordinance section 36 prints a
+    # quarter credit point as 1⁄4. A mixed number arrives from the corpus with
+    # its whole number separated by a space (section 66(c)(4)(a)'s birth-year
+    # credit, "2 1⁄2"), and is read as two and a half.
+    assert 0.25 in extract_numbers_from_text("1\u20444 נקודת זיכוי")
+    ladder = extract_numbers_from_text(
+        "2 1\u20442, 4 1\u20442, 3 1\u20442 נקודות זיכוי"
     )
-    # The ASCII slash keeps its existing context guard: a date is not a
-    # fraction, and the fraction-slash rule must not loosen that.
-    assert 0.25 not in extract_numbers_from_text("signed 1/4/2020 by the registrar")
-    # Israeli consolidations flatten a marked-up mixed number into a digit run
-    # glued to the fraction: Income Tax Ordinance section 66(c)(4)(a) prints
-    # the birth-year child credit as "21<U+2044>2", two and a half credit
-    # points, which the OECD TaxBEN Israel table reports as 2.5. Reading the
-    # run as an improper fraction instead would ground 10.5, a value the
-    # section never states, so the mixed reading claims the run alone.
-    ladder = extract_numbers_from_text("21\u20442, 41\u20442, 31\u20442 נקודות זיכוי")
     assert {2.5, 4.5, 3.5} <= ladder
     assert not ({10.5, 20.5, 15.5} & ladder)
-    # A genuine improper fraction whose numerator or denominator is wider than
-    # the flattening produces is still read as written.
     assert 0.21 in extract_numbers_from_text("a share of 21\u2044100 applies")
 
 
-def test_flattened_mixed_fraction_reading_requires_hebrew_source_context():
-    # The glued shape carries two readings and only one of them is a value the
-    # source states, so the flattened reading is claimed only where the
-    # flattening actually happened. In the captured Income Tax Ordinance
-    # Wikisource snapshot the flattened runs are always a non-zero proper
-    # fraction sitting in Hebrew prose, because that is what a
-    # superscript-over-subscript vulgar fraction collapses into.
-    assert 2.5 in extract_numbers_from_text("21\u20442 נקודות")
-    # An ordinary multi-digit numerator in ordinary prose is an improper
-    # fraction and is read as one: eleven quarters, not one and a quarter.
-    ordinary = extract_numbers_from_text("a factor of 11\u20444 applies")
-    assert 2.75 in ordinary
-    assert 1.25 not in ordinary
-    # A zero numerator is not a typeset vulgar fraction in any script, so the
-    # run is read as written even though it has the glued shape.
+def test_a_fraction_slash_run_is_read_as_written():
+    # The corpus keeps the boundary OpenLaw's typesetting carried: a mixed
+    # number arrives as the whole number, a space and the fraction. That form
+    # is read as a mixed number, and a digit run glued to the slash is read as
+    # the improper fraction it spells -- nothing here guesses that markup was
+    # flattened, in Hebrew prose or anywhere else.
+    ladder = extract_numbers_from_text(
+        "2 1\u20442, 4 1\u20442, 3 1\u20442 נקודות זיכוי"
+    )
+    assert {2.5, 4.5, 3.5} <= ladder
+    assert not ({10.5, 20.5, 15.5} & ladder)
+    assert 16.5 in extract_numbers_from_text("פחת בשיעור של 16 1\u20442% לשנה")
+    assert 0.25 in extract_numbers_from_text("1\u20444 נקודת זיכוי")
+    # Eleven quarters is eleven quarters, beside Hebrew or beside English.
+    hebrew_improper = extract_numbers_from_text("מקדם 11\u20444 חל")
+    assert 2.75 in hebrew_improper
+    assert 1.25 not in hebrew_improper
+    english_improper = extract_numbers_from_text("a factor of 11\u20444 applies")
+    assert 2.75 in english_improper
+    assert 1.25 not in english_improper
+    glued = extract_numbers_from_text("21\u20442 נקודות")
+    assert 10.5 in glued
+    assert 2.5 not in glued
     halved = extract_numbers_from_text("10\u20442")
     assert 5.0 in halved
     assert 1.0 not in halved
-    # The fraction half has to be one a vulgar fraction could have been even
-    # inside Hebrew prose: a numerator at or above its denominator is not a
-    # collapsed superscript over a subscript, so the run is read as written.
-    hebrew_improper = extract_numbers_from_text("מקדם 14\u20442 אחריו")
-    assert 7.0 in hebrew_improper
-    assert 15.0 not in hebrew_improper
-    # A whole number that happens to be one digit keeps the flattened reading:
-    # Income Tax Ordinance sections 38 and 39 print one and a half this way.
-    assert 1.5 in extract_numbers_from_text("11\u20442 נקודות זיכוי")
 
 
-def test_flattened_mixed_fraction_consumes_the_run_it_reads():
-    # The mixed number is read off the raw buffer while the general numeric
-    # passes read the cleaned one, so the consumed run has to be mapped across
-    # the two. Without that the concatenated whole and numerator survives as a
-    # grounded literal ("21") the section never states, and as a source-recall
-    # obligation no encoding can discharge.
-    text = "21\u20442 נקודות זיכוי"
+def test_a_mixed_number_leaves_no_glued_literal_however_long_the_text():
+    # The reviewer's shape: repetitive source text long enough to defeat a
+    # sequence-matched offset map. There is no map to defeat now -- the run
+    # is read once, in place -- so the concatenated digits never surface as a
+    # literal the section states or as a recall obligation.
+    text = "2 1\u20442 נקודות זיכוי מוכפל ב־2.24; " * 10
     grounding = extract_numbers_from_text(text)
-    assert {1.0, 2.0, 2.5} == grounding
+    assert {2.5, 2.24} <= grounding
     assert 21.0 not in grounding
-    assert 21.0 not in extract_numeric_occurrences_from_text(text)
+    inventory = extract_numeric_occurrences_from_text(text)
+    assert 21.0 not in inventory
+    assert 2.5 in inventory
+
+
+def test_hebrew_number_words_join_the_recall_inventory():
+    # A value the statute writes as a word is one an encoding has to recall:
+    # National Insurance Law section 68(c) supplements a parent entitled for
+    # "three children or more" and prints no 3.
+    worded = extract_numeric_occurrences_from_text("זכאי לקצבה בעד שלושה ילדים או יותר")
+    assert 3.0 in worded
+    twelve = extract_numeric_occurrences_from_text("שנים־עשר חודשים")
+    assert 12.0 in twelve
+    assert not ({10.0, 2.0} & set(twelve))
+    # Grounding and inventory agree on the teen, and a plural of "year" stays
+    # out of both.
+    assert 12.0 in extract_numbers_from_text("שנים־עשר חודשים")
+    assert 12.0 not in extract_numeric_occurrences_from_text("בחמש השנים האחרונות")
 
 
 def test_hebrew_teen_words_accept_a_hyphen_or_a_maqaf():

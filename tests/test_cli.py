@@ -23087,6 +23087,87 @@ rules:
         )
         assert "א" in inside.read_text(encoding="utf-8")
 
+    def test_generated_yaml_unescape_refuses_a_hard_linked_target(self, tmp_path):
+        # A hard link passes every test a symlink fails -- it is a regular
+        # file, not a link, and it resolves where it sits -- and still shares
+        # its bytes with another name. Writing it in place would rewrite that
+        # other file.
+        outside = tmp_path / "outside.yaml"
+        original = 'format: rulespec/v1\nmodule:\n  summary: "\\u05d0"\n'
+        outside.write_text(original, encoding="utf-8")
+        link = tmp_path / "section-68.test.yaml"
+        os.link(outside, link)
+        assert link.stat().st_nlink == 2
+
+        assert (
+            _rewrite_generated_yaml_without_non_ascii_escapes(
+                link, contained_in=tmp_path
+            )
+            is False
+        )
+        assert outside.read_text(encoding="utf-8") == original
+        assert link.read_text(encoding="utf-8") == original
+
+    def test_generated_yaml_unescape_replaces_the_entry_not_the_inode(self, tmp_path):
+        # The rewrite lands as a new directory entry, so a name that shares
+        # the old bytes keeps them even if the link check were bypassed.
+        target = tmp_path / "section-68.yaml"
+        original = 'format: rulespec/v1\nmodule:\n  summary: "\\u05d0"\n'
+        target.write_text(original, encoding="utf-8")
+        before = target.stat().st_ino
+
+        assert (
+            _rewrite_generated_yaml_without_non_ascii_escapes(
+                target, contained_in=tmp_path
+            )
+            is True
+        )
+        assert "\u05d0" in target.read_text(encoding="utf-8")
+        assert target.stat().st_ino != before
+        assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+
+    def test_overlay_validation_refuses_a_hard_linked_companion_before_writing(
+        self, tmp_path
+    ):
+        escaped_companion = '- name: "\\u05de\\u05e7\\u05e8\\u05d4"\n'
+        outside = tmp_path / "outside" / "already-encoded.test.yaml"
+        outside.parent.mkdir(parents=True)
+        outside.write_text(escaped_companion, encoding="utf-8")
+        before = outside.read_bytes()
+
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "statutes" / "section-68.yaml"
+        rules_file.parent.mkdir(parents=True)
+        rules_file.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            '  summary: "\\u05e7\\u05e6\\u05d1\\u05ea"\n'
+            "rules: []\n",
+            encoding="utf-8",
+        )
+        module_before = rules_file.read_bytes()
+        test_file = _rulespec_test_path(rules_file)
+        os.link(outside, test_file)
+        result = SimpleNamespace(
+            output_file=rules_file,
+            runner="runner",
+            backend="test",
+        )
+
+        valid, issues, _ = _validate_generated_encoding_in_policy_overlay_with_release(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "il"),
+            axiom_rules_path=tmp_path / "engine",
+            local_corpus_release=None,
+        )
+
+        assert valid is False
+        assert any("hard link" in issue for issue in issues)
+        assert outside.read_bytes() == before
+        assert test_file.read_bytes() == before
+        assert rules_file.read_bytes() == module_before
+
     def test_overlay_validation_refuses_a_symlinked_companion_before_writing(
         self, tmp_path
     ):
