@@ -14868,6 +14868,53 @@ def test_a_mixed_number_leaves_no_glued_literal_however_long_the_text():
     assert 2.5 in inventory
 
 
+def test_a_fraction_is_one_value_for_recall_and_its_parts_ground():
+    # Income Tax Ordinance section 36 prints a quarter credit point as 1⁄4. An
+    # encoding that states 0.25 has recalled what the section states; the
+    # printed 1 and 4 are not two further values it owes. They stay available
+    # to grounding, because an encoding may state the pair the statute prints.
+    quarter = "1\u20444 נקודת זיכוי"
+    inventory = extract_numeric_occurrences_from_text(quarter)
+    assert 0.25 in inventory
+    assert not ({1.0, 4.0} & set(inventory))
+    assert {0.25, 1.0, 4.0} <= extract_numbers_from_text(quarter)
+    mixed = "2 1\u20442 נקודות זיכוי"
+    inventory = extract_numeric_occurrences_from_text(mixed)
+    assert 2.5 in inventory
+    assert not ({1.0, 2.0} & set(inventory))
+
+
+def test_a_fraction_slash_keeps_its_sign_and_needs_whole_operands():
+    signed = extract_numbers_from_text("מקדם -1\u20444 חל")
+    assert -0.25 in signed
+    assert 0.25 not in signed
+    assert -0.25 in extract_numbers_from_text("מקדם \u22121\u20444 חל")
+    # "1.5⁄2" is not five halves: the numerator would be a substring of a
+    # decimal, so no fraction is read and the decimal passes keep 1.5 and 2.
+    decimal = extract_numbers_from_text("מקדם 1.5\u20442 חל")
+    assert 2.5 not in decimal
+    assert 0.75 not in decimal
+    assert 1.5 in decimal
+    grouped = extract_numbers_from_text("1,000\u20443")
+    assert 1000 / 3 not in grouped
+    assert 0.0 not in grouped
+
+
+def test_maqaf_detachment_keeps_every_occurrence_s_provenance():
+    # The detachment inserts a space after each maqaf that precedes a digit,
+    # so the cleaned buffer is longer than the source and the two are aligned
+    # by sequence matching; on a long repetitive buffer the matcher's autojunk
+    # heuristic used to stop aligning, and every occurrence past the first
+    # claimed the first one's span.
+    text = "מ־2.24; " * 30
+    occurrences = extract_typed_numeric_inventory_occurrences_from_text(text)
+    assert len(occurrences) == 30
+    spans = [occurrence.span for occurrence in occurrences]
+    assert len(set(spans)) == 30
+    for occurrence in occurrences:
+        assert text[occurrence.start : occurrence.end] == "2.24"
+
+
 def test_hebrew_number_words_join_the_recall_inventory():
     # A value the statute writes as a word is one an encoding has to recall:
     # National Insurance Law section 68(c) supplements a parent entitled for

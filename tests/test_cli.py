@@ -250,6 +250,7 @@ from axiom_encode.cli import (
     _try_repair_generated_unsupported_entity_outputs_for_apply,
     _try_repair_generated_upstream_placement_duplicates_and_proofs_for_apply,
     _try_repair_generated_upstream_placement_duplicates_for_apply,
+    _unescape_non_ascii_yaml_escapes,
     _unit_scoped_person_definition_issue_names,
     _unit_scoped_person_definition_issue_units,
     _validate_generated_encoding_in_policy_overlay,
@@ -23086,6 +23087,28 @@ rules:
             is True
         )
         assert "א" in inside.read_text(encoding="utf-8")
+
+    def test_generated_yaml_unescape_declines_a_self_referential_alias(self):
+        # `a: &a [*a]` parses to a list that contains itself; comparing two of
+        # those recurses without end. An equivalence that cannot be proved is a
+        # rewrite that does not happen, not an exception out of the validator.
+        text = 'a: &a [*a]\nsummary: "\\u05d0"\n'
+        assert _unescape_non_ascii_yaml_escapes(text) is None
+
+    def test_generated_yaml_rewrite_leaves_a_self_referential_file_as_written(
+        self, tmp_path
+    ):
+        target = tmp_path / "section-68.test.yaml"
+        original = 'a: &a [*a]\nsummary: "\\u05d0"\n'
+        target.write_text(original, encoding="utf-8")
+
+        assert (
+            _rewrite_generated_yaml_without_non_ascii_escapes(
+                target, contained_in=tmp_path
+            )
+            is False
+        )
+        assert target.read_text(encoding="utf-8") == original
 
     def test_generated_yaml_unescape_refuses_a_hard_linked_target(self, tmp_path):
         # A hard link passes every test a symlink fails -- it is a regular

@@ -1504,11 +1504,18 @@ _CONTEXTUAL_ASCII_FRACTION_PATTERN = re.compile(
 # so unlike the ASCII "/" above it needs no context guard: Israeli statutory
 # text prints "1<U+2044>4 credit points" in Income Tax Ordinance section 36,
 # and a date or a ratio is never written with it.
+# A run is a fraction only at whole-token boundaries: a digit, a decimal or
+# grouping mark, or another slash on either side means the numerator or
+# denominator would be a substring of some other number ("1.5⁄2" is not five
+# halves), and the run is left to the passes that read decimals. A unary minus
+# set against the numerator (or the whole number of a mixed number) belongs to
+# the value.
 _FRACTION_SLASH_PATTERN = re.compile(
-    "(?<![\\d\u2044])"
+    "(?<![\\d\u2044])(?<!\\d[.,])"
+    "(?P<sign>[-\u2212])?"
     "(?:(?P<whole>\\d+)\\s+)?"
     "(?P<numerator>\\d+)\\s*\u2044\\s*(?P<denominator>\\d+)"
-    "(?![\\d\u2044])"
+    "(?![\\d\u2044])(?![.,]\\d)"
 )
 _SMALL_MONTH_RANGE_PATTERN = re.compile(
     r"\b(?P<start>\d{1,2})\s+(?:through|to)\s+"
@@ -6917,7 +6924,12 @@ class _NumericTextView:
         if parsed == source:
             return cls.identity(source)
         offsets: list[int | None] = [None] * len(parsed)
-        matcher = SequenceMatcher(a=source, b=parsed)
+        # autojunk would treat a character that recurs in more than one
+        # percent of a 200-plus-character buffer as junk and stop aligning on
+        # it; statutory text repeats its digits and its maqafs, and a cleaned
+        # buffer that differs from its source only by a space after each
+        # maqaf then lost provenance for every occurrence past the first.
+        matcher = SequenceMatcher(a=source, b=parsed, autojunk=False)
         for (
             operation,
             source_start,
@@ -8672,17 +8684,28 @@ def _tokenize_numeric_occurrences_from_text(
     # the corpus keeps for OpenLaw's superscript-over-subscript typesetting);
     # a digit run glued to the slash ("21⁄2") is twenty-one halves and nothing
     # here guesses otherwise -- the boundary is the corpus adapter's to keep.
-    for match in _FRACTION_SLASH_PATTERN.finditer(raw_text):
+    # The pass reads the cleaned buffer so the run's span sits in the same
+    # coordinates as the general digit passes below, which then leave the
+    # numerator, the denominator and the whole number alone: the fraction is
+    # one value the source states, atomic for recall, and an encoding that
+    # states a quarter of a credit point as 0.25 has recalled it in full. The
+    # printed numerator and denominator stay available to grounding, because
+    # an encoding may also state them as the explicit pair the statute prints.
+    for match in _FRACTION_SLASH_PATTERN.finditer(cleaned):
         with contextlib.suppress(ValueError, ZeroDivisionError):
             whole = float(match.group("whole") or 0)
             numerator = float(match.group("numerator"))
             denominator = float(match.group("denominator"))
-            # The printed numerator and denominator are as substantive as the
-            # fraction they compose: an encoding may state a quarter of a
-            # credit point as 0.25 or as the explicit pair the statute prints.
-            add_both(raw_view, match.span(), whole + numerator / denominator)
-            add_both(raw_view, match.span("numerator"), numerator)
-            add_both(raw_view, match.span("denominator"), denominator)
+            value = whole + numerator / denominator
+            if match.group("sign"):
+                value = -value
+            add_both(cleaned_view, match.span(), value)
+            collector.add_grounding(cleaned_view, match.span("numerator"), numerator)
+            collector.add_grounding(
+                cleaned_view, match.span("denominator"), denominator
+            )
+            grounding_spans.append(match.span())
+            inventory_spans.append(match.span())
 
     month_range_matches: list[tuple[tuple[int, int], float]] = []
     for match in _SMALL_MONTH_RANGE_PATTERN.finditer(raw_text):

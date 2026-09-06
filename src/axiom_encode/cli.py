@@ -50121,9 +50121,14 @@ def _unescape_non_ascii_yaml_escapes(text: str) -> str | None:
     try:
         before = yaml.safe_load(text)
         after = yaml.safe_load(rewritten)
+        # The comparison can recurse as deep as the document: a YAML alias
+        # that refers to its own anchor (`a: &a [*a]`) parses to a list that
+        # contains itself, and comparing two of those never terminates. An
+        # equivalence that cannot be proved is a rewrite that does not happen.
+        equivalent = before == after
     except (yaml.YAMLError, RecursionError):
         return None
-    if before != after:
+    if not equivalent:
         return None
     return rewritten
 
