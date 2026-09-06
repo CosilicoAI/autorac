@@ -50091,6 +50091,58 @@ def _enforce_no_apply_collision(*, source_file: Path, target_file: Path) -> None
     )
 
 
+_YAML_NON_ASCII_ESCAPE = re.compile(r"\\u([0-9A-Fa-f]{4})")
+
+
+def _unescape_non_ascii_yaml_escapes(text: str) -> str | None:
+    """Rewrite `\\uXXXX` escapes of non-ASCII characters as the characters themselves.
+
+    A model asked for a Hebrew, Amharic or Greek statute sometimes emits its
+    YAML with every non-Latin character escaped. A parser reads the two forms
+    identically, so nothing about the encoding changes -- but the file stops
+    being readable next to the provision it encodes, which is the whole point
+    of a verbatim proof excerpt.
+
+    Returns the rewritten text, or None when the rewrite is not provably
+    equivalent (unparseable YAML on either side, or a different parse), in
+    which case the caller must leave the file exactly as the model wrote it.
+    Escapes of ASCII characters are left alone; this pass exists for scripts.
+    """
+    if "\\u" not in text:
+        return None
+
+    def _replace(match: re.Match[str]) -> str:
+        character = chr(int(match.group(1), 16))
+        return character if ord(character) > 0x7F else match.group(0)
+
+    rewritten = _YAML_NON_ASCII_ESCAPE.sub(_replace, text)
+    if rewritten == text:
+        return None
+    try:
+        before = yaml.safe_load(text)
+        after = yaml.safe_load(rewritten)
+    except (yaml.YAMLError, RecursionError):
+        return None
+    if before != after:
+        return None
+    return rewritten
+
+
+def _rewrite_generated_yaml_without_non_ascii_escapes(target: Path) -> bool:
+    """Undo `\\uXXXX` escaping on a generated RuleSpec file. True when rewritten."""
+    if target.suffix not in {".yaml", ".yml"}:
+        return False
+    try:
+        text = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return False
+    rewritten = _unescape_non_ascii_yaml_escapes(text)
+    if rewritten is None:
+        return False
+    target.write_text(rewritten, encoding="utf-8")
+    return True
+
+
 _SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -54804,6 +54856,16 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
     immutable_issue = _immutable_rulespec_digest_issue(result, output_file)
     if immutable_issue is not None:
         return False, [immutable_issue], {}
+
+    # Undo the escaping the model chose to write, here rather than at install:
+    # everything downstream binds these bytes -- the validation snapshot's
+    # digests, the planned apply bytes, and the manifest's
+    # generated_output_sha256 -- so the file that lands in the repository is the
+    # readable one and every digest still agrees. A tests-only repair holds the
+    # module's bytes to a hash it was given, so only its companion is rewritten.
+    if vars(result).get(_IMMUTABLE_RULESPEC_SHA256_ATTR) is None:
+        _rewrite_generated_yaml_without_non_ascii_escapes(output_file)
+    _rewrite_generated_yaml_without_non_ascii_escapes(_rulespec_test_path(output_file))
 
     generated_content = output_file.read_text()
     output_test = _rulespec_test_path(output_file)
