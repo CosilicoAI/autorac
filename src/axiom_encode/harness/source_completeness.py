@@ -23973,7 +23973,8 @@ def _source_exception_condition_text(text: str) -> str:
     notwithstanding_tail = _louisiana_notwithstanding_reference_tail(clause)
     if notwithstanding_tail is not None:
         return notwithstanding_tail
-    marker = next(iter(_source_exception_or_applicability_matches(clause)), None)
+    markers = _source_exception_or_applicability_matches(clause)
+    marker = next(iter(markers), None)
     if marker is None:
         return clause
     suffix = clause[marker.start() :]
@@ -23992,6 +23993,23 @@ def _source_exception_condition_text(text: str) -> str:
     if condition_cue is not None:
         return suffix[condition_cue.start() :]
     prefix = clause[: marker.start()]
+    preposed_since = re.match(
+        r"\s*(?P<condition>since\s+(?!\d)[^,;]{0,220}\b"
+        r"(?:is|are|was|were|does|do|must|shall|will|can)\s+not\b"
+        r"[^,;]*)\s*,[\s\S]{0,400}\bnot\s*$",
+        prefix,
+        flags=re.IGNORECASE,
+    )
+    if (
+        marker.group(0).strip().lower() == "subject to"
+        and len(markers) == 1
+        and re.match(r"\s+a\s+claim\b", clause[marker.end() :], flags=re.IGNORECASE)
+        and preposed_since is not None
+    ):
+        # In ``Since <condition>, <party> is not subject to a claim``, the
+        # leading causal clause controls the claim outcome.  Later explicit
+        # condition cues took precedence above so they cannot be hidden.
+        return preposed_since.group("condition")
     preposed = re.match(
         r"\s*(?P<condition>(?:"
         r"(?:vorausgesetzt\s*,?\s+dass|"

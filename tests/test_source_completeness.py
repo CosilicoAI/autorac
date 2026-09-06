@@ -31628,6 +31628,132 @@ rules:
 """
 
 
+def test_preposed_since_condition_controls_later_subject_to_effect():
+    source = (
+        "Since households are not required to report a change in immigration "
+        "status, aliens who lose SNAP eligibility at recertification due to the "
+        "OBBB SNAP eligibility changes, are not subject to a claim for over "
+        "issuance for the benefits received after the OBBB changes took effect."
+    )
+    reporting = "change_in_immigration_status_is_required_to_be_reported"
+    content = _exception_control_content(
+        "household_is_at_recertification and "
+        "alien_loses_snap_eligibility_under_obbb and "
+        f"not {reporting}"
+    )
+    baseline = {
+        "household_is_at_recertification": True,
+        "alien_loses_snap_eligibility_under_obbb": True,
+        reporting: False,
+    }
+    cases = [
+        {"name": "baseline", "input": baseline, "output": {"result": True}},
+        {
+            "name": "reporting required",
+            "input": {**baseline, reporting: True},
+            "output": {"result": False},
+        },
+        {
+            "name": "not at recertification",
+            "input": {**baseline, "household_is_at_recertification": False},
+            "output": {"result": False},
+        },
+        {
+            "name": "eligibility retained",
+            "input": {**baseline, "alien_loses_snap_eligibility_under_obbb": False},
+            "output": {"result": False},
+        },
+    ]
+
+    assert completeness_module._source_exception_condition_text(source).startswith(
+        "Since households are not required to report a change in immigration status"
+    )
+    result = _analyze(content, source, test_cases=cases)
+    assert not _has_issue(result, "exception", "test")
+
+
+def test_preposed_since_condition_cannot_hide_later_explicit_condition():
+    source = (
+        "Since households are not required to report a change in immigration "
+        "status, aliens who lose SNAP eligibility at recertification are not "
+        "subject to a claim if the overissuance was caused by fraud."
+    )
+
+    condition = completeness_module._source_exception_condition_text(source)
+
+    assert condition.startswith("if the overissuance was caused by fraud")
+    content = _exception_control_content(
+        "household_is_at_recertification and "
+        "alien_loses_snap_eligibility_under_obbb and "
+        "not change_in_immigration_status_is_required_to_be_reported"
+    )
+    result = _analyze(
+        content,
+        source,
+        test_cases=[
+            {
+                "name": "baseline",
+                "input": {
+                    "household_is_at_recertification": True,
+                    "alien_loses_snap_eligibility_under_obbb": True,
+                    "change_in_immigration_status_is_required_to_be_reported": False,
+                },
+                "output": {"result": True},
+            }
+        ],
+    )
+    assert _has_issue(result, "exception", "test")
+
+
+def test_preposed_since_condition_cannot_hide_later_subject_to_condition():
+    source = (
+        "Since households are not required to report a change in immigration "
+        "status, aliens who lose SNAP eligibility at recertification are not "
+        "subject to a claim subject to agency approval."
+    )
+    content = _exception_control_content(
+        "household_is_at_recertification and "
+        "alien_loses_snap_eligibility_under_obbb and "
+        "not change_in_immigration_status_is_required_to_be_reported"
+    )
+    result = _analyze(
+        content,
+        source,
+        test_cases=[
+            {
+                "name": "baseline",
+                "input": {
+                    "household_is_at_recertification": True,
+                    "alien_loses_snap_eligibility_under_obbb": True,
+                    "change_in_immigration_status_is_required_to_be_reported": False,
+                },
+                "output": {"result": True},
+            }
+        ],
+    )
+
+    assert completeness_module._source_exception_condition_text(source).startswith(
+        "subject to a claim subject to agency approval"
+    )
+    assert _has_issue(result, "exception", "test")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "Since 2020, aliens are not subject to a claim.",
+        (
+            "Since 2020 households have received benefits, aliens are not "
+            "subject to a claim."
+        ),
+    ],
+)
+def test_temporal_since_clause_does_not_replace_subject_to_condition(source):
+    condition = completeness_module._source_exception_condition_text(source)
+
+    assert condition.startswith("subject to a claim")
+
+
 def test_exception_toggle_cannot_borrow_effect_from_changed_numeric_input():
     source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
     content = _exception_control_content(
