@@ -23973,6 +23973,18 @@ def _source_exception_condition_text(text: str) -> str:
     notwithstanding_tail = _louisiana_notwithstanding_reference_tail(clause)
     if notwithstanding_tail is not None:
         return notwithstanding_tail
+    preposed_since = re.match(
+        r"\s*(?P<condition>since\b[^,;]{0,240}\b"
+        r"(?:is|are|was|were|has|have|does|do|must|shall|will|can)\b"
+        r"[^,;]*)\s*,",
+        clause,
+        flags=re.IGNORECASE,
+    )
+    if preposed_since is not None:
+        # A causal ``Since <condition>, <effect>`` clause governs the effect
+        # even when the effect later contains vocabulary such as ``subject
+        # to`` that is independently recognized as an exception marker.
+        return preposed_since.group("condition")
     marker = next(iter(_source_exception_or_applicability_matches(clause)), None)
     if marker is None:
         return clause
