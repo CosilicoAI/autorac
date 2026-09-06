@@ -14754,6 +14754,66 @@ def test_numeric_extraction_handles_nigeria_naira_ascii_prefix():
     assert 2000.0 in extract_numbers_from_text("code N2,000 here")
 
 
+def test_numeric_extraction_handles_hebrew_maqaf_before_numeral():
+    # Hebrew attaches the one-letter prefix preposition to a numeral with a
+    # maqaf (U+05BE), the Hebrew hyphen: the Income Tax Ordinance section 121
+    # rate schedule reads mem-maqaf-84,120 ("from 84,120"). Without detaching
+    # the maqaf the grouped-thousands matcher never fires and the bound is
+    # misread as the trailing "120".
+    schedule = (
+        "\u05e2\u05dc \u05db\u05dc \u05e9\u05e7\u05dc \u05d7\u05d3\u05e9 "
+        "\u05de\u05be84,120 \u2013 10%; "
+        "\u05de\u05be84,121 \u05e2\u05d3 120,720 \u2013 14%; "
+        "\u05de\u05be301,201 \u05e2\u05d3 560,280 \u2013 35%"
+    )
+    numbers = extract_numbers_from_text(schedule)
+    assert {84120.0, 84121.0, 120720.0, 301201.0, 560280.0} <= numbers
+    assert 120.0 not in numbers
+    assert 201.0 not in numbers
+    # A decimal multiplier carries the same prefix in National Insurance Law
+    # section 68(b) (bet-maqaf-2.24) and was dropped outright before the fix.
+    assert 2.24 in extract_numbers_from_text(
+        "\u05db\u05e9\u05d4\u05d5\u05d0 \u05de\u05d5\u05db\u05e4\u05dc "
+        "\u05d1\u05be2.24;"
+    )
+    # The detach fires only before a digit: a maqaf joining two Hebrew words
+    # is left alone, and no phantom value appears.
+    assert (
+        extract_numbers_from_text("\u05d1\u05d9\u05ea\u05be\u05d4\u05d3\u05d9\u05df")
+        == set()
+    )
+
+
+def test_numeric_extraction_handles_unicode_fraction_slash():
+    # Income Tax Ordinance section 36 grants a quarter of a credit point,
+    # typeset with the Unicode fraction slash (U+2044) rather than a
+    # precomposed vulgar fraction. The value and the printed numerator and
+    # denominator are all substantive: an encoding may state either form.
+    numbers = extract_numbers_from_text(
+        "\u05ea\u05d5\u05d1\u05d0 \u05d1\u05d7\u05e9\u05d1\u05d5\u05df "
+        "1\u20444 \u05e0\u05e7\u05d5\u05d3\u05ea \u05d6\u05d9\u05db\u05d5\u05d9"
+    )
+    assert {0.25, 1.0, 4.0} <= numbers
+    # A mixed number resolves to its total as well as its printed parts.
+    assert {1.5, 1.0, 2.0} <= extract_numbers_from_text(
+        "a factor of 1 1\u20442 applies"
+    )
+    # The ASCII slash keeps its existing context guard: a date is not a
+    # fraction, and the fraction-slash rule must not loosen that.
+    assert 0.25 not in extract_numbers_from_text("signed 1/4/2020 by the registrar")
+    # Israeli consolidations flatten a marked-up mixed number into a digit run
+    # glued to the fraction: Income Tax Ordinance section 66(c)(4)(a) prints
+    # the birth-year child credit as "21<U+2044>2", two and a half credit
+    # points, which the OECD TaxBEN Israel table reports as 2.5. The
+    # flattening is lossy, so both readings ground.
+    glued = extract_numbers_from_text(
+        "21\u20442 \u05e0\u05e7\u05d5\u05d3\u05d5\u05ea "
+        "\u05d6\u05d9\u05db\u05d5\u05d9 "
+        "\u05d1\u05e2\u05d3 \u05db\u05dc \u05d0\u05d7\u05d3"
+    )
+    assert {2.5, 10.5, 2.0, 1.0} <= glued
+
+
 def test_rulespec_grounding_accepts_ghana_cedi_rate_schedule():
     content = """format: rulespec/v1
 module:

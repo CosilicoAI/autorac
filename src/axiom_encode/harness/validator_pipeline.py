@@ -1500,6 +1500,29 @@ _CONTEXTUAL_ASCII_FRACTION_PATTERN = re.compile(
     r"(?=\s*(?:times?\b|\(\s*Class\b|for\s+(?:property|RIIP|ZEV|Class)\b))",
     re.IGNORECASE,
 )
+# The Unicode fraction slash (U+2044) exists only to typeset vulgar fractions,
+# so unlike the ASCII "/" above it needs no context guard: Israeli statutory
+# text prints "1<U+2044>4 credit points" in Income Tax Ordinance section 36,
+# and a date or a ratio is never written with it.
+_FRACTION_SLASH_PATTERN = re.compile(
+    "(?<![\\d\u2044])"
+    "(?:(?P<whole>\\d+)\\s+)?"
+    "(?P<numerator>\\d+)\\s*\u2044\\s*(?P<denominator>\\d+)"
+    "(?![\\d\u2044])"
+)
+# Israeli consolidations flatten a marked-up mixed number -- 2, then a
+# superscript 1 over a subscript 2 -- into a digit run glued to a
+# fraction-slash fraction: Income Tax Ordinance section 66(c)(4)(a) prints the
+# birth-year child credit as "21<U+2044>2", meaning two and a half. The
+# flattening is lossy, so both readings of the glyph run are contributed: the
+# improper fraction by the pattern above, the mixed number by this one. Only
+# single-digit numerators and denominators qualify, which is the shape the
+# superscript/subscript flattening produces.
+_GLUED_MIXED_FRACTION_SLASH_PATTERN = re.compile(
+    "(?<![\\d\u2044])"
+    "(?P<whole>\\d+)(?P<numerator>\\d)\u2044(?P<denominator>\\d)"
+    "(?![\\d\u2044])"
+)
 _SMALL_MONTH_RANGE_PATTERN = re.compile(
     r"\b(?P<start>\d{1,2})\s+(?:through|to)\s+"
     r"(?P<end>\d{1,2})\s+months?\b",
@@ -5588,6 +5611,17 @@ def _clean_source_text_for_numeric_extraction(
     # Strip the glued suffix so grouped-thousands parsing sees a clean
     # boundary; a spaced "=" (a real equation, "x = 5") is left untouched.
     text = re.sub(r"(?<=\d)/?=(?=\s|$)", "", text)
+    # Hebrew prose attaches the one-letter prefix preposition to a following
+    # numeral with a maqaf, the Hebrew hyphen (U+05BE): mem-maqaf-84,120
+    # ("from 84,120") in Income Tax Ordinance section 121, bet-maqaf-2.24
+    # ("times 2.24") in National Insurance Law section 68(b). The maqaf is in
+    # no digit-boundary character class, so the grouped-thousands matcher's
+    # lookbehind never fires: the first is misread as the trailing "120" and
+    # the second is dropped outright. Detach it the way the currency glyphs
+    # above are detached; an ASCII hyphen in the same position already parses
+    # correctly. The lookahead fires only before a digit, so a maqaf between
+    # two Hebrew words is left untouched.
+    text = re.sub("\u05be(?=\\d)", "\u05be ", text)
     cleaned_lines: list[str] = []
     preserve_split_schedule_value = False
     for line in text.splitlines():
@@ -8493,6 +8527,28 @@ def _tokenize_numeric_occurrences_from_text(
                 match.span(),
                 whole + numerator / denominator,
             )
+
+    for match in _FRACTION_SLASH_PATTERN.finditer(raw_text):
+        with contextlib.suppress(ValueError, ZeroDivisionError):
+            whole = float(match.group("whole") or 0)
+            numerator = float(match.group("numerator"))
+            denominator = float(match.group("denominator"))
+            # The printed numerator and denominator are as substantive as the
+            # fraction they compose: an encoding may state a quarter of a
+            # credit point as 0.25 or as the explicit pair the statute prints.
+            add_both(raw_view, match.span(), whole + numerator / denominator)
+            add_both(raw_view, match.span("numerator"), numerator)
+            add_both(raw_view, match.span("denominator"), denominator)
+
+    for match in _GLUED_MIXED_FRACTION_SLASH_PATTERN.finditer(raw_text):
+        with contextlib.suppress(ValueError, ZeroDivisionError):
+            whole = float(match.group("whole"))
+            numerator = float(match.group("numerator"))
+            denominator = float(match.group("denominator"))
+            add_both(raw_view, match.span(), whole + numerator / denominator)
+            add_both(raw_view, match.span("whole"), whole)
+            add_both(raw_view, match.span("numerator"), numerator)
+            add_both(raw_view, match.span("denominator"), denominator)
 
     month_range_matches: list[tuple[tuple[int, int], float]] = []
     for match in _SMALL_MONTH_RANGE_PATTERN.finditer(raw_text):
