@@ -1526,6 +1526,25 @@ _GLUED_MIXED_FRACTION_SLASH_PATTERN = re.compile(
     "(?P<whole>\\d+)(?P<numerator>\\d)\u2044(?P<denominator>\\d)"
     "(?![\\d\u2044])"
 )
+# The shape above is evidence of nothing on its own: "11<U+2044>4" is a
+# flattened one-and-a-quarter in a Hebrew consolidation and an ordinary
+# eleven-quarters anywhere else, and the two readings differ (1.25 against
+# 2.75). So the flattened reading is claimed only where the flattening is
+# what actually happened. Two conditions establish that, both read off the
+# captured Income Tax Ordinance Wikisource snapshot
+# (TheAxiomFoundation ops/il-lane/sources/ito-wikisource.html, retrieved
+# 2026-09-06; the same bytes are the pilot's corpus source). Every one
+# of its 45 fraction slashes is a <sup>N</sup>/<sub>D</sub> vulgar fraction,
+# and 24 of those carry a whole number in front of them: 16 1/2 (section 21),
+# 1 1/2 and 1 3/4 (sections 38 and 39), 2 1/2, 3 1/2 and 4 1/2 (sections 40
+# and 66), 8 1/3, 3 1/3 and 1 2/3 (section 127). The fraction half is a
+# non-zero proper fraction every time, because that is all a superscript over
+# a subscript ever typesets -- never 0/2, never 4/2. And the run always sits
+# in Hebrew statutory prose, which is what the markup is being flattened out
+# of. A run that fails either condition is an ordinary improper fraction and
+# is read as written.
+_HEBREW_LETTER_PATTERN = re.compile("[\u05d0-\u05ea]")
+_FLATTENED_FRACTION_HEBREW_CONTEXT_WINDOW = 40
 _SMALL_MONTH_RANGE_PATTERN = re.compile(
     r"\b(?P<start>\d{1,2})\s+(?:through|to)\s+"
     r"(?P<end>\d{1,2})\s+months?\b",
@@ -1904,6 +1923,15 @@ _HEBREW_TEEN_UNIT_VALUES = {
     "תשעה": 9.0,
 }
 _HEBREW_TEEN_TENS_WORDS = ("עשר", "עשרה")
+# The two halves are joined by a space, an ASCII hyphen, or a maqaf (U+05BE,
+# the Hebrew hyphen), and the captured Income Tax Ordinance Wikisource
+# snapshot prints the same number both ways within a few lines of itself:
+# section 35's "twelve months" appears as unit-space-ten and as
+# unit-maqaf-ten. The maqaf is inside the Hebrew block that the word
+# boundaries below refuse, so without this the hyphenated spellings match
+# nothing at all; with an ASCII hyphen they matched the two halves separately
+# and grounded 3 and 10 instead of 13.
+_HEBREW_TEEN_SEPARATOR_PATTERN = "(?:\\s+|\\s*[-\\u05be]\\s*)"
 _HEBREW_TEEN_PATTERN = re.compile(
     "(?<![\\u0590-\\u05ff])"
     + _HEBREW_WORD_PREFIX_PATTERN
@@ -1913,8 +1941,10 @@ _HEBREW_TEEN_PATTERN = re.compile(
         for word in sorted(_HEBREW_TEEN_UNIT_VALUES, key=len, reverse=True)
     )
     + ")"
-    "\\s+"
-    "(?:" + "|".join(re.escape(word) for word in _HEBREW_TEEN_TENS_WORDS) + ")"
+    + _HEBREW_TEEN_SEPARATOR_PATTERN
+    + "(?:"
+    + "|".join(re.escape(word) for word in _HEBREW_TEEN_TENS_WORDS)
+    + ")"
     "(?![\\u0590-\\u05ff])"
 )
 _EUROPEAN_RAW_NUMBER = r"-?(?:\d{1,3}(?:[.\u00a0\u202f ]\d{3})+|\d+)(?:\s*[,.]\d{1,4})?"
@@ -4801,6 +4831,26 @@ def _iter_hebrew_number_word_matches(
     return matches
 
 
+def _is_flattened_hebrew_mixed_fraction(text: str, match: "re.Match[str]") -> bool:
+    """True when a glued digit run is a flattened Hebrew mixed number.
+
+    The glued shape alone does not say which reading is right, so this asks
+    for the two things the flattening leaves behind: a fraction half that is a
+    non-zero proper fraction, which is all superscript-over-subscript
+    typesetting ever produces, and Hebrew script beside the run, which is the
+    prose the markup was flattened out of. Anything else -- an English "a
+    factor of 11/4", a bare "10/2" -- is an ordinary improper fraction and is
+    read as written.
+    """
+    numerator = int(match.group("numerator"))
+    denominator = int(match.group("denominator"))
+    if not 1 <= numerator < denominator:
+        return False
+    window_start = max(0, match.start() - _FLATTENED_FRACTION_HEBREW_CONTEXT_WINDOW)
+    window_end = match.end() + _FLATTENED_FRACTION_HEBREW_CONTEXT_WINDOW
+    return bool(_HEBREW_LETTER_PATTERN.search(text[window_start:window_end]))
+
+
 def _parse_belgian_numeric_phrase(raw: str) -> float | None:
     normalized = re.sub(r"\s+", " ", raw.strip().lower())
     if not normalized:
@@ -6987,6 +7037,24 @@ class _NumericTextView:
         expected = left_anchor + 1 if left_anchor is not None else 0
         return min(candidates, key=lambda candidate: abs(candidate[0] - expected))
 
+    def parsed_span(self, source_span: tuple[int, int]) -> tuple[int, int] | None:
+        """Map a source interval back to the parsed interval that carries it.
+
+        The inverse of `source_span`, for a pass that has consumed a run in one
+        view and has to tell a later pass over a different view to leave the
+        same characters alone. None when the interval survives no character in
+        this view.
+        """
+        start, end = source_span
+        carried = [
+            index
+            for index, offset in enumerate(self.source_offsets)
+            if offset is not None and start <= offset < end
+        ]
+        if not carried:
+            return None
+        return (min(carried), max(carried) + 1)
+
 
 @dataclass
 class _LegacyNumericCollector:
@@ -8677,6 +8745,8 @@ def _tokenize_numeric_occurrences_from_text(
     # states and one it does not.
     glued_mixed_spans: list[tuple[int, int]] = []
     for match in _GLUED_MIXED_FRACTION_SLASH_PATTERN.finditer(raw_text):
+        if not _is_flattened_hebrew_mixed_fraction(raw_text, match):
+            continue
         with contextlib.suppress(ValueError, ZeroDivisionError):
             whole = float(match.group("whole"))
             numerator = float(match.group("numerator"))
@@ -8686,6 +8756,16 @@ def _tokenize_numeric_occurrences_from_text(
             add_both(raw_view, match.span("numerator"), numerator)
             add_both(raw_view, match.span("denominator"), denominator)
             glued_mixed_spans.append(match.span())
+            # The run is now fully consumed: the mixed value and each printed
+            # digit have been contributed from their own spans. A later
+            # general pass reads the cleaned buffer, not this one, and would
+            # otherwise emit the concatenated whole-and-numerator ("21") as a
+            # number the section states. The lists those passes consult hold
+            # cleaned spans, so map the consumed run through the source.
+            consumed = cleaned_view.parsed_span(raw_view.source_span(match.span()))
+            if consumed is not None:
+                grounding_spans.append(consumed)
+                inventory_spans.append(consumed)
 
     for match in _FRACTION_SLASH_PATTERN.finditer(raw_text):
         if _span_overlaps(match.span(), glued_mixed_spans):

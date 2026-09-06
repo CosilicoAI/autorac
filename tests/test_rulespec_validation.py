@@ -14839,6 +14839,71 @@ def test_numeric_extraction_handles_unicode_fraction_slash():
     assert 0.21 in extract_numbers_from_text("a share of 21\u2044100 applies")
 
 
+def test_flattened_mixed_fraction_reading_requires_hebrew_source_context():
+    # The glued shape carries two readings and only one of them is a value the
+    # source states, so the flattened reading is claimed only where the
+    # flattening actually happened. In the captured Income Tax Ordinance
+    # Wikisource snapshot the flattened runs are always a non-zero proper
+    # fraction sitting in Hebrew prose, because that is what a
+    # superscript-over-subscript vulgar fraction collapses into.
+    assert 2.5 in extract_numbers_from_text("21\u20442 נקודות")
+    # An ordinary multi-digit numerator in ordinary prose is an improper
+    # fraction and is read as one: eleven quarters, not one and a quarter.
+    ordinary = extract_numbers_from_text("a factor of 11\u20444 applies")
+    assert 2.75 in ordinary
+    assert 1.25 not in ordinary
+    # A zero numerator is not a typeset vulgar fraction in any script, so the
+    # run is read as written even though it has the glued shape.
+    halved = extract_numbers_from_text("10\u20442")
+    assert 5.0 in halved
+    assert 1.0 not in halved
+    # The fraction half has to be one a vulgar fraction could have been even
+    # inside Hebrew prose: a numerator at or above its denominator is not a
+    # collapsed superscript over a subscript, so the run is read as written.
+    hebrew_improper = extract_numbers_from_text("מקדם 14\u20442 אחריו")
+    assert 7.0 in hebrew_improper
+    assert 15.0 not in hebrew_improper
+    # A whole number that happens to be one digit keeps the flattened reading:
+    # Income Tax Ordinance sections 38 and 39 print one and a half this way.
+    assert 1.5 in extract_numbers_from_text("11\u20442 נקודות זיכוי")
+
+
+def test_flattened_mixed_fraction_consumes_the_run_it_reads():
+    # The mixed number is read off the raw buffer while the general numeric
+    # passes read the cleaned one, so the consumed run has to be mapped across
+    # the two. Without that the concatenated whole and numerator survives as a
+    # grounded literal ("21") the section never states, and as a source-recall
+    # obligation no encoding can discharge.
+    text = "21\u20442 נקודות זיכוי"
+    grounding = extract_numbers_from_text(text)
+    assert {1.0, 2.0, 2.5} == grounding
+    assert 21.0 not in grounding
+    assert 21.0 not in extract_numeric_occurrences_from_text(text)
+
+
+def test_hebrew_teen_words_accept_a_hyphen_or_a_maqaf():
+    # Income Tax Ordinance section 35 prints "twelve months" both ways within
+    # one section: unit-space-ten in subsection (a)(2) and (a)(3), and
+    # unit-maqaf-ten in (a)(1). The maqaf is inside the Hebrew block that the
+    # matcher's word boundaries refuse, so a hyphenated teen matched nothing
+    # at all; with an ASCII hyphen the two halves matched separately and
+    # grounded the unit and the ten instead of the teen they compose.
+    hyphenated = extract_numbers_from_text("שלושה-עשר ימים")
+    assert 13.0 in hyphenated
+    assert not ({3.0, 10.0} & hyphenated)
+    # "שנים" alone is the plural of "year", so only the pair carries a value.
+    twelve = extract_numbers_from_text("שנים-עשר חודשים")
+    assert 12.0 in twelve
+    assert 10.0 not in twelve
+    maqaf = extract_numbers_from_text("שמונה\u05beעשרה שנים")
+    assert 18.0 in maqaf
+    assert not ({8.0, 10.0} & maqaf)
+    # The spaced spelling keeps working, and so does the guard that stops a
+    # standalone plural from becoming a teen.
+    assert 12.0 in extract_numbers_from_text("ומחולק בשנים עשר")
+    assert 12.0 not in extract_numbers_from_text("בחמש השנים האחרונות")
+
+
 def test_rulespec_grounding_accepts_ghana_cedi_rate_schedule():
     content = """format: rulespec/v1
 module:

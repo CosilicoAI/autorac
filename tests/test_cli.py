@@ -23043,6 +23043,99 @@ rules:
         assert "קצבת הילדים" in rules_file.read_text(encoding="utf-8")
         assert "מקרה" in test_file.read_text(encoding="utf-8")
 
+    def test_generated_yaml_unescape_refuses_a_symlinked_target(self, tmp_path):
+        # A generated artifact is a regular file the encoder just wrote. A link
+        # in that position is not one, and writing through it would change the
+        # bytes of a file this generation never produced.
+        outside = tmp_path / "outside.yaml"
+        original = 'format: rulespec/v1\nmodule:\n  summary: "\\u05d0"\n'
+        outside.write_text(original, encoding="utf-8")
+        link = tmp_path / "section-68.test.yaml"
+        link.symlink_to(outside)
+
+        assert _rewrite_generated_yaml_without_non_ascii_escapes(link) is False
+        assert outside.read_text(encoding="utf-8") == original
+
+    def test_generated_yaml_unescape_refuses_a_path_outside_the_output_root(
+        self, tmp_path
+    ):
+        root = tmp_path / "out"
+        root.mkdir()
+        outside = tmp_path / "elsewhere" / "section-68.yaml"
+        outside.parent.mkdir()
+        original = 'format: rulespec/v1\nmodule:\n  summary: "\\u05d0"\n'
+        outside.write_text(original, encoding="utf-8")
+
+        assert (
+            _rewrite_generated_yaml_without_non_ascii_escapes(
+                outside,
+                contained_in=root,
+            )
+            is False
+        )
+        assert outside.read_text(encoding="utf-8") == original
+        # The same file inside the root is rewritten, so the refusal above is
+        # containment and not a blanket refusal.
+        inside = root / "section-68.yaml"
+        inside.write_text(original, encoding="utf-8")
+        assert (
+            _rewrite_generated_yaml_without_non_ascii_escapes(
+                inside,
+                contained_in=root,
+            )
+            is True
+        )
+        assert "א" in inside.read_text(encoding="utf-8")
+
+    def test_overlay_validation_refuses_a_symlinked_companion_before_writing(
+        self, tmp_path
+    ):
+        # The companion rewrite runs before the structured-review contract
+        # check that rejects a linked companion, so ordering is the whole
+        # point: a link pointing out of the generated directory has to be
+        # refused before anything is written, not after the target's bytes
+        # have already changed under a hash something else binds.
+        escaped_companion = '- name: "\\u05de\\u05e7\\u05e8\\u05d4"\n'
+        outside = tmp_path / "outside" / "already-encoded.test.yaml"
+        outside.parent.mkdir(parents=True)
+        outside.write_text(escaped_companion, encoding="utf-8")
+        before = outside.read_bytes()
+
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "statutes" / "section-68.yaml"
+        rules_file.parent.mkdir(parents=True)
+        rules_file.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            '  summary: "\\u05e7\\u05e6\\u05d1\\u05ea '
+            '\\u05d4\\u05d9\\u05dc\\u05d3\\u05d9\\u05dd"\n'
+            "rules: []\n",
+            encoding="utf-8",
+        )
+        module_before = rules_file.read_bytes()
+        test_file = _rulespec_test_path(rules_file)
+        test_file.symlink_to(outside)
+        result = SimpleNamespace(
+            output_file=rules_file,
+            runner="runner",
+            backend="test",
+        )
+
+        valid, issues, _ = _validate_generated_encoding_in_policy_overlay_with_release(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "il"),
+            axiom_rules_path=tmp_path / "engine",
+            local_corpus_release=None,
+        )
+
+        assert valid is False
+        assert any("regular file" in issue for issue in issues)
+        assert outside.read_bytes() == before
+        # The module is not rewritten either: the whole validation is refused
+        # before the pass that would have touched it.
+        assert rules_file.read_bytes() == module_before
+
     def test_bare_snapunit_entity_repair_scopes_assistance_group_to_household(
         self, tmp_path
     ):

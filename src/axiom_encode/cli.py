@@ -50128,9 +50128,37 @@ def _unescape_non_ascii_yaml_escapes(text: str) -> str | None:
     return rewritten
 
 
-def _rewrite_generated_yaml_without_non_ascii_escapes(target: Path) -> bool:
-    """Undo `\\uXXXX` escaping on a generated RuleSpec file. True when rewritten."""
+def _generated_artifact_is_contained_in(target: Path, root: Path) -> bool:
+    """True when `target` resolves inside `root`, links in the path included."""
+    try:
+        resolved_root = Path(root).resolve()
+        resolved_target = Path(target).resolve()
+    except OSError:
+        return False
+    return resolved_root in resolved_target.parents
+
+
+def _rewrite_generated_yaml_without_non_ascii_escapes(
+    target: Path,
+    *,
+    contained_in: Path | None = None,
+) -> bool:
+    """Undo `\\uXXXX` escaping on a generated RuleSpec file. True when rewritten.
+
+    A generated artifact is a regular file this generation just wrote. A
+    symlink in that position is not one: writing through it would change bytes
+    the generation never produced, in a file whose hash something else already
+    binds. Refuse the link before the file is read, and refuse a path that
+    resolves outside the directory the generation wrote into.
+    """
     if target.suffix not in {".yaml", ".yml"}:
+        return False
+    if target.is_symlink() or not target.is_file():
+        return False
+    if contained_in is not None and not _generated_artifact_is_contained_in(
+        target,
+        contained_in,
+    ):
         return False
     try:
         text = target.read_text(encoding="utf-8")
@@ -54863,12 +54891,47 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
     # generated_output_sha256 -- so the file that lands in the repository is the
     # readable one and every digest still agrees. A tests-only repair holds the
     # module's bytes to a hash it was given, so only its companion is rewritten.
+    #
+    # The rewrite writes, so the two artifacts have to be proved to be files
+    # this generation wrote BEFORE it runs, not after. A symlinked companion
+    # would carry the write to whatever it points at -- outside the output root,
+    # into a file some other digest already binds -- and the contract check
+    # further down rejects the companion only once those bytes are already
+    # changed.
+    generated_root = Path(output_root) / str(getattr(result, "runner", "") or "")
+    output_test = _rulespec_test_path(output_file)
+    for artifact in (output_file, output_test):
+        if not artifact.is_symlink() and not artifact.exists():
+            continue
+        if artifact.is_symlink() or not artifact.is_file():
+            return (
+                False,
+                [
+                    f"{relative_output}: generated artifact must be a regular "
+                    f"file, not a link: {artifact.name}"
+                ],
+                {},
+            )
+        if not _generated_artifact_is_contained_in(artifact, generated_root):
+            return (
+                False,
+                [
+                    f"{relative_output}: generated artifact resolves outside "
+                    f"the generation output root: {artifact.name}"
+                ],
+                {},
+            )
     if vars(result).get(_IMMUTABLE_RULESPEC_SHA256_ATTR) is None:
-        _rewrite_generated_yaml_without_non_ascii_escapes(output_file)
-    _rewrite_generated_yaml_without_non_ascii_escapes(_rulespec_test_path(output_file))
+        _rewrite_generated_yaml_without_non_ascii_escapes(
+            output_file,
+            contained_in=generated_root,
+        )
+    _rewrite_generated_yaml_without_non_ascii_escapes(
+        output_test,
+        contained_in=generated_root,
+    )
 
     generated_content = output_file.read_text()
-    output_test = _rulespec_test_path(output_file)
     if (
         deferred_output_review_contract is not None
         and deferred_output_review_contract.required_test_cases
