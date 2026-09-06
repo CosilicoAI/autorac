@@ -1797,6 +1797,87 @@ _DUTCH_CARDINAL_PHRASE_PATTERN = re.compile(
     + r")\b",
     re.IGNORECASE,
 )
+# Israeli statutes name a number with a word far more often than with a digit.
+# National Insurance Law section 68(b) sets one rate for the fourth child and
+# another for the fifth, and section 68(c) a supplement for a parent entitled
+# for three children or more, without printing 3, 4 or 5 anywhere; Income Tax
+# Ordinance section 34 grants two credit points and prints no 2. The words are
+# spelled out here the way the French and Dutch tables above spell theirs.
+_HEBREW_NUMBER_WORD_VALUES = {
+    # Ordinals, masculine and feminine.
+    "ראשון": 1.0,
+    "ראשונה": 1.0,
+    "שני": 2.0,
+    "שנייה": 2.0,
+    "שניה": 2.0,
+    "שלישי": 3.0,
+    "שלישית": 3.0,
+    "רביעי": 4.0,
+    "רביעית": 4.0,
+    "חמישי": 5.0,
+    "חמישית": 5.0,
+    "שישי": 6.0,
+    "שישית": 6.0,
+    "שביעי": 7.0,
+    "שביעית": 7.0,
+    "שמיני": 8.0,
+    "שמינית": 8.0,
+    "תשיעי": 9.0,
+    "תשיעית": 9.0,
+    "עשירי": 10.0,
+    "עשירית": 10.0,
+    # Cardinals, including the construct forms a statute uses before a noun.
+    "אחד": 1.0,
+    "אחת": 1.0,
+    "שניים": 2.0,
+    "שניית": 2.0,
+    "שתיים": 2.0,
+    "שתי": 2.0,
+    "שלוש": 3.0,
+    "שלושה": 3.0,
+    "שלושת": 3.0,
+    "ארבע": 4.0,
+    "ארבעה": 4.0,
+    "ארבעת": 4.0,
+    "חמש": 5.0,
+    "חמישה": 5.0,
+    "חמשת": 5.0,
+    "שש": 6.0,
+    "שישה": 6.0,
+    "ששת": 6.0,
+    "שבע": 7.0,
+    "שבעה": 7.0,
+    "שבעת": 7.0,
+    "שמונה": 8.0,
+    "שמונת": 8.0,
+    "תשע": 9.0,
+    "תשעה": 9.0,
+    "תשעת": 9.0,
+    "עשר": 10.0,
+    "עשרה": 10.0,
+    "עשרת": 10.0,
+}
+# One-letter Hebrew prefixes bind to the following word: the definite article
+# he, the conjunction vav, and the prepositions bet, kaf, lamed, mem and shin.
+# Two of them can stack ("and the fourth"), and a maqaf may sit between the
+# prefix and the word.
+_HEBREW_WORD_PREFIX_PATTERN = (
+    "(?:[\u05d5\u05d4\u05d1\u05db\u05dc\u05de\u05e9]\u05be?){0,2}"
+)
+# The alternation is longest-first so that a longer form is never shadowed by a
+# shorter one it contains, and the boundaries refuse a match that sits inside a
+# longer Hebrew word.
+_HEBREW_NUMBER_WORD_PATTERN = re.compile(
+    "(?<![\u0590-\u05ff])"
+    + _HEBREW_WORD_PREFIX_PATTERN
+    + "(?P<word>"
+    + "|".join(
+        re.escape(word)
+        for word in sorted(_HEBREW_NUMBER_WORD_VALUES, key=len, reverse=True)
+    )
+    + ")"
+    "(?![\u0590-\u05ff])"
+)
 _EUROPEAN_RAW_NUMBER = r"-?(?:\d{1,3}(?:[.\u00a0\u202f ]\d{3})+|\d+)(?:\s*[,.]\d{1,4})?"
 _RANGE_ENDPOINT_RAW_NUMBER = (
     r"-?(?:\d{1,3}(?:[.\u00a0\u202f]\d{3})+|\d+)(?:[,.]\d{1,4})?"
@@ -4657,6 +4738,19 @@ def _iter_dutch_cardinal_phrase_matches(
         if value is None:
             continue
         matches.append((match.span(1), value))
+    return matches
+
+
+def _iter_hebrew_number_word_matches(
+    text: str,
+) -> list[tuple[tuple[int, int], float]]:
+    """Return Hebrew ordinal and cardinal number words with their values."""
+    matches: list[tuple[tuple[int, int], float]] = []
+    for match in _HEBREW_NUMBER_WORD_PATTERN.finditer(text):
+        value = _HEBREW_NUMBER_WORD_VALUES.get(match.group("word"))
+        if value is None:
+            continue
+        matches.append((match.span(), value))
     return matches
 
 
@@ -8767,6 +8861,13 @@ def _tokenize_numeric_occurrences_from_text(
         if not _span_overlaps(span, inventory_spans):
             collector.add_inventory(cleaned_view, span, value)
             inventory_spans.append(span)
+
+    hebrew_word_matches = _iter_hebrew_number_word_matches(cleaned)
+    for span, value in hebrew_word_matches:
+        if _span_overlaps(span, grounding_spans):
+            continue
+        collector.add_grounding(cleaned_view, span, value)
+        grounding_spans.append(span)
 
     ordinal_word_matches = _iter_ordinal_word_number_matches(cleaned)
     for span, value in ordinal_word_matches:

@@ -14759,12 +14759,13 @@ def test_numeric_extraction_handles_hebrew_maqaf_before_numeral():
     # maqaf (U+05BE), the Hebrew hyphen: the Income Tax Ordinance section 121
     # rate schedule reads mem-maqaf-84,120 ("from 84,120"). Without detaching
     # the maqaf the grouped-thousands matcher never fires and the bound is
-    # misread as the trailing "120".
+    # misread as the trailing "120". The maqaf and the fraction slash below
+    # stay escaped because each has an ASCII lookalike; the alphabet does not.
     schedule = (
-        "\u05e2\u05dc \u05db\u05dc \u05e9\u05e7\u05dc \u05d7\u05d3\u05e9 "
-        "\u05de\u05be84,120 \u2013 10%; "
-        "\u05de\u05be84,121 \u05e2\u05d3 120,720 \u2013 14%; "
-        "\u05de\u05be301,201 \u05e2\u05d3 560,280 \u2013 35%"
+        "על כל שקל חדש "
+        "מ\u05be84,120 \u2013 10%; "
+        "מ\u05be84,121 עד 120,720 \u2013 14%; "
+        "מ\u05be301,201 עד 560,280 \u2013 35%"
     )
     numbers = extract_numbers_from_text(schedule)
     assert {84120.0, 84121.0, 120720.0, 301201.0, 560280.0} <= numbers
@@ -14772,16 +14773,34 @@ def test_numeric_extraction_handles_hebrew_maqaf_before_numeral():
     assert 201.0 not in numbers
     # A decimal multiplier carries the same prefix in National Insurance Law
     # section 68(b) (bet-maqaf-2.24) and was dropped outright before the fix.
-    assert 2.24 in extract_numbers_from_text(
-        "\u05db\u05e9\u05d4\u05d5\u05d0 \u05de\u05d5\u05db\u05e4\u05dc "
-        "\u05d1\u05be2.24;"
-    )
+    assert 2.24 in extract_numbers_from_text("כשהוא מוכפל ב\u05be2.24;")
     # The detach fires only before a digit: a maqaf joining two Hebrew words
     # is left alone, and no phantom value appears.
-    assert (
-        extract_numbers_from_text("\u05d1\u05d9\u05ea\u05be\u05d4\u05d3\u05d9\u05df")
-        == set()
+    assert extract_numbers_from_text("בית\u05beהדין") == set()
+
+
+def test_numeric_extraction_reads_hebrew_ordinal_and_cardinal_words():
+    # Israeli statutes name a position in a sequence with an ordinal word and
+    # almost never with a digit. National Insurance Law section 68(b) sets a
+    # rate for "the fourth child" and "the fifth child", and section 68(c) a
+    # supplement for a parent entitled for "three children or more"; not one of
+    # 3, 4, 5 is printed as a numeral anywhere in the provision.
+    section_68 = (
+        "והוא הילד הרביעי ואילך; "
+        "לגבי ילד שהוא הילד החמישי ואילך; "
+        "בעד שלושה ילדים או יותר"
     )
+    assert {3.0, 4.0, 5.0} <= extract_numbers_from_text(section_68)
+    # The construct cardinal carries the same weight: Income Tax Ordinance
+    # section 34 grants two credit points and prints no digit at all.
+    assert 2.0 in extract_numbers_from_text("יובאו בחשבון שתי נקודות זיכוי")
+    # A one-letter prefix binds to the word, with or without a maqaf, and the
+    # definite article may stack behind the conjunction.
+    assert 4.0 in extract_numbers_from_text("והרביעי")
+    assert 2.0 in extract_numbers_from_text("כ\u05beשתי נקודות")
+    # A longer word that merely contains a number word is not a number: the
+    # boundary guard rejects a match inside a surrounding Hebrew word.
+    assert extract_numbers_from_text("השנים האחרונות") == set()
 
 
 def test_numeric_extraction_handles_unicode_fraction_slash():
@@ -14789,10 +14808,7 @@ def test_numeric_extraction_handles_unicode_fraction_slash():
     # typeset with the Unicode fraction slash (U+2044) rather than a
     # precomposed vulgar fraction. The value and the printed numerator and
     # denominator are all substantive: an encoding may state either form.
-    numbers = extract_numbers_from_text(
-        "\u05ea\u05d5\u05d1\u05d0 \u05d1\u05d7\u05e9\u05d1\u05d5\u05df "
-        "1\u20444 \u05e0\u05e7\u05d5\u05d3\u05ea \u05d6\u05d9\u05db\u05d5\u05d9"
-    )
+    numbers = extract_numbers_from_text("תובא בחשבון 1\u20444 נקודת זיכוי")
     assert {0.25, 1.0, 4.0} <= numbers
     # A mixed number resolves to its total as well as its printed parts.
     assert {1.5, 1.0, 2.0} <= extract_numbers_from_text(
@@ -14807,10 +14823,7 @@ def test_numeric_extraction_handles_unicode_fraction_slash():
     # points, which the OECD TaxBEN Israel table reports as 2.5. Reading the
     # run as an improper fraction instead would ground 10.5, a value the
     # section never states, so the mixed reading claims the run alone.
-    ladder = extract_numbers_from_text(
-        "21\u20442, 41\u20442, 31\u20442 \u05e0\u05e7\u05d5\u05d3\u05d5\u05ea "
-        "\u05d6\u05d9\u05db\u05d5\u05d9"
-    )
+    ladder = extract_numbers_from_text("21\u20442, 41\u20442, 31\u20442 נקודות זיכוי")
     assert {2.5, 4.5, 3.5} <= ladder
     assert not ({10.5, 20.5, 15.5} & ladder)
     # A genuine improper fraction whose numerator or denominator is wider than
