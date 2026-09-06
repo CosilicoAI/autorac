@@ -16,6 +16,10 @@ import stat
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from axiom_encode.harness.evals import EvalResult
 
 BUILD_SPEC_FORMAT = "axiom/build-spec/v0"
 MAX_INPUT_BYTES = 16 * 1024 * 1024
@@ -156,6 +160,35 @@ def build_spec(
         "candidate_sha256": candidate_sha256,
         "module_count": len(sources),
     }
+
+
+def build_spec_from_eval_result(
+    result: EvalResult,
+    *,
+    root: str,
+    modules: Sequence[tuple[str, Path]] = (),
+) -> tuple[dict, dict]:
+    """Export one caller-selected completed result with its mandatory byte pin.
+
+    A failed validation may still produce a candidate useful for diagnosis.
+    Neither success nor other result metadata confers validation or admission
+    on the export. Dependencies remain explicit caller-selected inputs.
+    """
+    if not isinstance(result.output_file, str) or not result.output_file:
+        raise CoreExportError(
+            "missing_candidate", "evaluation result must name a candidate file"
+        )
+    digest = result.generated_output_sha256
+    if not isinstance(digest, str):
+        raise CoreExportError(
+            "invalid_digest", "evaluation result must record a candidate SHA-256"
+        )
+    return build_spec(
+        root,
+        Path(result.output_file),
+        modules,
+        expected_candidate_sha256=digest,
+    )
 
 
 def run_export_core_build_spec(argv: Sequence[str]) -> int:

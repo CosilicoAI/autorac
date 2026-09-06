@@ -405,6 +405,31 @@ and the module count. To bind the export to a recorded generation, pass
 it is distinct from the corpus-body `source_sha256` described above. Neither hash
 establishes legal validity or authority to install the candidate.
 
+For a completed in-memory evaluation, select one returned `EvalResult` and use
+the library adapter. Its recorded candidate digest is mandatory:
+
+```python
+from pathlib import Path
+from axiom_encode.core_export import build_spec_from_eval_result
+
+# selected_result is the result explicitly selected by the caller after
+# run_model_eval or run_source_eval returns.
+spec, metadata = build_spec_from_eval_result(
+    selected_result,
+    root="us:statutes/26/32/a/1",
+    modules=[("us:statutes/26/32/b", Path("/explicit/rulespec-us/us/statutes/26/32/b.yaml"))],
+)
+```
+
+Missing or malformed digests, deleted candidates, and bytes changed since the
+evaluation fail export. The adapter returns the existing BuildSpec and separate
+`unvalidated_candidate` metadata without writing files or changing the result.
+A validation failure with retained candidate bytes and a valid digest can be
+exported for diagnosis; a successful evaluation grants no additional assurance.
+Dependencies are explicitly selected new inputs, not inferred or authenticated
+from the evaluation context. This adapter does not ingest saved reports or
+automatically select a result, compile, sign, or publish it.
+
 Inputs must be regular UTF-8 files; final-component symlinks and special files are
 rejected. Parent directories are caller-selected and are not authenticated or
 confined by this command. Each source, the combined sources, and the serialized
@@ -421,9 +446,9 @@ AXIOM_CORE_BIN=/absolute/path/to/axiom-core/target/debug/axiom-core \
 ```
 
 Without `AXIOM_CORE_BIN`, these tests skip explicitly; a configured but unusable
-binary fails. Public encoder CI runs the exporter tests. The private core
-repository can run the cross-repository tests against a pinned encoder revision
-without granting this public repository access to core.
+binary fails. Public encoder CI runs the exporter tests. Core CI runs the
+cross-repository tests against a pinned encoder revision and a freshly built
+core executable.
 
 ## Eval suites and readiness gates
 

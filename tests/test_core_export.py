@@ -265,6 +265,19 @@ def test_exporter_import_does_not_load_main_cli(tmp_path):
     assert completed.returncode == 0, completed.stderr
 
 
+def test_export_module_itself_does_not_import_evaluation_harness(tmp_path):
+    # The package initializer already eagerly exports EvalResult. Load the
+    # actual leaf module alone to check that its annotation adds no runtime
+    # harness/CLI import; this does not change package initialization behavior.
+    completed = _isolated_python(
+        tmp_path,
+        f"import runpy; runpy.run_path({core_export.__file__!r})\n"
+        "assert 'axiom_encode.harness.evals' not in sys.modules\n"
+        "assert 'axiom_encode.cli' not in sys.modules",
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_entrypoint_runs_broker_checks_before_export_dispatch(monkeypatch):
     events = []
     argv = ["--root", ROOT, "--candidate", "candidate.yaml", "--out", "out.json"]

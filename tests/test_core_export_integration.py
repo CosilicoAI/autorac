@@ -15,6 +15,9 @@ from pathlib import Path
 
 import pytest
 
+from axiom_encode.core_export import build_spec_from_eval_result
+from tests.core_eval_fixture import candidate_result
+
 _REPO = Path(__file__).resolve().parents[1]
 _ROOT = "zz:policies/demo"
 _PARAMETERS = "zz:policies/parameters"
@@ -221,6 +224,31 @@ def test_fragment_import_export_build_verify_and_native_trace(
     assert f"{_PARAMETERS}#base_amount" in trace["executed_expression"]
     assert trace["parameter_reads"][0]["id"] == f"{_PARAMETERS}#base_amount"
     assert trace["parameter_reads"][0]["value"] == {"kind": "integer", "value": 200}
+
+
+def test_completed_eval_result_exports_to_real_core_with_native_trace(
+    core_binary, sources, tmp_path
+):
+    candidate, dependency = sources
+    result = candidate_result(candidate)
+    original_result = result.to_dict()
+    exported, metadata = build_spec_from_eval_result(
+        result, root=_ROOT, modules=[(_PARAMETERS, dependency)]
+    )
+    spec, bundle = tmp_path / "eval-spec.json", tmp_path / "eval-bundle.json"
+    spec.write_text(json.dumps(exported), encoding="utf-8")
+    built = _build_and_verify(core_binary, spec, bundle)
+    receipt = _execute(core_binary, bundle, built)
+
+    assert metadata["candidate_sha256"] == result.generated_output_sha256
+    assert metadata["assurance"] == "unvalidated_candidate"
+    stored = json.loads(bundle.read_bytes())
+    assert stored["modules"][_ROOT].encode() == candidate.read_bytes()
+    assert _value(receipt) == {"kind": "decimal", "value": "162.96"}
+    trace = receipt["result"]["results"][0]["trace"][_OUTPUT]
+    assert trace["pre_rounding_value"] == {"kind": "decimal", "value": "162.9632"}
+    assert trace["parameter_reads"][0]["id"] == f"{_PARAMETERS}#base_amount"
+    assert result.to_dict() == original_result
 
 
 def test_crlf_unicode_source_bytes_survive_export_and_core_bundle(
