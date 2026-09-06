@@ -23973,7 +23973,8 @@ def _source_exception_condition_text(text: str) -> str:
     notwithstanding_tail = _louisiana_notwithstanding_reference_tail(clause)
     if notwithstanding_tail is not None:
         return notwithstanding_tail
-    marker = next(iter(_source_exception_or_applicability_matches(clause)), None)
+    markers = _source_exception_or_applicability_matches(clause)
+    marker = next(iter(markers), None)
     if marker is None:
         return clause
     suffix = clause[marker.start() :]
@@ -24001,6 +24002,7 @@ def _source_exception_condition_text(text: str) -> str:
     )
     if (
         marker.group(0).strip().lower() == "subject to"
+        and len(markers) == 1
         and re.match(r"\s+a\s+claim\b", clause[marker.end() :], flags=re.IGNORECASE)
         and preposed_since is not None
     ):

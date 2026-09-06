@@ -31705,6 +31705,39 @@ def test_preposed_since_condition_cannot_hide_later_explicit_condition():
     assert _has_issue(result, "exception", "test")
 
 
+def test_preposed_since_condition_cannot_hide_later_subject_to_condition():
+    source = (
+        "Since households are not required to report a change in immigration "
+        "status, aliens who lose SNAP eligibility at recertification are not "
+        "subject to a claim subject to agency approval."
+    )
+    content = _exception_control_content(
+        "household_is_at_recertification and "
+        "alien_loses_snap_eligibility_under_obbb and "
+        "not change_in_immigration_status_is_required_to_be_reported"
+    )
+    result = _analyze(
+        content,
+        source,
+        test_cases=[
+            {
+                "name": "baseline",
+                "input": {
+                    "household_is_at_recertification": True,
+                    "alien_loses_snap_eligibility_under_obbb": True,
+                    "change_in_immigration_status_is_required_to_be_reported": False,
+                },
+                "output": {"result": True},
+            }
+        ],
+    )
+
+    assert completeness_module._source_exception_condition_text(source).startswith(
+        "subject to a claim subject to agency approval"
+    )
+    assert _has_issue(result, "exception", "test")
+
+
 @pytest.mark.parametrize(
     "source",
     [
