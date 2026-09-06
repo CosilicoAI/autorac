@@ -22864,6 +22864,73 @@ rules:
         assert repaired == []
         assert rules_file.read_text() == original
 
+    def test_embedded_scalar_literal_repair_keeps_non_latin_text_readable(
+        self, tmp_path
+    ):
+        # The repair rewrites the module the model produced. For a Hebrew
+        # provision that means the summary, the proof excerpt and the rule
+        # source are Hebrew; escaping them to \\uXXXX on the way out would make
+        # the encoding unreadable next to the statute it encodes, for no gain,
+        # since the YAML is read back by a parser either way.
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "statutes" / "section-68.yaml"
+        rules_file.parent.mkdir(parents=True)
+        summary = "קצבת ילדים לפי סעיף 68 לחוק הביטוח הלאומי."
+        source = "סעיף 68(ב) לחוק הביטוח הלאומי"
+        excerpt = "בעד כל ילד עד ארבעה ילדים 1 2 3 4"
+        rules_file.write_text(
+            f"""format: rulespec/v1
+module:
+  summary: {summary}
+rules:
+- name: child_count
+  kind: derived
+  entity: Household
+  dtype: Count
+  period: Month
+  versions:
+  - effective_from: '2025-01-01'
+    formula: household_child_count
+- name: child_allowance_size_category
+  kind: derived
+  entity: Household
+  dtype: Count
+  period: Month
+  source: {source}
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: formula
+        source:
+          corpus_citation_path: il/statute/national-insurance-law-1995/section-68
+          excerpt: {excerpt}
+  versions:
+  - effective_from: '2025-01-01'
+    formula: min(child_count, 4)
+""",
+            encoding="utf-8",
+        )
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "il"),
+            issues=[
+                "Embedded scalar literal: child_allowance_size_category line 22 "
+                "embeds 4 in `min(child_count, 4)`; extract the value to its "
+                "own named numeric concept or indexed table/grid value"
+            ],
+        )
+
+        assert repaired
+        rewritten = rules_file.read_text(encoding="utf-8")
+        assert "\\u05" not in rewritten
+        assert summary in rewritten
+        assert source in rewritten
+        assert excerpt in rewritten
+
     def test_bare_snapunit_entity_repair_scopes_assistance_group_to_household(
         self, tmp_path
     ):
