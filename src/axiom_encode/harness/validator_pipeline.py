@@ -1513,11 +1513,14 @@ _FRACTION_SLASH_PATTERN = re.compile(
 # Israeli consolidations flatten a marked-up mixed number -- 2, then a
 # superscript 1 over a subscript 2 -- into a digit run glued to a
 # fraction-slash fraction: Income Tax Ordinance section 66(c)(4)(a) prints the
-# birth-year child credit as "21<U+2044>2", meaning two and a half. The
-# flattening is lossy, so both readings of the glyph run are contributed: the
-# improper fraction by the pattern above, the mixed number by this one. Only
-# single-digit numerators and denominators qualify, which is the shape the
-# superscript/subscript flattening produces.
+# birth-year child credit as "21<U+2044>2", meaning two and a half, which the
+# OECD TaxBEN Israel table reports as 2.5. The flattening is lossy, but only
+# one of the two readings is a value the statute states: this pattern claims
+# the run and the improper reading of it is suppressed, so the grounding set
+# gets 2.5 and not 10.5. Only single-digit numerators and denominators
+# qualify, which is the shape the superscript/subscript flattening produces;
+# a genuine improper fraction with a wider numerator or denominator
+# ("21<U+2044>100") is left to the pattern above.
 _GLUED_MIXED_FRACTION_SLASH_PATTERN = re.compile(
     "(?<![\\d\u2044])"
     "(?P<whole>\\d+)(?P<numerator>\\d)\u2044(?P<denominator>\\d)"
@@ -8528,7 +8531,24 @@ def _tokenize_numeric_occurrences_from_text(
                 whole + numerator / denominator,
             )
 
+    # The glued run is read first so the improper reading of the same run can
+    # be suppressed below: a flattened mixed number has one reading the statute
+    # states and one it does not.
+    glued_mixed_spans: list[tuple[int, int]] = []
+    for match in _GLUED_MIXED_FRACTION_SLASH_PATTERN.finditer(raw_text):
+        with contextlib.suppress(ValueError, ZeroDivisionError):
+            whole = float(match.group("whole"))
+            numerator = float(match.group("numerator"))
+            denominator = float(match.group("denominator"))
+            add_both(raw_view, match.span(), whole + numerator / denominator)
+            add_both(raw_view, match.span("whole"), whole)
+            add_both(raw_view, match.span("numerator"), numerator)
+            add_both(raw_view, match.span("denominator"), denominator)
+            glued_mixed_spans.append(match.span())
+
     for match in _FRACTION_SLASH_PATTERN.finditer(raw_text):
+        if _span_overlaps(match.span(), glued_mixed_spans):
+            continue
         with contextlib.suppress(ValueError, ZeroDivisionError):
             whole = float(match.group("whole") or 0)
             numerator = float(match.group("numerator"))
@@ -8537,16 +8557,6 @@ def _tokenize_numeric_occurrences_from_text(
             # fraction they compose: an encoding may state a quarter of a
             # credit point as 0.25 or as the explicit pair the statute prints.
             add_both(raw_view, match.span(), whole + numerator / denominator)
-            add_both(raw_view, match.span("numerator"), numerator)
-            add_both(raw_view, match.span("denominator"), denominator)
-
-    for match in _GLUED_MIXED_FRACTION_SLASH_PATTERN.finditer(raw_text):
-        with contextlib.suppress(ValueError, ZeroDivisionError):
-            whole = float(match.group("whole"))
-            numerator = float(match.group("numerator"))
-            denominator = float(match.group("denominator"))
-            add_both(raw_view, match.span(), whole + numerator / denominator)
-            add_both(raw_view, match.span("whole"), whole)
             add_both(raw_view, match.span("numerator"), numerator)
             add_both(raw_view, match.span("denominator"), denominator)
 

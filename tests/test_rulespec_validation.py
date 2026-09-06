@@ -14804,14 +14804,18 @@ def test_numeric_extraction_handles_unicode_fraction_slash():
     # Israeli consolidations flatten a marked-up mixed number into a digit run
     # glued to the fraction: Income Tax Ordinance section 66(c)(4)(a) prints
     # the birth-year child credit as "21<U+2044>2", two and a half credit
-    # points, which the OECD TaxBEN Israel table reports as 2.5. The
-    # flattening is lossy, so both readings ground.
-    glued = extract_numbers_from_text(
-        "21\u20442 \u05e0\u05e7\u05d5\u05d3\u05d5\u05ea "
-        "\u05d6\u05d9\u05db\u05d5\u05d9 "
-        "\u05d1\u05e2\u05d3 \u05db\u05dc \u05d0\u05d7\u05d3"
+    # points, which the OECD TaxBEN Israel table reports as 2.5. Reading the
+    # run as an improper fraction instead would ground 10.5, a value the
+    # section never states, so the mixed reading claims the run alone.
+    ladder = extract_numbers_from_text(
+        "21\u20442, 41\u20442, 31\u20442 \u05e0\u05e7\u05d5\u05d3\u05d5\u05ea "
+        "\u05d6\u05d9\u05db\u05d5\u05d9"
     )
-    assert {2.5, 10.5, 2.0, 1.0} <= glued
+    assert {2.5, 4.5, 3.5} <= ladder
+    assert not ({10.5, 20.5, 15.5} & ladder)
+    # A genuine improper fraction whose numerator or denominator is wider than
+    # the flattening produces is still read as written.
+    assert 0.21 in extract_numbers_from_text("a share of 21\u2044100 applies")
 
 
 def test_rulespec_grounding_accepts_ghana_cedi_rate_schedule():
