@@ -1878,6 +1878,45 @@ _HEBREW_NUMBER_WORD_PATTERN = re.compile(
     + ")"
     "(?![\u0590-\u05ff])"
 )
+# Hebrew builds eleven through nineteen as two words, unit then ten, and the
+# unit half is not always a standalone numeral: Income Tax Ordinance section
+# 33A divides the credit point by twelve and writes that as two words whose
+# first, on its own, is the plural of "year". Only the pair carries the value.
+_HEBREW_TEEN_UNIT_VALUES = {
+    "אחד": 1.0,
+    "אחת": 1.0,
+    "שנים": 2.0,
+    "שניים": 2.0,
+    "שתים": 2.0,
+    "שתיים": 2.0,
+    "שלוש": 3.0,
+    "שלושה": 3.0,
+    "ארבע": 4.0,
+    "ארבעה": 4.0,
+    "חמש": 5.0,
+    "חמישה": 5.0,
+    "שש": 6.0,
+    "שישה": 6.0,
+    "שבע": 7.0,
+    "שבעה": 7.0,
+    "שמונה": 8.0,
+    "תשע": 9.0,
+    "תשעה": 9.0,
+}
+_HEBREW_TEEN_TENS_WORDS = ("עשר", "עשרה")
+_HEBREW_TEEN_PATTERN = re.compile(
+    "(?<![\\u0590-\\u05ff])"
+    + _HEBREW_WORD_PREFIX_PATTERN
+    + "(?P<unit>"
+    + "|".join(
+        re.escape(word)
+        for word in sorted(_HEBREW_TEEN_UNIT_VALUES, key=len, reverse=True)
+    )
+    + ")"
+    "\\s+"
+    "(?:" + "|".join(re.escape(word) for word in _HEBREW_TEEN_TENS_WORDS) + ")"
+    "(?![\\u0590-\\u05ff])"
+)
 _EUROPEAN_RAW_NUMBER = r"-?(?:\d{1,3}(?:[.\u00a0\u202f ]\d{3})+|\d+)(?:\s*[,.]\d{1,4})?"
 _RANGE_ENDPOINT_RAW_NUMBER = (
     r"-?(?:\d{1,3}(?:[.\u00a0\u202f]\d{3})+|\d+)(?:[,.]\d{1,4})?"
@@ -4746,6 +4785,14 @@ def _iter_hebrew_number_word_matches(
 ) -> list[tuple[tuple[int, int], float]]:
     """Return Hebrew ordinal and cardinal number words with their values."""
     matches: list[tuple[tuple[int, int], float]] = []
+    # Teens first: the caller drops a match whose span overlaps one already
+    # taken, and the ten half of a teen is a standalone number word, so a
+    # single-word pass run first would claim it and hide the pair.
+    for match in _HEBREW_TEEN_PATTERN.finditer(text):
+        unit = _HEBREW_TEEN_UNIT_VALUES.get(match.group("unit"))
+        if unit is None:
+            continue
+        matches.append((match.span(), 10.0 + unit))
     for match in _HEBREW_NUMBER_WORD_PATTERN.finditer(text):
         value = _HEBREW_NUMBER_WORD_VALUES.get(match.group("word"))
         if value is None:

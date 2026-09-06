@@ -14801,6 +14801,14 @@ def test_numeric_extraction_reads_hebrew_ordinal_and_cardinal_words():
     # A longer word that merely contains a number word is not a number: the
     # boundary guard rejects a match inside a surrounding Hebrew word.
     assert extract_numbers_from_text("השנים האחרונות") == set()
+    # Eleven through nineteen are two words, unit then ten. Income Tax
+    # Ordinance section 33A divides by twelve as "שנים עשר", and the pair has
+    # to beat the standalone "עשר" (ten) that sits inside it.
+    assert 12.0 in extract_numbers_from_text("ומחולק בשנים עשר")
+    assert 15.0 in extract_numbers_from_text("חמישה עשר ימים")
+    # The unit half of a teen is not always a numeral on its own: "שנים" alone
+    # is the plural of "year", and five years must not become twelve.
+    assert 12.0 not in extract_numbers_from_text("בחמש השנים האחרונות")
 
 
 def test_numeric_extraction_handles_unicode_fraction_slash():
