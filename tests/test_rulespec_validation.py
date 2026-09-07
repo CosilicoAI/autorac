@@ -15453,6 +15453,48 @@ def test_a_structural_reference_composes_hundreds_without_a_conjunction():
     assert 123.0 in extract_numbers_from_text(text)
 
 
+def test_a_percentage_phrase_reads_prefixed_grouped_long_and_negative_counts():
+    for text, expected in (
+        ("התשלום יוגדל בשני אחוזים וחצי", 0.025),
+        ("בשיעור של 1,000 אחוזים וחצי מההכנסה", 10.005),
+        ("בשיעור של מאה עשרים ושלושה ושלושה רבעים אחוזים", 1.2375),
+        ("בשיעור של -2 אחוזים וחצי מההכנסה", -0.025),
+        ("בשיעור של \u22122 אחוזים ושלושה רבעים מההכנסה", -0.0275),
+    ):
+        grounded = extract_numbers_from_text(text)
+        assert any(abs(v - expected) < 1e-9 for v in grounded), (text, grounded)
+        assert not ({0.015, 0.2375, -0.015, 1000.0} & grounded), (text, grounded)
+        assert {round(v, 9) for v in _hebrew_recall(text)} == {round(expected, 9)}, text
+
+
+def test_a_possessive_after_an_ordinal_keeps_the_ordinal():
+    for text, ordinal in (
+        ("דרגה חמישית של העובד מזכה בתוספת של 100 שקלים", 5.0),
+        ("לידה שלישית של האם מזכה במענק של 100 שקלים", 3.0),
+    ):
+        grounded = extract_numbers_from_text(text)
+        assert ordinal in grounded, (text, grounded)
+        assert not ({0.2, 1.0 / 3.0} & grounded), (text, grounded)
+        assert _hebrew_recall(text) == {ordinal, 100.0}, (text, _hebrew_recall(text))
+    assert _hebrew_recall("הסכום יהיה חמישית של ההכנסה") == {0.2}
+
+
+def test_a_reference_list_reads_commas_then_one_closing_join():
+    assert _hebrew_recall("לפי סעיפים 1, 2, 4 ישולם סכום של 100 שקלים") == {100.0}
+    assert _hebrew_recall("לפי סעיפים 1 ו־2, 100 או 200 דולר ישולמו לכל ילד") == {
+        100.0,
+        200.0,
+    }
+    assert _hebrew_recall("לפי סעיפים 1, 2 או 3 ישולם סכום של 100 שקלים") == {100.0}
+    assert _hebrew_recall("לפי סעיפים 1 ו־2, 100 דולר ישולמו לכל ילד") == {100.0}
+
+
+def test_a_structural_reference_composes_thousands_and_hundreds_without_a_conjunction():
+    text = "לפי סעיף אלף מאתיים ושלושה ישולם סכום של 100 שקלים"
+    assert _hebrew_recall(text) == {100.0}
+    assert 1203.0 in extract_numbers_from_text(text)
+
+
 def test_hebrew_number_words_join_the_recall_inventory():
     # A value the statute writes as a word is one an encoding has to recall:
     # National Insurance Law section 68(c) supplements a parent entitled for
@@ -16099,17 +16141,19 @@ rules:
     tokenizer_calls = 0
     cleaner_calls = 0
     original_tokenizer = validator_pipeline._tokenize_numeric_occurrences_from_text
-    original_cleaner = validator_pipeline._clean_source_text_for_numeric_extraction
+    original_cleaner = (
+        validator_pipeline._clean_source_text_for_numeric_extraction_tracked
+    )
 
     def counting_tokenize(text, *, profile="legacy"):
         nonlocal tokenizer_calls
         tokenizer_calls += 1
         return original_tokenizer(text, profile=profile)
 
-    def counting_cleaner(text):
+    def counting_cleaner(text, *, profile="legacy"):
         nonlocal cleaner_calls
         cleaner_calls += 1
-        return original_cleaner(text)
+        return original_cleaner(text, profile=profile)
 
     monkeypatch.setattr(
         validator_pipeline,
@@ -16118,7 +16162,7 @@ rules:
     )
     monkeypatch.setattr(
         validator_pipeline,
-        "_clean_source_text_for_numeric_extraction",
+        "_clean_source_text_for_numeric_extraction_tracked",
         counting_cleaner,
     )
 

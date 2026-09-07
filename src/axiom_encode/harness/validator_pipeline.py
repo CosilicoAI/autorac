@@ -2361,9 +2361,9 @@ _HEBREW_FRACTION_WORD_PATTERN = re.compile(
     )
     + ")"
     "(?![\u0590-\u05ff])"
-    "(?P<partitive>\\s+(?:\u05de\u05d4[\u0590-\u05ff]|\u05de\u05df(?![\u0590-\u05ff])|של(?![\u0590-\u05ff])"
+    "(?P<partitive>\\s+(?:\u05de\u05d4[\u0590-\u05ff]|\u05de\u05df(?![\u0590-\u05ff])"
     "|\u05d4?אחוז(?:ים|י)?(?![\u0590-\u05ff])))?"
-    "(?P<loose_partitive>\\s+(?:\u05de|\u05d4)[\u0590-\u05ff]{2,})?"
+    "(?P<loose_partitive>\\s+(?:של(?![\u0590-\u05ff])|(?:\u05de|\u05d4)[\u0590-\u05ff]{2,}))?"
 )
 
 
@@ -2408,7 +2408,7 @@ def _iter_hebrew_fraction_word_matches(
 # its words.
 _HEBREW_PERCENT_PHRASE_PATTERN = re.compile(
     "(?<![\u0590-\u05ff\\d.,])"
-    "(?:(?P<digits>\\d+(?:\\.\\d+)?)\\s+)?"
+    "(?:(?P<digits>(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?)\\s+)?"
     "(?P<noun>\u05d4?אחוז(?:ים)?)"
     "(?:\\s+\u05d5(?:(?P<tail>"
     + "|".join(
@@ -2430,7 +2430,7 @@ _HEBREW_PERCENT_PHRASE_PATTERN = re.compile(
 
 
 def _hebrew_word_run_before(
-    text: str, end: int, limit: int = 4
+    text: str, end: int, limit: int = 16
 ) -> list["re.Match[str]"]:
     """The last run of joined Hebrew words ending flush at ``end``, newest last."""
     tokens = list(_HEBREW_WORD_TOKEN_PATTERN.finditer(text[:end]))
@@ -2459,19 +2459,21 @@ def _iter_hebrew_percent_phrase_matches(
         tail_count = match.group("tail_count")
         count_value: float | None = None
         count_start = match.start()
+        negative = False
         if match.group("digits"):
             # A denominator ("16 1/2 אחוזים", "1⁄ 4 אחוזים") belongs to the
             # fraction passes, which read the whole fraction as the rate.
             if _SLASH_BEFORE_NUMBER_PATTERN.search(text[: match.start("digits")]):
                 continue
-            count_value = float(match.group("digits"))
+            count_value = float(match.group("digits").replace(",", ""))
             digits_start = match.start("digits")
             if digits_start > 0 and text[digits_start - 1] in "-\u2212":
-                count_value = -count_value
+                negative = True
                 count_start = digits_start - 1
         else:
-            # The count: the longest run of up to four joined words before the
-            # noun that the numeral grammar reads whole, or a single count word.
+            # The count: the longest run of joined words before the noun that
+            # the numeral grammar reads whole, or a single (possibly prefixed)
+            # count word.
             run = _hebrew_word_run_before(text, match.start())
             for width in range(len(run), 0, -1):
                 words = [token.group(0) for token in run[-width:]]
@@ -2480,10 +2482,14 @@ def _iter_hebrew_percent_phrase_matches(
                     count_value = parsed[1]
                     count_start = run[-width].start()
                     break
-                if width == 1 and words[0] in _HEBREW_FRACTION_COUNT_VALUES:
-                    count_value = _HEBREW_FRACTION_COUNT_VALUES[words[0]]
-                    count_start = run[-width].start()
-                    break
+                if width == 1:
+                    bare = _strip_hebrew_number_prefix(
+                        words[0], set(_HEBREW_FRACTION_COUNT_VALUES)
+                    )
+                    if bare is not None:
+                        count_value = _HEBREW_FRACTION_COUNT_VALUES[bare]
+                        count_start = run[-width].start()
+                        break
         if count_value is None and tail is None and tail_count is None:
             continue
         value = count_value if count_value is not None else 1.0
@@ -2494,6 +2500,9 @@ def _iter_hebrew_percent_phrase_matches(
                 _HEBREW_FRACTION_COUNT_VALUES[tail_count]
                 * _HEBREW_COUNTED_FRACTION_VALUES[match.group("tail_fraction")]
             )
+        # The sign belongs to the whole mixed quantity, tail included.
+        if negative:
+            value = -value
         matches.append(((count_start, match.end()), value / 100))
     return matches
 
@@ -2751,7 +2760,7 @@ _HEBREW_STRUCTURAL_REMAINDER = (
 _HEBREW_STRUCTURAL_NUMBER_WORD = (
     "\u05d4?(?:"
     "(?:אלף|אלפיים|(?:" + _HEBREW_STRUCTURAL_UNITS + ")\\s+אלפים)"
-    "(?:\\s+\u05d5(?:מאה|מאתיים|(?:" + _HEBREW_STRUCTURAL_UNITS + ")\\s+מאות))?"
+    "(?:\\s+\u05d5?(?:מאה|מאתיים|(?:" + _HEBREW_STRUCTURAL_UNITS + ")\\s+מאות))?"
     "(?:\\s+\u05d5?" + _HEBREW_STRUCTURAL_REMAINDER + ")?"
     "|(?:מאה|מאתיים|(?:" + _HEBREW_STRUCTURAL_UNITS + ")\\s+מאות)"
     "(?:\\s+\u05d5?" + _HEBREW_STRUCTURAL_REMAINDER + ")?"
@@ -2760,7 +2769,8 @@ _HEBREW_STRUCTURAL_NUMBER_WORD = (
 _HEBREW_STRUCTURAL_DIGIT = "\\d+[\u05d0-\u05ea]?(?:\\(\\d+\\))?"
 # A quantity, not a further reference: a number followed by a unit noun.
 _HEBREW_STRUCTURAL_NOT_A_QUANTITY = (
-    '(?!\\s*(?:שקלים|ש"ח|ש״ח|₪|ימים|חודשים|שנים|שבועות|נקודות|נקודת|אחוז|אחוזים|ילדים))'
+    '(?!\\s*(?:שקלים|שקל|ש"ח|ש״ח|₪|דולר|דולרים|יורו|אירו|ליש"ט|לירות|אגורות|ימים|יום|'
+    "חודשים|חודש|שנים|שנה|שבועות|שבוע|שעות|נקודות|נקודת|אחוז|אחוזים|ילדים))"
 )
 _HEBREW_STRUCTURAL_PLURAL_NOUNS = (
     "פרקים|תוספות|חלקים|סימנים|סעיפים קטנים|סעיפים|פסקאות|לוחות|טורים|פרטים|תקנות"
@@ -2778,15 +2788,18 @@ _HEBREW_STRUCTURAL_REFERENCE_PATTERN = re.compile(
     "(?:" + _HEBREW_STRUCTURAL_PLURAL_NOUNS + ")\\s+"
     "(?:"
     + _HEBREW_STRUCTURAL_DIGIT
-    # A comma joins a non-final item only ("1, 2 או 3"): a comma followed by a
-    # number that nothing further joins is the sentence going on ("1, 100 דולר").
+    # Commas join the items of a list and a conjunction or range word closes
+    # it ("1, 2, 4", "1, 2 או 3", "1 ו־2"); after the closing join the
+    # sentence goes on, whatever follows ("1 ו־2, 100 או 200 דולר"), and a
+    # comma-joined item is never a quantity.
     + "(?:\\s*,\\s*"
-    + _HEBREW_STRUCTURAL_DIGIT
-    + "(?=\\s*(?:,|\u05d5\u05be?|או|עד|[-\u2013\u2014])\\s*\\d)"
-    + "|\\s*(?:\u05d5\u05be?|או|עד|[-\u2013\u2014])\\s*"
     + _HEBREW_STRUCTURAL_DIGIT
     + _HEBREW_STRUCTURAL_NOT_A_QUANTITY
     + ")*"
+    + "(?:\\s*(?:\u05d5\u05be?|או|עד|[-\u2013\u2014])\\s*"
+    + _HEBREW_STRUCTURAL_DIGIT
+    + _HEBREW_STRUCTURAL_NOT_A_QUANTITY
+    + ")?"
     "|" + _HEBREW_STRUCTURAL_NUMBER_WORD + ")"
     # A singular noun takes one reference, or a pair joined by a conjunction
     # or a range word -- never a comma, which ends the reference ("סעיף 1,
