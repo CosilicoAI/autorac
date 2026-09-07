@@ -1985,13 +1985,17 @@ _HEBREW_MIXED_FRACTION_VALUES = {
     "עשירית": 0.1,
 }
 _HEBREW_NUMBER_PREFIX_LETTERS = "\u05d5\u05d4\u05d1\u05db\u05dc\u05de\u05e9"
-_HEBREW_WORD_TOKEN_PATTERN = re.compile("[\u0590-\u05ff]+")
+# A maqaf (U+05BE) joins words the way a hyphen does, so it is not a word
+# character here: "שנים־עשר" is two tokens, joined the way "שנים-עשר" is.
+_HEBREW_WORD_TOKEN_PATTERN = re.compile("[\u0590-\u05bd\u05bf-\u05ff]+")
+_HEBREW_TEEN_JOIN_PATTERN = re.compile("^\\s*[-\u05be]\\s*$")
 _HEBREW_PERCENT_WORD_PATTERN = re.compile("\\s+אחוז(?:ים|י)?(?![\u0590-\u05ff])")
 # A printed number followed by the percent word: "23 אחוזים" is 0.23 the way
 # "23%" is. The lookbehind keeps a fraction's denominator ("16 1⁄2 אחוזים")
 # for the fraction pass, which reads the percent word itself.
 _HEBREW_DIGIT_PERCENT_PATTERN = re.compile(
-    "(?<![\\d.,\u2044])(?P<number>(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?)"
+    "(?<![\\d.,\u2044])(?P<sign>[-\u2212])?"
+    "(?P<number>(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?)"
     "\\s+אחוז(?:ים|י)?(?![\u0590-\u05ff])"
 )
 
@@ -2149,11 +2153,19 @@ def _iter_hebrew_compound_number_matches(
     while index < len(tokens):
         # Only adjacent words (whitespace between them) form one number.
         run_end = index
-        while (
-            run_end + 1 < len(tokens)
-            and text[tokens[run_end][1] : tokens[run_end + 1][0]].strip() == ""
-        ):
-            run_end += 1
+        while run_end + 1 < len(tokens):
+            gap = text[tokens[run_end][1] : tokens[run_end + 1][0]]
+            if gap.strip() == "":
+                run_end += 1
+                continue
+            # A hyphen or maqaf joins a unit to its ten ("שנים-עשר", "שנים־עשר").
+            if (
+                _HEBREW_TEEN_JOIN_PATTERN.match(gap)
+                and tokens[run_end + 1][2] in _HEBREW_TEEN_TENS
+            ):
+                run_end += 1
+                continue
+            break
         words = [token[2] for token in tokens[index : run_end + 1]]
         parsed = _parse_hebrew_number_run(words)
         if parsed is not None:
@@ -9222,9 +9234,19 @@ def _tokenize_numeric_occurrences_from_text(
     # states a quarter of a credit point as 0.25 has recalled it in full. The
     # printed numerator and denominator stay available to grounding, because
     # an encoding may also state them as the explicit pair the statute prints.
+    # A fraction-slash run is read by the fraction pass below, percent word
+    # and all; the digit matcher must not read its denominator ("1⁄ 2 אחוזים")
+    # as a second rate.
+    fraction_cleaned_spans = [
+        match.span() for match in _FRACTION_SLASH_PATTERN.finditer(cleaned)
+    ]
     for match in _HEBREW_DIGIT_PERCENT_PATTERN.finditer(cleaned):
+        if _span_overlaps(match.span("number"), fraction_cleaned_spans):
+            continue
         with contextlib.suppress(ValueError):
             value = float(match.group("number").replace(",", ""))
+            if match.group("sign"):
+                value = -value
             add_both(
                 cleaned_view,
                 match.span(),

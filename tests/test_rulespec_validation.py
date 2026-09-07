@@ -15180,6 +15180,32 @@ def test_provenance_survives_cancelling_edits_and_line_terminators():
             assert text[occurrence.start : occurrence.end] == "2.24"
 
 
+def test_a_hyphenated_or_maqaf_teen_composes_before_a_scale_word():
+    for text in (
+        "ישולם סכום של שנים-עשר אלף שקלים",
+        "ישולם סכום של שנים־עשר אלף שקלים",
+        "ישולם סכום של שנים עשר אלף שקלים",
+    ):
+        grounded = extract_numbers_from_text(text)
+        assert 12000.0 in grounded, (text, grounded)
+        assert not ({10000.0, 12.0, 1000.0} & grounded), (text, grounded)
+        assert _hebrew_recall(text) == {12000.0}, (text, _hebrew_recall(text))
+
+
+def test_a_hebrew_percent_word_reads_the_whole_fraction_and_keeps_its_sign():
+    # Whitespace after the slash is a form the fraction pass accepts; the
+    # digit matcher must not take the denominator as a second rate.
+    spaced = "בשיעור של 16 1\u2044 2 אחוזים"
+    assert 0.165 in extract_numbers_from_text(spaced)
+    assert 0.02 not in extract_numbers_from_text(spaced)
+    assert _hebrew_recall(spaced) == {0.165}
+    negative = "בשיעור של -23 אחוזים"
+    assert -0.23 in extract_numbers_from_text(negative)
+    assert 0.23 not in extract_numbers_from_text(negative)
+    assert _hebrew_recall(negative) == {-0.23}
+    assert -0.23 in extract_numbers_from_text("בשיעור של \u221223 אחוזים")
+
+
 def test_hebrew_number_words_join_the_recall_inventory():
     # A value the statute writes as a word is one an encoding has to recall:
     # National Insurance Law section 68(c) supplements a parent entitled for
