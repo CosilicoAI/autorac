@@ -15495,6 +15495,162 @@ def test_a_structural_reference_composes_thousands_and_hundreds_without_a_conjun
     assert 1203.0 in extract_numbers_from_text(text)
 
 
+def test_a_bare_carriage_return_ends_a_line():
+    # A standalone CR is a line terminator: the heading it ends is dropped
+    # on its own, and the amount on the next line survives, under the legacy
+    # and the German profile alike. A CRLF keeps its width and provenance.
+    for text in (
+        "CHAPTER 1\rThe benefit is 100 dollars.",
+        "CHAPTER 1\r\nThe benefit is 100 dollars.",
+        "CHAPTER 1\nThe benefit is 100 dollars.",
+    ):
+        for profile in ("legacy", "de-DE"):
+            grounded = extract_numbers_from_text(text, profile=profile)
+            assert 100.0 in grounded, (repr(text), profile, grounded)
+        occurrences = extract_typed_numeric_inventory_occurrences_from_text(text)
+        assert [text[o.start : o.end] for o in occurrences] == ["100"], repr(text)
+
+
+def test_a_definite_ordinal_before_the_percent_noun_is_not_its_count():
+    text = "ישולם בעד הילד השני אחוז וחצי מהשכר"
+    grounded = extract_numbers_from_text(text)
+    assert 0.015 in grounded and 2.0 in grounded, grounded
+    assert 0.025 not in grounded, grounded
+    assert _hebrew_recall(text) == {2.0, 0.015}
+    third = "ישולם בעד הילד השלישי אחוז וחצי מהשכר"
+    assert _hebrew_recall(third) == {3.0, 0.015}
+    assert 0.035 not in extract_numbers_from_text(third)
+    # The construct count, with or without a prefix, is still the count.
+    assert _hebrew_recall("בשיעור של שני אחוזים וחצי מההכנסה") == {0.025}
+    assert _hebrew_recall("התשלום יוגדל בשני אחוזים וחצי") == {0.025}
+
+
+def test_a_fractional_count_before_the_percent_noun_is_read():
+    for text, expected in (
+        ("בשיעור של חצי אחוז ורבע מההכנסה", 0.0075),
+        ("בשיעור של שלושה רבעים אחוז מההכנסה", 0.0075),
+        ("בשיעור של חצי אחוז מההכנסה", 0.005),
+        ("בשיעור של רבע אחוז וחצי מההכנסה", 0.0075),
+    ):
+        grounded = extract_numbers_from_text(text)
+        assert any(abs(value - expected) < 1e-12 for value in grounded), (
+            text,
+            grounded,
+        )
+        assert not (
+            {0.0125, 0.01, 0.005 if expected != 0.005 else 0.0125} & grounded
+        ), (
+            text,
+            grounded,
+        )
+        assert {round(v, 12) for v in _hebrew_recall(text)} == {expected}, text
+
+
+def test_a_fraction_of_a_named_amount_is_a_fraction_after_any_verb():
+    for text in (
+        "המעביד ישלם חמישית משכרו של העובד",
+        "המעביד ישלם חמישית משכר העובד",
+        "המעביד ישלם חמישית ההכנסה",
+        "המוסד ינכה שישית מקצבתו",
+        "העובד זכאי לתשלום שהוא חמישית מהכנסתה",
+    ):
+        grounded = extract_numbers_from_text(text)
+        assert any(
+            abs(value - 0.2) < 1e-9 or abs(value - 1 / 6) < 1e-9 for value in grounded
+        ), (text, grounded)
+        assert not ({5.0, 6.0} & grounded), (text, grounded)
+        assert len(_hebrew_recall(text)) == 1, (text, _hebrew_recall(text))
+    # The ordinal readings the narrower rule kept are still kept.
+    for text, ordinal in (
+        ("דרגה חמישית של העובד מזכה בתוספת של 100 שקלים", 5.0),
+        ("לידה שלישית מזכה במענק של 100 שקלים", 3.0),
+        ("דרגה חמישית המקנה תוספת של 100 שקלים", 5.0),
+    ):
+        grounded = extract_numbers_from_text(text)
+        assert ordinal in grounded and not ({0.2, 1.0 / 3.0} & grounded), (
+            text,
+            grounded,
+        )
+        assert _hebrew_recall(text) == {ordinal, 100.0}, (text, _hebrew_recall(text))
+
+
+def test_a_comma_list_ends_before_a_coordinated_amount():
+    text = "לפי סעיפים 1, 2, 4, 100 או 200 דולר ישולמו לכל ילד"
+    assert _hebrew_recall(text) == {100.0, 200.0}
+    assert {1.0, 2.0, 4.0} <= extract_numbers_from_text(text)
+    assert _hebrew_recall("לפי סעיפים 1, 100 או 200 שקלים ישולמו לכל ילד") == {
+        100.0,
+        200.0,
+    }
+    assert _hebrew_recall("לפי סעיפים 1, 2 או 3 ישולם סכום של 100 שקלים") == {100.0}
+    assert _hebrew_recall("לפי סעיפים 1, 2, 4 ישולם סכום של 100 שקלים") == {100.0}
+
+
+def test_a_range_is_one_item_of_a_reference_list():
+    for text in (
+        "לפי סעיפים 1 עד 3 ו־5 ישולם סכום של 100 שקלים",
+        "לפי סעיפים 1, 3 עד 5 או 7 ישולם סכום של 100 שקלים",
+        "לפי סעיפים 1\u20133 ו־5 ישולם סכום של 100 שקלים",
+        "לפי סעיפים 1 עד 3 ישולם סכום של 100 שקלים",
+        "לפי סעיף 1 עד 3 ישולם סכום של 100 שקלים",
+        "לפי סעיף 1 או 2 ישולם סכום של 100 שקלים",
+    ):
+        assert _hebrew_recall(text) == {100.0}, (text, _hebrew_recall(text))
+        assert 1.0 in extract_numbers_from_text(text), text
+    assert _hebrew_recall("לפי סעיפים 1 עד 3, 100 שקלים ישולמו לכל ילד") == {100.0}
+
+
+def test_a_structural_reference_reads_the_numeral_grammar_whole():
+    for text, number in (
+        ("לפי סעיף שני אלפים ישולם סכום של 100 שקלים", 2000.0),
+        ("לפי פרק שנים עשר אלף ישולם סכום של 100 שקלים", 12000.0),
+        ("לפי סעיף שתי מאות ושלושה ישולם סכום של 100 שקלים", 203.0),
+        ("לפי סעיף שנים־עשר ישולם סכום של 100 שקלים", 12.0),
+    ):
+        assert _hebrew_recall(text) == {100.0}, (text, _hebrew_recall(text))
+        assert number in extract_numbers_from_text(text), (text, number)
+    # An ordinal reference followed by a count keeps the count substantive.
+    assert _hebrew_recall("לפי התוספת השנייה שלושה ילדים מזכים בקצבה של 100 שקלים") == {
+        3.0,
+        100.0,
+    }
+    assert _hebrew_recall("לפי סעיף שלוש, שלושה ילדים מזכים בקצבה של 100 שקלים") == {
+        3.0,
+        100.0,
+    }
+
+
+def test_a_mixed_number_takes_every_fraction_word_as_its_tail():
+    for text, expected in (
+        ("מקדם של אחד ושביעית מההכנסה", 8.0 / 7.0),
+        ("מקדם של אחד ותשיעית מההכנסה", 10.0 / 9.0),
+        ("מקדם של שניים ושביעית", 15.0 / 7.0),
+    ):
+        grounded = extract_numbers_from_text(text)
+        assert any(abs(value - expected) < 1e-9 for value in grounded), (text, grounded)
+        assert not ({1.0, 2.0, 1.0 / 7.0, 1.0 / 9.0} & grounded), (text, grounded)
+        assert {round(v, 9) for v in _hebrew_recall(text)} == {round(expected, 9)}, text
+
+
+def test_the_percentage_pass_scans_thousands_of_phrases_in_linear_time():
+    import time
+
+    from axiom_encode.harness.validator_pipeline import (
+        _iter_hebrew_percent_phrase_matches,
+    )
+
+    # Each spelled count used to retokenize everything before it: 1,000,
+    # 2,000 and 4,000 phrases took 0.23, 0.92 and 3.77 seconds. The text is
+    # tokenized once and only the run before each noun is walked.
+    text = "בשיעור של חמישה אחוזים מההכנסה; " * 4000
+    started = time.perf_counter()
+    matches = _iter_hebrew_percent_phrase_matches(text)
+    elapsed = time.perf_counter() - started
+    assert len(matches) == 4000
+    assert all(abs(rate - 0.05) < 1e-12 for _span, rate in matches)
+    assert elapsed < 2.0, elapsed
+
+
 def test_hebrew_number_words_join_the_recall_inventory():
     # A value the statute writes as a word is one an encoding has to recall:
     # National Insurance Law section 68(c) supplements a parent entitled for
