@@ -2007,7 +2007,11 @@ _HEBREW_NUMBER_PREFIX_LETTERS = "\u05d5\u05d4\u05d1\u05db\u05dc\u05de\u05e9"
 # character here: "שנים־עשר" is two tokens, joined the way "שנים-עשר" is.
 _HEBREW_WORD_TOKEN_PATTERN = re.compile("[\u0590-\u05bd\u05bf-\u05ff]+")
 _HEBREW_TEEN_JOIN_PATTERN = re.compile("^\\s*[-\u05be]\\s*$")
-_HEBREW_PERCENT_WORD_PATTERN = re.compile("\\s+אחוז(?:ים|י)?(?![\u0590-\u05ff])")
+_HEBREW_PERCENT_WORD_PATTERN = re.compile("\\s+\u05d4?אחוז(?:ים|י)?(?![\u0590-\u05ff])")
+# The percent noun may precede its count -- "אחוז אחד" is one percent.
+_HEBREW_PERCENT_NOUN_BEFORE_PATTERN = re.compile(
+    "(?<![\u0590-\u05ff])\u05d4?אחוז(?:ים)?\\s+$"
+)
 # A printed number followed by the percent word: "23 אחוזים" is 0.23 the way
 # "23%" is. The lookbehind keeps a fraction's denominator ("16 1⁄2 אחוזים")
 # for the fraction pass, which reads the percent word itself.
@@ -2097,6 +2101,12 @@ def _parse_hebrew_number_run(
     def has_vav(position: int) -> bool:
         return position < len(words) and words[position].startswith("\u05d5")
 
+    def fraction_noun_follows(position: int) -> bool:
+        return (
+            position + 1 < len(words)
+            and words[position + 1] in _HEBREW_COUNTED_FRACTION_VALUES
+        )
+
     def parse_small(position: int) -> tuple[int, float, str] | None:
         word = word_at(position)
         if word is None:
@@ -2108,6 +2118,7 @@ def _parse_hebrew_number_run(
                 following in units
                 and following not in _HEBREW_TEEN_TENS
                 and has_vav(position + 1)
+                and not fraction_noun_follows(position + 1)
             ):
                 return position + 2, total + units[following], "compound"
             return position + 1, total, "tens"
@@ -2118,6 +2129,10 @@ def _parse_hebrew_number_run(
             if following in _HEBREW_TEEN_TENS and not has_vav(position + 1):
                 return position + 2, 10.0 + units[word], "teen"
             if word in teen_only:
+                return None
+            if fraction_noun_follows(position):
+                # "שלושה רבעים" is three quarters, a fractional tail or a
+                # counted fraction, never a three.
                 return None
             return position + 1, units[word], "unit"
         return None
@@ -2338,7 +2353,7 @@ _HEBREW_FRACTION_WORD_PATTERN = re.compile(
     + ")"
     "(?![\u0590-\u05ff])"
     "(?P<partitive>\\s+(?:\u05de\u05d4[\u0590-\u05ff]|\u05de\u05df(?![\u0590-\u05ff])|של(?![\u0590-\u05ff])"
-    "|אחוז(?:ים|י)?(?![\u0590-\u05ff])))?"
+    "|\u05d4?אחוז(?:ים|י)?(?![\u0590-\u05ff])))?"
 )
 
 
@@ -2538,15 +2553,91 @@ _ENGLISH_STRUCTURAL_DIGIT_LABEL_PATTERN = re.compile(
 # 121ב". The ordinal or number identifies a place in the instrument, not a
 # quantity the instrument sets, so it is no recall obligation; "the fourth
 # child" carries no such noun and stays substantive.
-# Every word the numeral grammar accepts, so a section named "מאה ועשרים" or
-# "השתיים עשרה" is a reference the way "120" is.
-_HEBREW_STRUCTURAL_NUMBER_WORDS = (
-    set(_HEBREW_NUMBER_WORD_VALUES)
-    | set(_HEBREW_TEEN_UNIT_VALUES)
-    | set(_HEBREW_TEEN_TENS_WORDS)
-    | {"עשרים", "שלושים", "ארבעים", "חמישים", "שישים", "שבעים", "שמונים", "תשעים"}
-    | {"מאה", "מאתיים", "מאות", "אלף", "אלפיים", "אלפים"}
+_HEBREW_STRUCTURAL_ORDINALS = _hebrew_alternation(
+    {
+        "ראשונה",
+        "ראשון",
+        "שנייה",
+        "שניה",
+        "שני",
+        "שלישית",
+        "שלישי",
+        "רביעית",
+        "רביעי",
+        "חמישית",
+        "חמישי",
+        "שישית",
+        "שישי",
+        "שביעית",
+        "שביעי",
+        "שמינית",
+        "שמיני",
+        "תשיעית",
+        "תשיעי",
+        "עשירית",
+        "עשירי",
+    }
 )
+_HEBREW_STRUCTURAL_UNITS = _hebrew_alternation(
+    (set(_HEBREW_NUMBER_WORD_VALUES) | set(_HEBREW_TEEN_UNIT_VALUES))
+    - {
+        "ראשונה",
+        "ראשון",
+        "שנייה",
+        "שניה",
+        "שני",
+        "שלישית",
+        "שלישי",
+        "רביעית",
+        "רביעי",
+        "חמישית",
+        "חמישי",
+        "שישית",
+        "שישי",
+        "שביעית",
+        "שביעי",
+        "שמינית",
+        "שמיני",
+        "תשיעית",
+        "תשיעי",
+        "עשירית",
+        "עשירי",
+    }
+)
+_HEBREW_STRUCTURAL_TENS = "עשרים|שלושים|ארבעים|חמישים|שישים|שבעים|שמונים|תשעים"
+# One number of the grammar after a structural noun, no more: a teen ("השתיים
+# עשרה"), thousands and hundreds with a vav-bound remainder ("אלף ומאתיים",
+# "מאה ועשרים"), tens with a vav-bound unit or ordinal ("העשרים ואחד"), or a
+# lone ordinal or unit. A count that follows without a vav ("התוספת השנייה
+# שלושה ילדים") is the statute's own quantity and stays substantive.
+_HEBREW_STRUCTURAL_NUMBER_WORD = (
+    "\u05d4?(?:"
+    "(?:" + _HEBREW_STRUCTURAL_UNITS + ")[\\s\u05be-]+(?:עשר|עשרה)"
+    "|(?:אלף|אלפיים|(?:" + _HEBREW_STRUCTURAL_UNITS + ")\\s+אלפים)"
+    "(?:\\s+\u05d5(?:מאה|מאתיים|(?:" + _HEBREW_STRUCTURAL_UNITS + ")\\s+מאות))?"
+    "(?:\\s+\u05d5(?:"
+    + _HEBREW_STRUCTURAL_TENS
+    + ")(?:\\s+\u05d5(?:"
+    + _HEBREW_STRUCTURAL_UNITS
+    + "))?)?"
+    "|(?:מאה|מאתיים|(?:" + _HEBREW_STRUCTURAL_UNITS + ")\\s+מאות)"
+    "(?:\\s+\u05d5(?:"
+    + _HEBREW_STRUCTURAL_TENS
+    + "))?(?:\\s+\u05d5(?:"
+    + _HEBREW_STRUCTURAL_UNITS
+    + "|"
+    + _HEBREW_STRUCTURAL_ORDINALS
+    + "))?"
+    "|(?:"
+    + _HEBREW_STRUCTURAL_TENS
+    + ")(?:\\s+\u05d5\u05d4?(?:"
+    + _HEBREW_STRUCTURAL_UNITS
+    + "|"
+    + _HEBREW_STRUCTURAL_ORDINALS
+    + "))?"
+    "|" + _HEBREW_STRUCTURAL_ORDINALS + ")"
+)
+_HEBREW_STRUCTURAL_DIGIT = "\\d+[\u05d0-\u05ea]?(?:\\(\\d+\\))?"
 _HEBREW_STRUCTURAL_REFERENCE_PATTERN = re.compile(
     "(?<![\u0590-\u05ff])"
     "(?:[\u05d1\u05db\u05dc\u05de\u05d5\u05e9]{0,2}\u05d4?)"
@@ -2554,15 +2645,13 @@ _HEBREW_STRUCTURAL_REFERENCE_PATTERN = re.compile(
     "סעיפים|סעיף|פסקאות|פסקת משנה|פסקה|לוחות|לוח|טורים|טור|פרטים|פרט|"
     "תקנות|תקנה)"
     r"\s+"
-    "(?:\\d+[\u05d0-\u05ea]?(?:\\(\\d+\\))?"
-    "|\u05d4?(?:"
-    + _hebrew_alternation(_HEBREW_STRUCTURAL_NUMBER_WORDS)
-    + ")(?:[\\s\u05be-]+\u05d5?\u05d4?(?:"
-    + _hebrew_alternation(_HEBREW_STRUCTURAL_NUMBER_WORDS)
-    + "))*"
-    "|\u05d4?(?:ראשונה|ראשון|שנייה|שניה|שני|שלישית|שלישי|רביעית|רביעי|"
-    "חמישית|חמישי|שישית|שישי|שביעית|שביעי|שמינית|שמיני|תשיעית|תשיעי|"
-    "עשירית|עשירי))"
+    "(?:"
+    + _HEBREW_STRUCTURAL_DIGIT
+    # A list or a range of digit references: "1 ו־2", "1 עד 3", "1, 2 או 3".
+    + "(?:\\s*(?:,|\u05d5\u05be?|או|עד|[-\u2013\u2014])\\s*"
+    + _HEBREW_STRUCTURAL_DIGIT
+    + ")*"
+    "|" + _HEBREW_STRUCTURAL_NUMBER_WORD + ")"
     "(?![\u0590-\u05ff\\d])"
 )
 # A weekday is the word "day" and a bare ordinal -- "יום שני" is Monday --
@@ -9631,10 +9720,18 @@ def _tokenize_numeric_occurrences_from_text(
     for span, value in hebrew_word_matches:
         # "twenty-three percent" is the rate 0.23, grounded and recalled the
         # way "23%" is: the percent word joins the span and the number word's
-        # own value is not a second obligation.
+        # own value is not a second obligation. The noun may also precede its
+        # count ("אחוז אחד").
         percent = _HEBREW_PERCENT_WORD_PATTERN.match(cleaned, span[1])
-        if percent is not None:
-            span = (span[0], percent.end())
+        noun_before = None
+        if percent is None:
+            noun_before = _HEBREW_PERCENT_NOUN_BEFORE_PATTERN.search(cleaned[: span[0]])
+        if percent is not None or noun_before is not None:
+            span = (
+                (span[0], percent.end())
+                if percent is not None
+                else (noun_before.start(), span[1])
+            )
             if not _span_overlaps(span, grounding_spans):
                 collector.add_grounding(
                     cleaned_view,

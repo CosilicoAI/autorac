@@ -15325,6 +15325,49 @@ def test_hebrew_compound_scanning_is_linear_on_teen_only_words():
         assert elapsed < 1.5, (repeats, elapsed)
 
 
+def test_a_counted_fraction_after_tens_or_hundreds_is_a_fractional_tail():
+    for text, expected in (
+        ("מקדם של עשרים ושלושה רבעים", 20.75),
+        ("מקדם של מאה ושלושה רבעים", 100.75),
+    ):
+        grounded = extract_numbers_from_text(text)
+        assert expected in grounded, (text, grounded)
+        assert not ({23.0, 103.0} & grounded), (text, grounded)
+        assert _hebrew_recall(text) == {expected}, (text, _hebrew_recall(text))
+    rate = "בשיעור של עשרים ושלושה רבעים אחוזים"
+    assert 0.2075 in extract_numbers_from_text(rate)
+    assert 23.0 not in extract_numbers_from_text(rate)
+    assert _hebrew_recall(rate) == {0.2075}
+
+
+def test_a_percent_noun_before_its_count_and_the_definite_percent_word():
+    one = "בשיעור של אחוז אחד מההכנסה"
+    assert 0.01 in extract_numbers_from_text(one)
+    assert 1.0 not in extract_numbers_from_text(one)
+    assert _hebrew_recall(one) == {0.01}
+    half = "בשיעור של מחצית האחוז מההכנסה"
+    assert 0.005 in extract_numbers_from_text(half)
+    assert 0.5 not in extract_numbers_from_text(half)
+    assert _hebrew_recall(half) == {0.005}
+
+
+def test_a_structural_reference_stops_before_a_substantive_count():
+    text = "לפי התוספת השנייה שלושה ילדים מזכים בקצבה של 100 שקלים"
+    assert _hebrew_recall(text) == {3.0, 100.0}
+    assert _hebrew_recall("לפי סעיף מאה ועשרים, ישולם סכום של 100 שקלים") == {100.0}
+    assert _hebrew_recall("בהתאם לפרק האחד עשר ישולם סכום של 100 שקלים") == {100.0}
+
+
+def test_a_digit_reference_covers_its_list_or_range():
+    for text in (
+        "לפי סעיפים 1 ו־2 ישולם סכום של 100 שקלים",
+        "לפי סעיפים 1 עד 3 ישולם סכום של 100 שקלים",
+        "לפי סעיפים 1, 2 או 3 ישולם סכום של 100 שקלים",
+    ):
+        assert _hebrew_recall(text) == {100.0}, (text, _hebrew_recall(text))
+        assert 1.0 in extract_numbers_from_text(text), text
+
+
 def test_hebrew_number_words_join_the_recall_inventory():
     # A value the statute writes as a word is one an encoding has to recall:
     # National Insurance Law section 68(c) supplements a parent entitled for

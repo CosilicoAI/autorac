@@ -50121,16 +50121,58 @@ def _unescape_non_ascii_yaml_escapes(text: str) -> str | None:
     try:
         before = yaml.safe_load(text)
         after = yaml.safe_load(rewritten)
-        # The comparison can recurse as deep as the document: a YAML alias
-        # that refers to its own anchor (`a: &a [*a]`) parses to a list that
-        # contains itself, and comparing two of those never terminates. An
-        # equivalence that cannot be proved is a rewrite that does not happen.
-        equivalent = before == after
-    except (yaml.YAMLError, RecursionError):
+        # Compared node by node with a memo of pairs already proved equal:
+        # an alias graph that shares nodes (`ai: &ai [*a(i-1), *a(i-1)]`)
+        # is compared once per pair instead of once per path, and an alias
+        # that refers to its own anchor (`a: &a [*a]`) is declined rather
+        # than followed forever. An equivalence that cannot be proved is a
+        # rewrite that does not happen.
+        equivalent = _yaml_documents_equivalent(before, after)
+    except (yaml.YAMLError, RecursionError, _CyclicYamlDocument):
         return None
     if not equivalent:
         return None
     return rewritten
+
+
+class _CyclicYamlDocument(Exception):
+    """A parsed YAML document contains a node that contains itself."""
+
+
+def _yaml_documents_equivalent(
+    left: object,
+    right: object,
+    memo: dict[tuple[int, int], bool] | None = None,
+    active: set[tuple[int, int]] | None = None,
+) -> bool:
+    memo = {} if memo is None else memo
+    active = set() if active is None else active
+    key = (id(left), id(right))
+    if key in memo:
+        return memo[key]
+    if isinstance(left, (dict, list)) or isinstance(right, (dict, list)):
+        if key in active:
+            raise _CyclicYamlDocument()
+        active.add(key)
+        try:
+            if isinstance(left, dict) and isinstance(right, dict):
+                result = set(left) == set(right) and all(
+                    _yaml_documents_equivalent(left[k], right[k], memo, active)
+                    for k in left
+                )
+            elif isinstance(left, list) and isinstance(right, list):
+                result = len(left) == len(right) and all(
+                    _yaml_documents_equivalent(a, b, memo, active)
+                    for a, b in zip(left, right, strict=True)
+                )
+            else:
+                result = False
+        finally:
+            active.discard(key)
+    else:
+        result = left == right
+    memo[key] = result
+    return result
 
 
 def _generated_artifact_is_contained_in(target: Path, root: Path) -> bool:

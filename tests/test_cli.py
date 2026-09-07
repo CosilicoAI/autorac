@@ -23110,6 +23110,22 @@ rules:
         )
         assert target.read_text(encoding="utf-8") == original
 
+    def test_generated_yaml_unescape_compares_alias_graphs_in_linear_time(self):
+        # Each level aliases the previous one twice: a path-by-path comparison
+        # is exponential in the depth, a node-pair comparison is linear.
+        import time
+
+        lines = ["a0: &a0 [0]"]
+        for level in range(1, 33):
+            lines.append(f"a{level}: &a{level} [*a{level - 1}, *a{level - 1}]")
+        lines.append('summary: "\\u05d0"')
+        text = "\n".join(lines) + "\n"
+        started = time.perf_counter()
+        rewritten = _unescape_non_ascii_yaml_escapes(text)
+        assert time.perf_counter() - started < 2.0
+        assert rewritten is not None
+        assert "א" in rewritten
+
     def test_generated_yaml_unescape_refuses_a_hard_linked_target(self, tmp_path):
         # A hard link passes every test a symlink fails -- it is a regular
         # file, not a link, and it resolves where it sits -- and still shares
