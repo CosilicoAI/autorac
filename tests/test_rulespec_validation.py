@@ -15368,6 +15368,53 @@ def test_a_digit_reference_covers_its_list_or_range():
         assert 1.0 in extract_numbers_from_text(text), text
 
 
+def test_a_percentage_phrase_with_a_fractional_tail_is_one_rate():
+    for text, expected in (
+        ("בשיעור של אחוז וחצי מההכנסה", 0.015),
+        ("בשיעור של שני אחוזים וחצי מההכנסה", 0.025),
+        ("בשיעור של עשרים אחוזים ורבע מהשכר", 0.2025),
+    ):
+        grounded = extract_numbers_from_text(text)
+        assert expected in grounded, (text, grounded)
+        assert 0.005 not in grounded, (text, grounded)
+        assert _hebrew_recall(text) == {expected}, (text, _hebrew_recall(text))
+
+
+def test_a_singular_reference_ends_at_a_comma_before_a_quantity():
+    text = "לפי סעיף 1, 100 שקלים ישולמו לכל ילד"
+    assert _hebrew_recall(text) == {100.0}
+    assert _hebrew_recall("לפי סעיפים 1, 2 או 3 ישולם סכום של 100 שקלים") == {100.0}
+    assert _hebrew_recall("לפי סעיפים 1, 100 שקלים ישולמו") == {100.0}
+    assert _hebrew_recall("לפי סעיף 1 או 2 ישולם סכום של 100 שקלים") == {100.0}
+
+
+def test_a_fraction_before_a_definite_noun_or_after_a_copula_is_a_fraction():
+    for text in ("הסכום יהיה חמישית ההכנסה", "הסכום יהיה חמישית משכרו"):
+        grounded = extract_numbers_from_text(text)
+        assert 0.2 in grounded, (text, grounded)
+        assert 5.0 not in grounded, (text, grounded)
+        assert _hebrew_recall(text) == {0.2}, (text, _hebrew_recall(text))
+    birth = "לידה שלישית מזכה במענק של 100 שקלים"
+    assert 3.0 in extract_numbers_from_text(birth)
+    assert 1.0 / 3.0 not in extract_numbers_from_text(birth)
+
+
+def test_a_structural_reference_takes_lone_cardinals_and_teens_after_hundreds():
+    for text in (
+        "לפי סעיף שלוש ישולם סכום של 100 שקלים",
+        "לפי סעיף מאה ואחד עשר ישולם סכום של 100 שקלים",
+        "לפי סעיף אלף ושלוש מאות ועשרים ואחד ישולם סכום של 100 שקלים",
+    ):
+        assert _hebrew_recall(text) == {100.0}, (text, _hebrew_recall(text))
+    assert 111.0 in extract_numbers_from_text(
+        "לפי סעיף מאה ואחד עשר ישולם סכום של 100 שקלים"
+    )
+    assert _hebrew_recall("לפי סעיף שלוש, שלושה ילדים מזכים בקצבה של 100 שקלים") == {
+        3.0,
+        100.0,
+    }
+
+
 def test_hebrew_number_words_join_the_recall_inventory():
     # A value the statute writes as a word is one an encoding has to recall:
     # National Insurance Law section 68(c) supplements a parent entitled for
