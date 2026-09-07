@@ -15206,6 +15206,31 @@ def test_a_hebrew_percent_word_reads_the_whole_fraction_and_keeps_its_sign():
     assert -0.23 in extract_numbers_from_text("בשיעור של \u221223 אחוזים")
 
 
+def test_a_teen_only_spelling_is_not_a_unit_on_its_own():
+    # "שנים" is "years" unless it is the two of a teen: a hundred years is
+    # 100, two hundred years is 200, and twelve is still twelve.
+    for text, expected in (("בתום מאה שנים", 100.0), ("בתום מאתיים שנים", 200.0)):
+        grounded = extract_numbers_from_text(text)
+        assert expected in grounded, (text, grounded)
+        assert expected + 2.0 not in grounded, (text, grounded)
+        assert _hebrew_recall(text) == {expected}, (text, _hebrew_recall(text))
+    assert 12.0 in extract_numbers_from_text("שנים עשר חודשים")
+    assert 2.0 not in extract_numbers_from_text("בתום שנים רבות")
+
+
+def test_traditional_spellings_of_three_and_six_are_numbers():
+    for text, expected in (
+        ("ששה עשר חודשים", 16.0),
+        ("שלשה עשר ימים", 13.0),
+        ("ששה חודשים", 6.0),
+        ("שלשה ילדים", 3.0),
+    ):
+        grounded = extract_numbers_from_text(text)
+        assert expected in grounded, (text, grounded)
+        assert _hebrew_recall(text) == {expected}, (text, _hebrew_recall(text))
+    assert 10.0 not in extract_numbers_from_text("ששה עשר חודשים")
+
+
 def test_hebrew_number_words_join_the_recall_inventory():
     # A value the statute writes as a word is one an encoding has to recall:
     # National Insurance Law section 68(c) supplements a parent entitled for

@@ -1826,6 +1826,7 @@ _HEBREW_NUMBER_WORD_VALUES = {
     "שתי": 2.0,
     "שלוש": 3.0,
     "שלושה": 3.0,
+    "שלשה": 3.0,
     "שלושת": 3.0,
     "ארבע": 4.0,
     "ארבעה": 4.0,
@@ -1835,6 +1836,7 @@ _HEBREW_NUMBER_WORD_VALUES = {
     "חמשת": 5.0,
     "שש": 6.0,
     "שישה": 6.0,
+    "ששה": 6.0,
     "ששת": 6.0,
     "שבע": 7.0,
     "שבעה": 7.0,
@@ -1882,12 +1884,14 @@ _HEBREW_TEEN_UNIT_VALUES = {
     "שתיים": 2.0,
     "שלוש": 3.0,
     "שלושה": 3.0,
+    "שלשה": 3.0,
     "ארבע": 4.0,
     "ארבעה": 4.0,
     "חמש": 5.0,
     "חמישה": 5.0,
     "שש": 6.0,
     "שישה": 6.0,
+    "ששה": 6.0,
     "שבע": 7.0,
     "שבעה": 7.0,
     "שמונה": 8.0,
@@ -2040,6 +2044,9 @@ def _parse_hebrew_number_run(
     the first; the first may carry the ordinary one-letter prefixes.
     """
     units = {**_HEBREW_UNIT_VALUES, **_HEBREW_TEEN_UNIT_VALUES}
+    # "שנים" and "שתים" count only inside a teen ("שנים עשר"); on their own
+    # they are the plural of "year" and the like, not a two.
+    teen_only = set(_HEBREW_TEEN_UNIT_VALUES) - set(_HEBREW_UNIT_VALUES)
     vocabulary = (
         _HEBREW_NUMBER_VOCABULARY
         | set(_HEBREW_TEEN_UNIT_VALUES)
@@ -2081,6 +2088,8 @@ def _parse_hebrew_number_run(
             following = word_at(position + 1)
             if following in _HEBREW_TEEN_TENS and not has_vav(position + 1):
                 return position + 2, 10.0 + units[word], "teen"
+            if word in teen_only:
+                return None
             return position + 1, units[word], "unit"
         return None
 
