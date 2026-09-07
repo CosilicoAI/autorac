@@ -14915,6 +14915,79 @@ def test_maqaf_detachment_keeps_every_occurrence_s_provenance():
         assert text[occurrence.start : occurrence.end] == "2.24"
 
 
+def test_a_fractional_percentage_is_one_rate():
+    # Income Tax Ordinance section 21 allows depreciation at 16 1⁄2% a year:
+    # the rate 0.165, grounded and recalled once. The plain percentage matcher
+    # used to take the denominator as "2%" and demand 0.02 as well.
+    mixed = "פחת בשיעור של 16 1\u20442% לשנה"
+    inventory = extract_numeric_occurrences_from_text(mixed)
+    assert 0.165 in inventory
+    assert not ({0.02, 0.5, 16.5} & set(inventory))
+    assert 0.165 in extract_numbers_from_text(mixed)
+    quarter = "בשיעור של 1\u20444%"
+    inventory = extract_numeric_occurrences_from_text(quarter)
+    assert 0.0025 in inventory
+    assert not ({0.04, 0.25} & set(inventory))
+
+
+def test_a_fraction_slash_needs_a_whole_numerator():
+    # ".5⁄2" is a decimal five tenths beside a slash, not five halves: the
+    # numerator would be a substring of a leading-decimal operand.
+    for text in ("מקדם .5\u20442 חל", "מקדם -.5\u20442 חל", "מקדם ,5\u20442 חל"):
+        grounded = extract_numbers_from_text(text)
+        assert 2.5 not in grounded, text
+        assert 0.25 not in grounded, text
+        assert 2.5 not in extract_numeric_occurrences_from_text(text), text
+
+
+def test_a_hebrew_structural_reference_is_no_recall_obligation():
+    # "In accordance with the second chapter, a sum of 100 shekels is paid":
+    # the ordinal names a chapter, not a quantity. The fourth child is one.
+    from axiom_encode.harness.validator_pipeline import _scalar_recall_numeric_inventory
+
+    def recall(text: str) -> set[float]:
+        return {
+            occurrence.value
+            for occurrence in _scalar_recall_numeric_inventory(
+                extract_typed_numeric_inventory_occurrences_from_text(text)
+            )
+        }
+
+    assert recall("בהתאם לפרק השני, ישולם סכום של 100 שקלים") == {100.0}
+    assert recall("בתוספת הרביעית נקבע סכום של 100 שקלים") == {100.0}
+    assert recall("לפי סעיף 121ב לפקודה ישולם סכום של 100 שקלים") == {100.0}
+    assert 4.0 in recall("בעד הילד הרביעי ישולם סכום של 100 שקלים")
+    assert 3.0 in recall("זכאי לקצבה בעד שלושה ילדים או יותר")
+    # Grounding still sees the ordinal: an encoding may cite the chapter.
+    assert 2.0 in extract_numbers_from_text("בהתאם לפרק השני, ישולם סכום של 100 שקלים")
+
+
+def test_alignment_scales_linearly_on_repetitive_text():
+    import time
+
+    for repeats in (240, 480):
+        text = "מ־2.24; " * repeats
+        started = time.perf_counter()
+        occurrences = extract_typed_numeric_inventory_occurrences_from_text(text)
+        elapsed = time.perf_counter() - started
+        assert len(occurrences) == repeats
+        assert len({occurrence.span for occurrence in occurrences}) == repeats
+        for occurrence in occurrences:
+            assert text[occurrence.start : occurrence.end] == "2.24"
+        assert elapsed < 1.0, (repeats, elapsed)
+
+
+def test_alignment_survives_an_edit_wider_than_the_walk_window():
+    # A stripped URL is one edit far wider than the walk's window; the numbers
+    # after it still map to their own source offsets by the fallback.
+    url = "https://example.gov/" + "very-long-path-segment/" * 12
+    text = f"ראו {url} ; ישולם סכום של 100 שקלים; מ־2.24 מהשכר"
+    occurrences = extract_typed_numeric_inventory_occurrences_from_text(text)
+    assert occurrences
+    for occurrence in occurrences:
+        assert text[occurrence.start : occurrence.end] == occurrence.raw
+
+
 def test_hebrew_number_words_join_the_recall_inventory():
     # A value the statute writes as a word is one an encoding has to recall:
     # National Insurance Law section 68(c) supplements a parent entitled for

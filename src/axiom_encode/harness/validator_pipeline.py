@@ -1511,7 +1511,7 @@ _CONTEXTUAL_ASCII_FRACTION_PATTERN = re.compile(
 # set against the numerator (or the whole number of a mixed number) belongs to
 # the value.
 _FRACTION_SLASH_PATTERN = re.compile(
-    "(?<![\\d\u2044])(?<!\\d[.,])"
+    "(?<![\\d\u2044.,])"
     "(?P<sign>[-\u2212])?"
     "(?:(?P<whole>\\d+)\\s+)?"
     "(?P<numerator>\\d+)\\s*\u2044\\s*(?P<denominator>\\d+)"
@@ -2081,6 +2081,25 @@ _ENGLISH_STRUCTURAL_REFERENCE_PATTERN = re.compile(
 _ENGLISH_STRUCTURAL_DIGIT_LABEL_PATTERN = re.compile(
     r"\b(?:2nd|3rd)\s+digit\b",
     re.IGNORECASE,
+)
+# A Hebrew structural noun -- chapter, schedule, part, sign, section,
+# paragraph, table, column, item, regulation -- followed by the ordinal or
+# the number that names the unit: "בפרק השני", "בתוספת הרביעית", "לפי סעיף
+# 121ב". The ordinal or number identifies a place in the instrument, not a
+# quantity the instrument sets, so it is no recall obligation; "the fourth
+# child" carries no such noun and stays substantive.
+_HEBREW_STRUCTURAL_REFERENCE_PATTERN = re.compile(
+    "(?<![\u0590-\u05ff])"
+    "(?:[\u05d1\u05db\u05dc\u05de\u05d5\u05e9]{0,2}\u05d4?)"
+    "(?:פרקים|פרק|תוספות|תוספת|חלקים|חלק|סימנים|סימן|סעיפים קטנים|סעיף קטן|"
+    "סעיפים|סעיף|פסקאות|פסקת משנה|פסקה|לוחות|לוח|טורים|טור|פרטים|פרט|"
+    "תקנות|תקנה)"
+    r"\s+"
+    "(?:\\d+[\u05d0-\u05ea]?(?:\\(\\d+\\))?"
+    "|\u05d4?(?:ראשונה|ראשון|שנייה|שניה|שני|שלישית|שלישי|רביעית|רביעי|"
+    "חמישית|חמישי|שישית|שישי|שביעית|שביעי|שמינית|שמיני|תשיעית|תשיעי|"
+    "עשירית|עשירי))"
+    "(?![\u0590-\u05ff\\d])"
 )
 _STRUCTURAL_LINE_MARKER_PATTERN = re.compile(
     r"(?m)^[ \t]*(?:"
@@ -6893,6 +6912,65 @@ def _legacy_surface_numeric_occurrences(text: str) -> list[NumericOccurrence]:
     return occurrences
 
 
+_ALIGNMENT_WALK_WINDOW = 96
+_ALIGNMENT_WALK_ANCHOR = 6
+
+
+def _walk_aligned_offsets(source: str, parsed: str) -> list[int | None] | None:
+    """Map each parsed character to its source offset across local edits.
+
+    Equal characters map one to one. At a mismatch the walk looks for the
+    nearest point, within a bounded window on both sides, where the two texts
+    agree again for a few characters (or both end), and treats the gap as an
+    insertion, a deletion, or -- when the gap is the same width on both
+    sides -- an in-place replacement. None when an edit is wider than the
+    window, which is the caller's cue to fall back to sequence matching.
+    """
+    offsets: list[int | None] = [None] * len(parsed)
+    source_index = 0
+    parsed_index = 0
+    window = _ALIGNMENT_WALK_WINDOW
+    anchor = _ALIGNMENT_WALK_ANCHOR
+    while parsed_index < len(parsed):
+        if source_index < len(source) and source[source_index] == parsed[parsed_index]:
+            offsets[parsed_index] = source_index
+            source_index += 1
+            parsed_index += 1
+            continue
+        resync: tuple[int, int] | None = None
+        for total in range(1, 2 * window + 1):
+            for skip_source in range(min(total, window) + 1):
+                skip_parsed = total - skip_source
+                if skip_parsed > window:
+                    continue
+                next_source = source_index + skip_source
+                next_parsed = parsed_index + skip_parsed
+                if next_source > len(source) or next_parsed > len(parsed):
+                    continue
+                if next_parsed == len(parsed) or next_source == len(source):
+                    if next_parsed == len(parsed) and next_source == len(source):
+                        resync = (skip_source, skip_parsed)
+                        break
+                    continue
+                if (
+                    source[next_source : next_source + anchor]
+                    == parsed[next_parsed : next_parsed + anchor]
+                ):
+                    resync = (skip_source, skip_parsed)
+                    break
+            if resync is not None:
+                break
+        if resync is None:
+            return None
+        skip_source, skip_parsed = resync
+        if skip_source == skip_parsed:
+            for offset in range(skip_parsed):
+                offsets[parsed_index + offset] = source_index + offset
+        source_index += skip_source
+        parsed_index += skip_parsed
+    return offsets
+
+
 @dataclass(frozen=True)
 class _NumericTextView:
     """A parsed text buffer with character provenance in the source item."""
@@ -6923,13 +7001,18 @@ class _NumericTextView:
     def aligned(cls, source: str, parsed: str) -> "_NumericTextView":
         if parsed == source:
             return cls.identity(source)
+        # The cleaning pass makes local edits -- a space after a maqaf or a
+        # currency mark, a stripped "=" -- so a walk that resynchronises on
+        # the next few matching characters maps every survivor to its own
+        # source offset in one pass, on repetitive text included. Only an
+        # edit wider than the walk's window (a replaced URL) falls through to
+        # sequence matching, whose autojunk heuristic is left on because it
+        # is what keeps that matcher's cost bounded on long buffers.
+        walked = _walk_aligned_offsets(source, parsed)
+        if walked is not None:
+            return cls(source, parsed, tuple(walked))
         offsets: list[int | None] = [None] * len(parsed)
-        # autojunk would treat a character that recurs in more than one
-        # percent of a 200-plus-character buffer as junk and stop aligning on
-        # it; statutory text repeats its digits and its maqafs, and a cleaned
-        # buffer that differs from its source only by a space after each
-        # maqaf then lost provenance for every occurrence past the first.
-        matcher = SequenceMatcher(a=source, b=parsed, autojunk=False)
+        matcher = SequenceMatcher(a=source, b=parsed)
         for (
             operation,
             source_start,
@@ -8083,6 +8166,7 @@ def _structural_numeric_component_spans(
         _GERMAN_STRUCTURAL_REFERENCE_PATTERN,
         _ENGLISH_STRUCTURAL_REFERENCE_PATTERN,
         _ENGLISH_STRUCTURAL_DIGIT_LABEL_PATTERN,
+        _HEBREW_STRUCTURAL_REFERENCE_PATTERN,
         _STRUCTURAL_SOURCE_STATE_CODE_CITATION_PATTERN,
         _STRUCTURAL_SOURCE_NJ_TITLE_54A_HEADING_PATTERN,
         _STRUCTURAL_LINE_MARKER_PATTERN,
@@ -8591,7 +8675,17 @@ def _tokenize_numeric_occurrences_from_text(
             continue
         collector.add_inventory(raw_view, span, value)
 
-    direct_percentage_rate_matches = _iter_direct_percentage_rate_matches(raw_text)
+    # A fraction that a percent sign follows ("16 1⁄2%", "1⁄4%") is one rate,
+    # read by the fraction pass below; the plain percentage matcher would
+    # otherwise take its denominator ("2%") as a second one.
+    fraction_raw_spans = [
+        match.span() for match in _FRACTION_SLASH_PATTERN.finditer(raw_text)
+    ]
+    direct_percentage_rate_matches = [
+        (span, value)
+        for span, value in _iter_direct_percentage_rate_matches(raw_text)
+        if not _span_overlaps(span, fraction_raw_spans)
+    ]
     for span, value in direct_percentage_rate_matches:
         collector.add_grounding(
             raw_view,
@@ -8699,7 +8793,21 @@ def _tokenize_numeric_occurrences_from_text(
             value = whole + numerator / denominator
             if match.group("sign"):
                 value = -value
-            add_both(cleaned_view, match.span(), value)
+            if _PERCENT_MARKER_AFTER_NUMBER_PATTERN.match(cleaned, match.end()):
+                # "16 1⁄2%" is the rate 0.165: one value to recall, the way
+                # "16.5%" is. The printed figure grounds as well, for an
+                # encoding that states the percentage and divides itself.
+                collector.add_grounding(cleaned_view, match.span(), value)
+                add_both(
+                    cleaned_view,
+                    match.span(),
+                    value / 100,
+                    source_value=value,
+                    force_rate_context=True,
+                    requires_rate_context=True,
+                )
+            else:
+                add_both(cleaned_view, match.span(), value)
             collector.add_grounding(cleaned_view, match.span("numerator"), numerator)
             collector.add_grounding(
                 cleaned_view, match.span("denominator"), denominator
