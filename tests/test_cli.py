@@ -23126,6 +23126,12 @@ rules:
         assert rewritten is not None
         assert "א" in rewritten
 
+    def test_generated_yaml_unescape_declines_a_document_its_constructor_rejects(self):
+        # An unquoted date that does not exist raises ValueError from the
+        # constructor; the rewrite declines and the companion loader reports.
+        text = 'date: 2026-02-30\nsummary: "\\u05d0"\n'
+        assert _unescape_non_ascii_yaml_escapes(text) is None
+
     def test_generated_yaml_unescape_refuses_a_hard_linked_target(self, tmp_path):
         # A hard link passes every test a symlink fails -- it is a regular
         # file, not a link, and it resolves where it sits -- and still shares

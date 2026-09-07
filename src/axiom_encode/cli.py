@@ -50128,7 +50128,10 @@ def _unescape_non_ascii_yaml_escapes(text: str) -> str | None:
         # than followed forever. An equivalence that cannot be proved is a
         # rewrite that does not happen.
         equivalent = _yaml_documents_equivalent(before, after)
-    except (yaml.YAMLError, RecursionError, _CyclicYamlDocument):
+    except (yaml.YAMLError, RecursionError, ValueError, TypeError, _CyclicYamlDocument):
+        # A constructor error (an unquoted date that does not exist) is the
+        # companion loader's to report; the rewrite declines and leaves the
+        # bytes as the model wrote them.
         return None
     if not equivalent:
         return None

@@ -2012,60 +2012,6 @@ _HEBREW_PERCENT_WORD_PATTERN = re.compile("\\s+\u05d4?אחוז(?:ים|י)?(?![\u
 _HEBREW_PERCENT_NOUN_BEFORE_PATTERN = re.compile(
     "(?<![\u0590-\u05ff])\u05d4?אחוז(?:ים)?\\s+$"
 )
-# A percentage phrase: an optional count, the percent noun, an optional
-# vav-bound fractional tail -- "אחוז וחצי" is one and a half percent, "שני
-# אחוזים וחצי" two and a half. Read whole, before the word passes see any of
-# its words.
-_HEBREW_PERCENT_PHRASE_PATTERN = re.compile(
-    "(?<![\u0590-\u05ff])(?P<noun>\u05d4?אחוז(?:ים)?)"
-    "(?:\\s+\u05d5(?P<tail>"
-    + "|".join(
-        re.escape(w)
-        for w in sorted(_HEBREW_MIXED_FRACTION_VALUES, key=len, reverse=True)
-    )
-    + "))?(?![\u0590-\u05ff])"
-)
-
-
-def _iter_hebrew_percent_phrase_matches(
-    text: str,
-) -> list[tuple[tuple[int, int], float]]:
-    """Percentage phrases with a spelled count and/or a fractional tail, as rates."""
-    matches: list[tuple[tuple[int, int], float]] = []
-    for match in _HEBREW_PERCENT_PHRASE_PATTERN.finditer(text):
-        tail = match.group("tail")
-        # The count: the longest run of up to four words before the noun that
-        # the numeral grammar reads whole, or a single count word.
-        before = text[: match.start()]
-        preceding = list(_HEBREW_WORD_TOKEN_PATTERN.finditer(before))
-        count_value: float | None = None
-        count_start = match.start()
-        if preceding and before[preceding[-1].end() :].strip() == "":
-            candidates = preceding[-4:]
-            for width in range(len(candidates), 0, -1):
-                run = candidates[-width:]
-                if any(
-                    before[run[i].end() : run[i + 1].start()].strip() != ""
-                    for i in range(len(run) - 1)
-                ):
-                    continue
-                words = [token.group(0) for token in run]
-                parsed = _parse_hebrew_number_run(words)
-                if parsed is not None and parsed[0] == len(words):
-                    count_value = parsed[1]
-                    count_start = run[0].start()
-                    break
-                if width == 1 and words[0] in _HEBREW_FRACTION_COUNT_VALUES:
-                    count_value = _HEBREW_FRACTION_COUNT_VALUES[words[0]]
-                    count_start = run[0].start()
-                    break
-        if count_value is None and tail is None:
-            continue
-        value = (count_value if count_value is not None else 1.0) + (
-            _HEBREW_MIXED_FRACTION_VALUES[tail] if tail else 0.0
-        )
-        matches.append(((count_start, match.end()), value / 100))
-    return matches
 
 
 # A printed number followed by the percent word: "23 אחוזים" is 0.23 the way
@@ -2079,6 +2025,7 @@ _HEBREW_DIGIT_PERCENT_PATTERN = re.compile(
     "\\s+אחוז(?:ים|י)?(?![\u0590-\u05ff])"
 )
 _ASCII_SLASH_BEFORE_NUMBER_PATTERN = re.compile("/\\s*$")
+_SLASH_BEFORE_NUMBER_PATTERN = re.compile("[/\u2044]\\s*$")
 
 
 def _strip_hebrew_number_prefix(word: str, vocabulary: "Iterable[str]") -> str | None:
@@ -2415,9 +2362,8 @@ _HEBREW_FRACTION_WORD_PATTERN = re.compile(
     + ")"
     "(?![\u0590-\u05ff])"
     "(?P<partitive>\\s+(?:\u05de\u05d4[\u0590-\u05ff]|\u05de\u05df(?![\u0590-\u05ff])|של(?![\u0590-\u05ff])"
-    "|\u05d4?אחוז(?:ים|י)?(?![\u0590-\u05ff])"
-    "|\u05d4[\u0590-\u05ff]{2,}))?"
-    "(?P<loose_partitive>\\s+\u05de[\u0590-\u05ff]{2,})?"
+    "|\u05d4?אחוז(?:ים|י)?(?![\u0590-\u05ff])))?"
+    "(?P<loose_partitive>\\s+(?:\u05de|\u05d4)[\u0590-\u05ff]{2,})?"
 )
 
 
@@ -2439,10 +2385,11 @@ def _iter_hebrew_fraction_word_matches(
             if word not in _HEBREW_UNAMBIGUOUS_FRACTION_WORDS:
                 if match.group("article"):
                     continue
-                # "חמישית משכרו" is a fifth of his wage after "יהיה"; "לידה
-                # שלישית מזכה" is a third birth that qualifies. A bare מ-word
-                # after the fraction word counts only when a copula or a
-                # quantity word precedes it.
+                # "חמישית משכרו" is a fifth of his wage and "חמישית ההכנסה" a
+                # fifth of the income after "יהיה"; "לידה שלישית מזכה" is a
+                # third birth that qualifies and "דרגה חמישית המקנה" a fifth
+                # grade that confers. A bare מ- or ה-word after the fraction
+                # word counts only when a copula or a quantity word precedes.
                 loose = match.group(
                     "loose_partitive"
                 ) and _HEBREW_FRACTION_COPULA_PATTERN.search(text[: match.start()])
@@ -2452,6 +2399,102 @@ def _iter_hebrew_fraction_word_matches(
         if count:
             value *= _HEBREW_FRACTION_COUNT_VALUES[count]
         matches.append(((match.start(), match.end("fraction")), value))
+    return matches
+
+
+# A percentage phrase: an optional count, the percent noun, an optional
+# vav-bound fractional tail -- "אחוז וחצי" is one and a half percent, "שני
+# אחוזים וחצי" two and a half. Read whole, before the word passes see any of
+# its words.
+_HEBREW_PERCENT_PHRASE_PATTERN = re.compile(
+    "(?<![\u0590-\u05ff\\d.,])"
+    "(?:(?P<digits>\\d+(?:\\.\\d+)?)\\s+)?"
+    "(?P<noun>\u05d4?אחוז(?:ים)?)"
+    "(?:\\s+\u05d5(?:(?P<tail>"
+    + "|".join(
+        re.escape(w)
+        for w in sorted(_HEBREW_MIXED_FRACTION_VALUES, key=len, reverse=True)
+    )
+    + ")|(?P<tail_count>"
+    + "|".join(
+        re.escape(w)
+        for w in sorted(_HEBREW_FRACTION_COUNT_VALUES, key=len, reverse=True)
+    )
+    + ")\\s+(?P<tail_fraction>"
+    + "|".join(
+        re.escape(w)
+        for w in sorted(_HEBREW_COUNTED_FRACTION_VALUES, key=len, reverse=True)
+    )
+    + ")))?(?![\u0590-\u05ff])"
+)
+
+
+def _hebrew_word_run_before(
+    text: str, end: int, limit: int = 4
+) -> list["re.Match[str]"]:
+    """The last run of joined Hebrew words ending flush at ``end``, newest last."""
+    tokens = list(_HEBREW_WORD_TOKEN_PATTERN.finditer(text[:end]))
+    if not tokens or text[tokens[-1].end() : end].strip() != "":
+        return []
+    run = [tokens[-1]]
+    for token in reversed(tokens[:-1]):
+        gap = text[token.end() : run[0].start()]
+        joined = gap.strip() == "" or (
+            _HEBREW_TEEN_JOIN_PATTERN.match(gap)
+            and run[0].group(0) in _HEBREW_TEEN_TENS
+        )
+        if not joined or len(run) >= limit:
+            break
+        run.insert(0, token)
+    return run
+
+
+def _iter_hebrew_percent_phrase_matches(
+    text: str,
+) -> list[tuple[tuple[int, int], float]]:
+    """Percentage phrases with a spelled or printed count and/or a fractional tail, as rates."""
+    matches: list[tuple[tuple[int, int], float]] = []
+    for match in _HEBREW_PERCENT_PHRASE_PATTERN.finditer(text):
+        tail = match.group("tail")
+        tail_count = match.group("tail_count")
+        count_value: float | None = None
+        count_start = match.start()
+        if match.group("digits"):
+            # A denominator ("16 1/2 אחוזים", "1⁄ 4 אחוזים") belongs to the
+            # fraction passes, which read the whole fraction as the rate.
+            if _SLASH_BEFORE_NUMBER_PATTERN.search(text[: match.start("digits")]):
+                continue
+            count_value = float(match.group("digits"))
+            digits_start = match.start("digits")
+            if digits_start > 0 and text[digits_start - 1] in "-\u2212":
+                count_value = -count_value
+                count_start = digits_start - 1
+        else:
+            # The count: the longest run of up to four joined words before the
+            # noun that the numeral grammar reads whole, or a single count word.
+            run = _hebrew_word_run_before(text, match.start())
+            for width in range(len(run), 0, -1):
+                words = [token.group(0) for token in run[-width:]]
+                parsed = _parse_hebrew_number_run(words)
+                if parsed is not None and parsed[0] == len(words):
+                    count_value = parsed[1]
+                    count_start = run[-width].start()
+                    break
+                if width == 1 and words[0] in _HEBREW_FRACTION_COUNT_VALUES:
+                    count_value = _HEBREW_FRACTION_COUNT_VALUES[words[0]]
+                    count_start = run[-width].start()
+                    break
+        if count_value is None and tail is None and tail_count is None:
+            continue
+        value = count_value if count_value is not None else 1.0
+        if tail:
+            value += _HEBREW_MIXED_FRACTION_VALUES[tail]
+        elif tail_count:
+            value += (
+                _HEBREW_FRACTION_COUNT_VALUES[tail_count]
+                * _HEBREW_COUNTED_FRACTION_VALUES[match.group("tail_fraction")]
+            )
+        matches.append(((count_start, match.end()), value / 100))
     return matches
 
 
@@ -2709,9 +2752,9 @@ _HEBREW_STRUCTURAL_NUMBER_WORD = (
     "\u05d4?(?:"
     "(?:אלף|אלפיים|(?:" + _HEBREW_STRUCTURAL_UNITS + ")\\s+אלפים)"
     "(?:\\s+\u05d5(?:מאה|מאתיים|(?:" + _HEBREW_STRUCTURAL_UNITS + ")\\s+מאות))?"
-    "(?:\\s+\u05d5" + _HEBREW_STRUCTURAL_REMAINDER + ")?"
+    "(?:\\s+\u05d5?" + _HEBREW_STRUCTURAL_REMAINDER + ")?"
     "|(?:מאה|מאתיים|(?:" + _HEBREW_STRUCTURAL_UNITS + ")\\s+מאות)"
-    "(?:\\s+\u05d5" + _HEBREW_STRUCTURAL_REMAINDER + ")?"
+    "(?:\\s+\u05d5?" + _HEBREW_STRUCTURAL_REMAINDER + ")?"
     "|" + _HEBREW_STRUCTURAL_REMAINDER + ")"
 )
 _HEBREW_STRUCTURAL_DIGIT = "\\d+[\u05d0-\u05ea]?(?:\\(\\d+\\))?"
@@ -2735,7 +2778,12 @@ _HEBREW_STRUCTURAL_REFERENCE_PATTERN = re.compile(
     "(?:" + _HEBREW_STRUCTURAL_PLURAL_NOUNS + ")\\s+"
     "(?:"
     + _HEBREW_STRUCTURAL_DIGIT
-    + "(?:\\s*(?:,|\u05d5\u05be?|או|עד|[-\u2013\u2014])\\s*"
+    # A comma joins a non-final item only ("1, 2 או 3"): a comma followed by a
+    # number that nothing further joins is the sentence going on ("1, 100 דולר").
+    + "(?:\\s*,\\s*"
+    + _HEBREW_STRUCTURAL_DIGIT
+    + "(?=\\s*(?:,|\u05d5\u05be?|או|עד|[-\u2013\u2014])\\s*\\d)"
+    + "|\\s*(?:\u05d5\u05be?|או|עד|[-\u2013\u2014])\\s*"
     + _HEBREW_STRUCTURAL_DIGIT
     + _HEBREW_STRUCTURAL_NOT_A_QUANTITY
     + ")*"
@@ -9544,8 +9592,26 @@ def _tokenize_numeric_occurrences_from_text(
     fraction_cleaned_spans = [
         match.span() for match in _FRACTION_SLASH_PATTERN.finditer(cleaned)
     ]
+    for span, rate in _iter_hebrew_percent_phrase_matches(cleaned):
+        if _span_overlaps(span, grounding_spans) or _span_overlaps(
+            span, inventory_spans
+        ):
+            continue
+        add_both(
+            cleaned_view,
+            span,
+            rate,
+            source_value=rate * 100,
+            force_rate_context=True,
+            requires_rate_context=True,
+        )
+        grounding_spans.append(span)
+        inventory_spans.append(span)
+
     for match in _HEBREW_DIGIT_PERCENT_PATTERN.finditer(cleaned):
         if _span_overlaps(match.span("number"), fraction_cleaned_spans):
+            continue
+        if _span_overlaps(match.span(), inventory_spans):
             continue
         # A number that is the denominator of an ASCII fraction ("1/ 4 אחוזים")
         # is read with its numerator by the branch below, never on its own.
@@ -9816,22 +9882,6 @@ def _tokenize_numeric_occurrences_from_text(
     # more" is as incomplete as one that omits a printed 3. Teens arrive as one
     # span ahead of their halves, and the overlap test keeps them atomic here
     # as it does for grounding.
-    for span, rate in _iter_hebrew_percent_phrase_matches(cleaned):
-        if _span_overlaps(span, grounding_spans) or _span_overlaps(
-            span, inventory_spans
-        ):
-            continue
-        add_both(
-            cleaned_view,
-            span,
-            rate,
-            source_value=rate * 100,
-            force_rate_context=True,
-            requires_rate_context=True,
-        )
-        grounding_spans.append(span)
-        inventory_spans.append(span)
-
     hebrew_word_matches = _iter_hebrew_number_word_matches(cleaned)
     for span, value in hebrew_word_matches:
         # "twenty-three percent" is the rate 0.23, grounded and recalled the

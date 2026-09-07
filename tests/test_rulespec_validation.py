@@ -15415,6 +15415,44 @@ def test_a_structural_reference_takes_lone_cardinals_and_teens_after_hundreds():
     }
 
 
+def test_a_percentage_phrase_keeps_joined_teens_digit_counts_and_counted_tails():
+    for text, expected in (
+        ("בשיעור של שנים־עשר אחוזים מההכנסה", 0.12),
+        ("בשיעור של שנים-עשר אחוזים מההכנסה", 0.12),
+        ("בשיעור של 2 אחוזים וחצי מההכנסה", 0.025),
+        ("בשיעור של שני אחוזים ושלושה רבעים מההכנסה", 0.0275),
+        ("בשיעור של 12.5 אחוזים ורבע", 0.1275),
+    ):
+        grounded = extract_numbers_from_text(text)
+        assert expected in grounded, (text, grounded)
+        assert not ({0.1, 0.02} & grounded), (text, grounded)
+        assert _hebrew_recall(text) == {expected}, (text, _hebrew_recall(text))
+
+
+def test_an_ordinal_before_a_relative_clause_stays_an_ordinal():
+    for text, ordinal in (
+        ("דרגה חמישית המקנה תוספת של 100 שקלים", 5.0),
+        ("לידה שלישית המזכה במענק של 100 שקלים", 3.0),
+    ):
+        grounded = extract_numbers_from_text(text)
+        assert ordinal in grounded, (text, grounded)
+        assert not ({0.2, 1.0 / 3.0} & grounded), (text, grounded)
+        assert _hebrew_recall(text) == {ordinal, 100.0}, (text, _hebrew_recall(text))
+    assert _hebrew_recall("הסכום יהיה חמישית ההכנסה") == {0.2}
+
+
+def test_a_plural_reference_list_ends_before_an_amount_in_any_unit():
+    assert _hebrew_recall("לפי סעיפים 1 ו־2, 100 דולר ישולמו לכל ילד") == {100.0}
+    assert _hebrew_recall("לפי סעיפים 1, 2 ו־3, 100 דולר ישולמו לכל ילד") == {100.0}
+    assert _hebrew_recall("לפי סעיפים 1, 2 או 3 ישולם סכום של 100 שקלים") == {100.0}
+
+
+def test_a_structural_reference_composes_hundreds_without_a_conjunction():
+    text = "לפי סעיף מאה עשרים ושלושה ישולם סכום של 100 שקלים"
+    assert _hebrew_recall(text) == {100.0}
+    assert 123.0 in extract_numbers_from_text(text)
+
+
 def test_hebrew_number_words_join_the_recall_inventory():
     # A value the statute writes as a word is one an encoding has to recall:
     # National Insurance Law section 68(c) supplements a parent entitled for
