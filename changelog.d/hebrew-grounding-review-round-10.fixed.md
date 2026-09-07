@@ -1,0 +1,1 @@
+A spelling that counts only inside a teen ("שנים", "שתים") is no longer read as a two on its own, so "a hundred years" is 100; the traditional spellings ששה and שלשה count as six and three, alone and inside teens.

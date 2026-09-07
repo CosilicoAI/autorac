@@ -1,0 +1,1 @@
+A Hebrew teen joined by a hyphen or a maqaf composes inside a larger number ("שנים-עשר אלף" and "שנים־עשר אלף" are 12,000), a percent word after a fraction slash with whitespace around the slash reads the whole fraction as one rate, and a digit percentage keeps its unary minus ("-23 אחוזים" is -0.23).
