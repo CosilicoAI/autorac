@@ -15127,6 +15127,59 @@ def test_cleaning_keeps_every_survivor_at_its_own_offset():
             assert text[occurrence.start : occurrence.end] == occurrence.raw
 
 
+def test_a_hebrew_number_composes_teens_hundreds_and_scales_whole():
+    cases = {
+        "ישולם סכום של שנים עשר אלף שקלים": 12000.0,
+        "בתום מאה עשרים ושלושה ימים": 123.0,
+        "ישולם סכום של שלוש מאות אלף שקלים": 300000.0,
+        "אחד עשר אלף ומאתיים שקלים": 11200.0,
+    }
+    for text, expected in cases.items():
+        grounded = extract_numbers_from_text(text)
+        assert expected in grounded, (text, grounded)
+        assert _hebrew_recall(text) == {expected}, (text, _hebrew_recall(text))
+    assert not (
+        {10000.0, 12.0, 1000.0} & extract_numbers_from_text("שנים עשר אלף שקלים")
+    )
+    assert not (
+        {100.0, 23.0, 20.0} & extract_numbers_from_text("מאה עשרים ושלושה ימים")
+    )
+    assert not ({300.0, 1000.0} & extract_numbers_from_text("שלוש מאות אלף שקלים"))
+
+
+def test_a_hebrew_percent_word_after_digits_or_a_fraction_is_a_rate():
+    digits = "בשיעור של 23 אחוזים"
+    assert 0.23 in extract_numbers_from_text(digits)
+    assert _hebrew_recall(digits) == {0.23}
+    mixed = "בשיעור של 16 1\u20442 אחוזים"
+    assert 0.165 in extract_numbers_from_text(mixed)
+    assert _hebrew_recall(mixed) == {0.165}
+    quarter = "בשיעור של 1\u20444 אחוז"
+    assert 0.0025 in extract_numbers_from_text(quarter)
+    assert _hebrew_recall(quarter) == {0.0025}
+    grouped = "בשיעור של 1,000 אחוזים"
+    assert 10.0 in extract_numbers_from_text(grouped)
+
+
+def test_provenance_survives_cancelling_edits_and_line_terminators():
+    # A currency detachment (+1) and a CRLF (−1 under the old join) used to
+    # cancel in length and pass for identity; offsets are now carried through
+    # the edits, so 5,880 is 5,880 and the 8 is the digit, not a space.
+    text = "GH¢5,880\r\nTax 42"
+    occurrences = extract_typed_numeric_inventory_occurrences_from_text(text)
+    by_value = {occurrence.value: occurrence for occurrence in occurrences}
+    assert by_value[5880.0].raw == "5,880" and by_value[5880.0].span == (3, 8)
+    assert by_value[42.0].span == (14, 16)
+    text = "above   8 use the rate for a 8 household"
+    (eight,) = extract_typed_numeric_inventory_occurrences_from_text(text)
+    assert eight.raw == "8" and text[eight.start : eight.end] == "8"
+    for text in ("מ־2.24; " * 240 + "\n", "מ־2.24; \r\n" * 120):
+        occurrences = extract_typed_numeric_inventory_occurrences_from_text(text)
+        assert len({occurrence.span for occurrence in occurrences}) == len(occurrences)
+        for occurrence in occurrences:
+            assert text[occurrence.start : occurrence.end] == "2.24"
+
+
 def test_hebrew_number_words_join_the_recall_inventory():
     # A value the statute writes as a word is one an encoding has to recall:
     # National Insurance Law section 68(c) supplements a parent entitled for
