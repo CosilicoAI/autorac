@@ -1972,26 +1972,189 @@ def _hebrew_alternation(words: Iterable[str]) -> str:
     return "|".join(re.escape(word) for word in sorted(words, key=len, reverse=True))
 
 
-_HEBREW_COMPOUND_NUMBER_PATTERN = re.compile(
-    "(?<![\u0590-\u05ff])"
-    + _HEBREW_WORD_PREFIX_PATTERN
-    + "(?:(?:(?P<thousand_count>"
-    + _hebrew_alternation(_HEBREW_UNIT_VALUES)
-    + ")\\s+אלפים|(?P<thousand>"
-    + _hebrew_alternation(_HEBREW_THOUSAND_WORDS)
-    + "))(?:\\s+\u05d5?)?)?"
-    "(?:(?:(?P<hundred_count>"
-    + _hebrew_alternation(_HEBREW_UNIT_VALUES)
-    + ")\\s+מאות|(?P<hundred>"
-    + _hebrew_alternation(_HEBREW_HUNDRED_WORDS)
-    + "))(?:\\s+\u05d5?)?)?"
-    "(?:(?P<tens>"
-    + _hebrew_alternation(_HEBREW_TENS_VALUES)
-    + ")(?:\\s+\u05d5(?P<unit>"
-    + _hebrew_alternation(_HEBREW_UNIT_VALUES)
-    + "))?)?"
-    "(?![\u0590-\u05ff])"
+_HEBREW_SCALE_VALUES = {"מאות": 100.0, "אלפים": 1000.0, "אלף": 1000.0}
+_HEBREW_TEEN_TENS = frozenset(_HEBREW_TEEN_TENS_WORDS)
+_HEBREW_MIXED_FRACTION_VALUES = {
+    "חצי": 0.5,
+    "מחצית": 0.5,
+    "שליש": 1.0 / 3.0,
+    "רבע": 0.25,
+    "חמישית": 0.2,
+    "שישית": 1.0 / 6.0,
+    "שמינית": 0.125,
+    "עשירית": 0.1,
+}
+_HEBREW_NUMBER_PREFIX_LETTERS = "\u05d5\u05d4\u05d1\u05db\u05dc\u05de\u05e9"
+_HEBREW_WORD_TOKEN_PATTERN = re.compile("[\u0590-\u05ff]+")
+_HEBREW_PERCENT_WORD_PATTERN = re.compile("\\s+אחוז(?:ים|י)?(?![\u0590-\u05ff])")
+
+
+def _strip_hebrew_number_prefix(word: str, vocabulary: "Iterable[str]") -> str | None:
+    """Return the number word inside a prefixed token, or None."""
+    known = set(vocabulary)
+    candidate = word
+    for _ in range(3):
+        if candidate in known:
+            return candidate
+        if len(candidate) > 2 and candidate[0] in _HEBREW_NUMBER_PREFIX_LETTERS:
+            candidate = candidate[1:]
+            if candidate.startswith("\u05be"):
+                candidate = candidate[1:]
+            continue
+        return None
+    return candidate if candidate in known else None
+
+
+_HEBREW_NUMBER_VOCABULARY = (
+    set(_HEBREW_UNIT_VALUES)
+    | set(_HEBREW_TENS_VALUES)
+    | set(_HEBREW_HUNDRED_WORDS)
+    | set(_HEBREW_THOUSAND_WORDS)
+    | set(_HEBREW_SCALE_VALUES)
+    | set(_HEBREW_TEEN_TENS)
+    | set(_HEBREW_MIXED_FRACTION_VALUES)
 )
+
+
+def _parse_hebrew_number_run(
+    words: "Sequence[str]",
+) -> tuple[int, float, set[str]] | None:
+    """Parse the longest number a run of Hebrew words spells from its start.
+
+    Returns (words consumed, value, kinds seen). The grammar is the spoken
+    one: an optional thousands part (a count, then אלף or אלפים; or אלף,
+    אלפיים alone), an optional hundreds part (מאה, מאתיים, or a count and
+    מאות), then a teen, or tens with a vav-bound unit, or a unit, then a
+    vav-bound fraction. A word after the first may carry only the conjunction
+    vav as prefix; the first may carry the ordinary one-letter prefixes.
+    """
+    index = 0
+    value = 0.0
+    kinds: set[str] = set()
+
+    def word_at(position: int, *, allow_prefixes: bool) -> str | None:
+        if position >= len(words):
+            return None
+        raw = words[position]
+        if allow_prefixes:
+            return _strip_hebrew_number_prefix(raw, _HEBREW_NUMBER_VOCABULARY)
+        if raw in _HEBREW_NUMBER_VOCABULARY:
+            return raw
+        if raw.startswith("\u05d5") and raw[1:] in _HEBREW_NUMBER_VOCABULARY:
+            return raw[1:]
+        return None
+
+    def read_small(position: int) -> tuple[int, float] | None:
+        """A teen, tens with an optional unit, or a unit, starting at position."""
+        word = word_at(position, allow_prefixes=position == 0)
+        if word is None:
+            return None
+        if word in _HEBREW_TENS_VALUES:
+            total = _HEBREW_TENS_VALUES[word]
+            following = word_at(position + 1, allow_prefixes=False)
+            if (
+                following in _HEBREW_UNIT_VALUES
+                and words[position + 1].startswith("\u05d5")
+                and following not in _HEBREW_TEEN_TENS
+            ):
+                return position + 2, total + _HEBREW_UNIT_VALUES[following]
+            return position + 1, total
+        if word in _HEBREW_UNIT_VALUES and word not in _HEBREW_TEEN_TENS:
+            following = word_at(position + 1, allow_prefixes=False)
+            if following in _HEBREW_TEEN_TENS and not words[position + 1].startswith(
+                "\u05d5"
+            ):
+                return position + 2, 10.0 + _HEBREW_UNIT_VALUES[word]
+            return position + 1, _HEBREW_UNIT_VALUES[word]
+        if word in _HEBREW_UNIT_VALUES:
+            return position + 1, _HEBREW_UNIT_VALUES[word]
+        return None
+
+    # Thousands: a count then אלף/אלפים, or אלף/אלפיים alone.
+    first = word_at(0, allow_prefixes=True)
+    if first in _HEBREW_THOUSAND_WORDS:
+        value += _HEBREW_THOUSAND_WORDS[first]
+        kinds.add("thousand")
+        index = 1
+    else:
+        small = read_small(0)
+        if small is not None:
+            after = word_at(small[0], allow_prefixes=False)
+            if after in ("אלף", "אלפים"):
+                value += small[1] * 1000.0
+                kinds.add("thousand")
+                index = small[0] + 1
+    # Hundreds: מאה, מאתיים, or a count then מאות.
+    word = word_at(index, allow_prefixes=index == 0)
+    if word in _HEBREW_HUNDRED_WORDS:
+        value += _HEBREW_HUNDRED_WORDS[word]
+        kinds.add("hundred")
+        index += 1
+    elif (
+        word in _HEBREW_UNIT_VALUES
+        and word_at(index + 1, allow_prefixes=False) == "מאות"
+    ):
+        value += _HEBREW_UNIT_VALUES[word] * 100.0
+        kinds.add("hundred")
+        index += 2
+    # Tens, teen or unit.
+    small = read_small(index)
+    if small is not None and (
+        index == 0 or words[index].startswith("\u05d5") or not kinds
+    ):
+        consumed, amount = small
+        if consumed - index == 2:
+            kinds.add("compound")
+        elif amount >= 20.0 or amount >= 11.0:
+            kinds.add("tens")
+        else:
+            kinds.add("unit")
+        value += amount
+        index = consumed
+    # A vav-bound fraction closes a mixed number.
+    if index > 0 and index < len(words) and words[index].startswith("\u05d5"):
+        fraction = words[index][1:]
+        if fraction in _HEBREW_MIXED_FRACTION_VALUES:
+            value += _HEBREW_MIXED_FRACTION_VALUES[fraction]
+            kinds.add("fraction")
+            index += 1
+    if index == 0:
+        return None
+    return index, value, kinds
+
+
+def _iter_hebrew_compound_number_matches(
+    text: str,
+) -> list[tuple[tuple[int, int], float]]:
+    """Numbers a Hebrew statute spells with more than one word, or with a scale word."""
+    matches: list[tuple[tuple[int, int], float]] = []
+    tokens = [
+        (m.start(), m.end(), m.group(0))
+        for m in _HEBREW_WORD_TOKEN_PATTERN.finditer(text)
+    ]
+    index = 0
+    while index < len(tokens):
+        # Only adjacent words (whitespace between them) form one number.
+        run_end = index
+        while (
+            run_end + 1 < len(tokens)
+            and text[tokens[run_end][1] : tokens[run_end + 1][0]].strip() == ""
+        ):
+            run_end += 1
+        words = [token[2] for token in tokens[index : run_end + 1]]
+        parsed = _parse_hebrew_number_run(words)
+        if parsed is not None:
+            consumed, value, kinds = parsed
+            if consumed >= 2 or kinds & {"tens", "hundred", "thousand"}:
+                matches.append(
+                    ((tokens[index][0], tokens[index + consumed - 1][1]), value)
+                )
+                index += consumed
+                continue
+        index += 1
+    return matches
+
+
 # A fraction the statute names with a word: a half of the average wage, a fifth
 # of the income, two thirds. The feminine ordinal doubles as the fraction noun
 # ("חמישית" is both "fifth" and "a fifth"), so that reading is claimed only where
@@ -2050,41 +2213,8 @@ _HEBREW_FRACTION_WORD_PATTERN = re.compile(
     "(?P<article>\u05d4?)"
     "(?P<fraction>" + _hebrew_alternation(_HEBREW_FRACTION_VALUES) + ")"
     "(?![\u0590-\u05ff])"
-    "(?P<partitive>\\s+(?:\u05de[\u0590-\u05ff]|\u05de\u05df(?![\u0590-\u05ff])|של(?![\u0590-\u05ff])))?"
+    "(?P<partitive>\\s+(?:\u05de\u05d4[\u0590-\u05ff]|\u05de\u05df(?![\u0590-\u05ff])|של(?![\u0590-\u05ff])))?"
 )
-
-
-def _iter_hebrew_compound_number_matches(
-    text: str,
-) -> list[tuple[tuple[int, int], float]]:
-    matches: list[tuple[tuple[int, int], float]] = []
-    for match in _HEBREW_COMPOUND_NUMBER_PATTERN.finditer(text):
-        if not any(
-            match.group(name)
-            for name in (
-                "thousand_count",
-                "thousand",
-                "hundred_count",
-                "hundred",
-                "tens",
-            )
-        ):
-            continue
-        value = 0.0
-        if match.group("thousand_count"):
-            value += _HEBREW_UNIT_VALUES[match.group("thousand_count")] * 1000.0
-        elif match.group("thousand"):
-            value += _HEBREW_THOUSAND_WORDS[match.group("thousand")]
-        if match.group("hundred_count"):
-            value += _HEBREW_UNIT_VALUES[match.group("hundred_count")] * 100.0
-        elif match.group("hundred"):
-            value += _HEBREW_HUNDRED_WORDS[match.group("hundred")]
-        if match.group("tens"):
-            value += _HEBREW_TENS_VALUES[match.group("tens")]
-        if match.group("unit"):
-            value += _HEBREW_UNIT_VALUES[match.group("unit")]
-        matches.append((match.span(), value))
-    return matches
 
 
 def _iter_hebrew_fraction_word_matches(
@@ -2283,8 +2413,8 @@ _HEBREW_STRUCTURAL_REFERENCE_PATTERN = re.compile(
     "תקנות|תקנה)"
     r"\s+"
     "(?:\\d+[\u05d0-\u05ea]?(?:\\(\\d+\\))?"
-    "|\u05d4?(?:אחד|אחת|שנים|שתים|שלושה|שלוש|ארבעה|ארבע|חמישה|חמש|שישה|שש|"
-    "שבעה|שבע|שמונה|תשעה|תשע)[\\s\u05be-]+(?:עשר|עשרה)"
+    "|\u05d4?(?:" + _hebrew_alternation(_HEBREW_TEEN_UNIT_VALUES) + ")"
+    "[\\s\u05be-]+(?:עשר|עשרה)"
     "|\u05d4?(?:עשרים|שלושים|ארבעים|חמישים|שישים|שבעים|שמונים|תשעים)"
     "(?:\\s+\u05d5\u05d4?(?:אחד|אחת|שניים|שתיים|שלושה|שלוש|ארבעה|ארבע|"
     "חמישה|חמש|שישה|שש|שבעה|שבע|שמונה|תשעה|תשע|ראשון|ראשונה|שני|שנייה|שניה|"
@@ -5873,7 +6003,7 @@ def _danish_equal_length_numeric_mask(text: str) -> _EqualLengthNumericMask:
     add_matches((_SOURCE_URL_PATTERN,))
     current = masked_text()
     for match in re.finditer(r"\[[^\]]*\d[^\]]*\]", current):
-        if _strip_superseded_bracketed_numeric_text(match) == " ":
+        if _strip_superseded_bracketed_numeric_text(match) != match.group(0):
             mask_spans.append(match.span())
     add_matches(
         (
@@ -5942,8 +6072,13 @@ def _clean_source_text_for_numeric_extraction(
     """Strip structural source scaffolding before numeric extraction."""
     if profile == "da-DK":
         return _danish_equal_length_numeric_mask(text).text
-    text = re.sub(r"\\r\\n|\\n|\\r", "\n", text)
-    text = text.replace(r"\t", "\t")
+    # Every edit below keeps its width -- a removed run becomes spaces of the
+    # same length -- so the cleaned text stays as long as its source and each
+    # surviving character keeps its own offset (see _NumericTextView.aligned).
+    # The currency detachments are the exception: they insert a space, and a
+    # text that needs one is aligned by sequence matching instead.
+    text = re.sub(r"\\r\\n|\\n|\\r", lambda m: " " * (len(m.group(0)) - 1) + "\n", text)
+    text = re.sub(r"\\t", " \t", text)
     # Detach the Ghana cedi symbol (and other cent/currency glyphs) glued to a
     # following amount so grouped-thousands parsing sees a clean boundary:
     # "GH¢5,880" -> "GH¢ 5,880". Without the space the digit run starts right
@@ -5979,7 +6114,7 @@ def _clean_source_text_for_numeric_extraction(
     # Governments (Amendment) (No. 2) Act 2008 local-service-tax tables).
     # Strip the glued suffix so grouped-thousands parsing sees a clean
     # boundary; a spaced "=" (a real equation, "x = 5") is left untouched.
-    text = re.sub(r"(?<=\d)/?=(?=\s|$)", "", text)
+    text = re.sub(r"(?<=\d)/?=(?=\s|$)", _blank_match, text)
     # Hebrew prose attaches the one-letter prefix preposition to a following
     # numeral with a maqaf, the Hebrew hyphen (U+05BE): mem-maqaf-84,120
     # ("from 84,120") in Income Tax Ordinance section 121, bet-maqaf-2.24
@@ -5990,7 +6125,7 @@ def _clean_source_text_for_numeric_extraction(
     # above are detached; an ASCII hyphen in the same position already parses
     # correctly. The lookahead fires only before a digit, so a maqaf between
     # two Hebrew words is left untouched.
-    text = re.sub("\u05be(?=\\d)", "\u05be ", text)
+    text = re.sub("\u05be(?=\\d)", " ", text)
     cleaned_lines: list[str] = []
     preserve_split_schedule_value = False
     for line in text.splitlines():
@@ -6008,23 +6143,31 @@ def _clean_source_text_for_numeric_extraction(
             preserve_split_schedule_value = True
             continue
         if _STRUCTURAL_SOURCE_LINE_PATTERN.match(structural_stripped):
+            cleaned_lines.append(" " * len(line))
             continue
         if _STRUCTURAL_SOURCE_HEADING_PATTERN.match(structural_stripped):
+            cleaned_lines.append(" " * len(line))
             continue
         if _STRUCTURAL_SOURCE_CITATION_PATTERN.match(structural_stripped):
+            cleaned_lines.append(" " * len(line))
             continue
         if _TABLE_HEADING_PATTERN.match(structural_stripped):
+            cleaned_lines.append(" " * len(line))
             continue
         if _SYNTHETIC_MODELING_INSTRUCTION_PATTERN.match(structural_stripped):
+            cleaned_lines.append(" " * len(line))
             continue
         if _SYNTHETIC_STATEWIDE_ALLOWANCE_RESTATEMENT_PATTERN.match(
             structural_stripped
         ):
+            cleaned_lines.append(" " * len(line))
             continue
 
-        normalized_line = line.lstrip(_STRUCTURAL_SOURCE_QUOTE_CHARS)
+        normalized_line = _blank_prefix(
+            line, len(line) - len(line.lstrip(_STRUCTURAL_SOURCE_QUOTE_CHARS))
+        )
         normalized_line = _STRUCTURAL_SOURCE_CITATION_PREFIX_PATTERN.sub(
-            "", normalized_line, count=1
+            _blank_match, normalized_line, count=1
         )
         value_row_match = _VALUE_BEARING_TABLE_ROW_PATTERN.match(normalized_line)
         schedule_row_match = (
@@ -6034,51 +6177,71 @@ def _clean_source_text_for_numeric_extraction(
             or _SCHEDULE_BARE_ARROW_ROW_PATTERN.fullmatch(normalized_line)
         )
         if value_row_match and not schedule_row_match:
-            normalized_line = value_row_match.group(1)
-        normalized_line = _TABLE_ROW_LABEL_PATTERN.sub("size", normalized_line)
+            start, end = value_row_match.span(1)
+            normalized_line = (
+                " " * start
+                + normalized_line[start:end]
+                + " " * (len(normalized_line) - end)
+            )
+        normalized_line = _TABLE_ROW_LABEL_PATTERN.sub(
+            lambda m: "size".ljust(len(m.group(0))), normalized_line
+        )
         normalized_line = _STRUCTURAL_SOURCE_PREFIX_PATTERN.sub(
-            "",
+            _blank_match,
             normalized_line,
         )
         cleaned_lines.append(normalized_line)
 
     cleaned = "\n".join(cleaned_lines)
-    cleaned = _SOURCE_URL_PATTERN.sub(" ", cleaned)
+    cleaned = _SOURCE_URL_PATTERN.sub(_blank_match, cleaned)
     cleaned = re.sub(
         r"\[[^\]]*\d[^\]]*\]",
         _strip_superseded_bracketed_numeric_text,
         cleaned,
     )
-    cleaned = _STRUCTURAL_SOURCE_MANUAL_NUMBER_PATTERN.sub(" ", cleaned)
-    cleaned = _STRUCTURAL_SOURCE_MANUAL_VOLUME_PATTERN.sub(" ", cleaned)
-    cleaned = _STRUCTURAL_SOURCE_POLICY_LABEL_PATTERN.sub(" ", cleaned)
-    cleaned = _STRUCTURAL_SOURCE_BULLETIN_NUMBER_PATTERN.sub(" ", cleaned)
-    cleaned = _STRUCTURAL_SOURCE_REVISION_PATTERN.sub(" ", cleaned)
-    cleaned = _STRUCTURAL_SOURCE_REVISION_CODE_PATTERN.sub(" ", cleaned)
-    cleaned = _STRUCTURAL_SOURCE_HANDBOOK_SECTION_PATTERN.sub(" ", cleaned)
-    cleaned = _STRUCTURAL_SOURCE_FORM_NUMBER_PATTERN.sub(" ", cleaned)
-    cleaned = _STRUCTURAL_SOURCE_FORM_LINE_PATTERN.sub(" ", cleaned)
-    cleaned = _STRUCTURAL_SOURCE_CODE_CITATION_PATTERN.sub(" ", cleaned)
-    cleaned = _STRUCTURAL_SOURCE_LEGAL_EDITION_PATTERN.sub(" ", cleaned)
-    cleaned = _STRUCTURAL_SOURCE_STATE_CODE_CITATION_PATTERN.sub(" ", cleaned)
-    cleaned = _STRUCTURAL_SOURCE_BARE_DOTTED_REFERENCE_PATTERN.sub(" ", cleaned)
-    cleaned = _STRUCTURAL_SOURCE_SECTION_PATTERN.sub(" ", cleaned)
-    cleaned = GROUNDING_DATE_PATTERN.sub(" ", cleaned)
-    cleaned = GROUNDING_MONTH_PERIOD_PATTERN.sub(" ", cleaned)
-    cleaned = _DOTTED_DATE_PATTERN.sub(" ", cleaned)
-    cleaned = _MONTH_NAME_DATE_PATTERN.sub(" ", cleaned)
-    cleaned = _SLASH_DATE_PATTERN.sub(" ", cleaned)
-    cleaned = _MONTH_NAME_DAY_PATTERN.sub(" ", cleaned)
-    cleaned = _MONTH_DAY_OF_MONTH_PATTERN.sub(" ", cleaned)
-    cleaned = _STRUCTURAL_SOURCE_SUBDIVISION_MARKER_PATTERN.sub(" ", cleaned)
+    cleaned = _STRUCTURAL_SOURCE_MANUAL_NUMBER_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _STRUCTURAL_SOURCE_MANUAL_VOLUME_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _STRUCTURAL_SOURCE_POLICY_LABEL_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _STRUCTURAL_SOURCE_BULLETIN_NUMBER_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _STRUCTURAL_SOURCE_REVISION_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _STRUCTURAL_SOURCE_REVISION_CODE_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _STRUCTURAL_SOURCE_HANDBOOK_SECTION_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _STRUCTURAL_SOURCE_FORM_NUMBER_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _STRUCTURAL_SOURCE_FORM_LINE_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _STRUCTURAL_SOURCE_CODE_CITATION_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _STRUCTURAL_SOURCE_LEGAL_EDITION_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _STRUCTURAL_SOURCE_STATE_CODE_CITATION_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _STRUCTURAL_SOURCE_BARE_DOTTED_REFERENCE_PATTERN.sub(
+        _blank_match, cleaned
+    )
+    cleaned = _STRUCTURAL_SOURCE_SECTION_PATTERN.sub(_blank_match, cleaned)
+    cleaned = GROUNDING_DATE_PATTERN.sub(_blank_match, cleaned)
+    cleaned = GROUNDING_MONTH_PERIOD_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _DOTTED_DATE_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _MONTH_NAME_DATE_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _SLASH_DATE_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _MONTH_NAME_DAY_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _MONTH_DAY_OF_MONTH_PATTERN.sub(_blank_match, cleaned)
+    cleaned = _STRUCTURAL_SOURCE_SUBDIVISION_MARKER_PATTERN.sub(_blank_match, cleaned)
     cleaned = _SCHEDULE_SIZE_CAP_RESTATEMENT_PATTERN.sub(
-        lambda match: f"above {match.group(1)} use the capped household rate",
+        lambda match: f"above {match.group(1)} use the capped household rate".ljust(
+            len(match.group(0))
+        ),
         cleaned,
     )
-    cleaned = _TABLE_KEY_ASSIGNMENT_PATTERN.sub(" ", cleaned)
+    cleaned = _TABLE_KEY_ASSIGNMENT_PATTERN.sub(_blank_match, cleaned)
     for pattern in _SOURCE_REFERENCE_PATTERNS:
-        cleaned = pattern.sub(" ", cleaned)
+        cleaned = pattern.sub(_blank_match, cleaned)
     return cleaned
+
+
+def _blank_match(match: re.Match[str]) -> str:
+    """Replace a match with spaces of its own width, so offsets stay put."""
+    return " " * len(match.group(0))
+
+
+def _blank_prefix(line: str, width: int) -> str:
+    return " " * width + line[width:]
 
 
 def _strip_superseded_bracketed_numeric_text(match: re.Match[str]) -> str:
@@ -6089,7 +6252,7 @@ def _strip_superseded_bracketed_numeric_text(match: re.Match[str]) -> str:
         return bracketed
     if re.search(r"[+\-−*/]", inner) or re.search(r"[A-Za-z_]", inner):
         return bracketed
-    return " "
+    return " " * len(bracketed)
 
 
 def _iter_collapsed_schedule_row_occurrences(
@@ -7116,114 +7279,6 @@ def _legacy_surface_numeric_occurrences(text: str) -> list[NumericOccurrence]:
     return occurrences
 
 
-_ALIGNMENT_WALK_NEAR = 8
-_ALIGNMENT_WALK_WINDOW = 96
-_ALIGNMENT_WALK_ANCHOR = 6
-_ALIGNMENT_LOCAL_MATCH_SPAN = 2048
-
-
-def _equal_run(source: str, parsed: str, source_index: int, parsed_index: int) -> int:
-    run = 0
-    while (
-        source_index + run < len(source)
-        and parsed_index + run < len(parsed)
-        and source[source_index + run] == parsed[parsed_index + run]
-    ):
-        run += 1
-    return run
-
-
-def _resync_after_edit(
-    source: str, parsed: str, source_index: int, parsed_index: int
-) -> tuple[int, int] | None:
-    """How far to skip on each side to pass one edit, or None if it is too wide.
-
-    Nearby first: among the ways of skipping up to a few characters on either
-    side, take the one after which the two texts agree for longest -- so a
-    space inserted every few characters is read as that, not as the start of
-    something wider. Then a bounded window that must be followed by a run of
-    a few equal characters. Then, for one wide edit such as a stripped URL,
-    sequence matching over a bounded stretch of both texts, junk heuristic
-    off, which is affordable once per such edit.
-    """
-    best_key: tuple[int, int] | None = None
-    best_skip: tuple[int, int] | None = None
-    for total in range(1, 2 * _ALIGNMENT_WALK_NEAR + 1):
-        for skip_source in range(min(total, _ALIGNMENT_WALK_NEAR) + 1):
-            skip_parsed = total - skip_source
-            if skip_parsed > _ALIGNMENT_WALK_NEAR:
-                continue
-            next_source = source_index + skip_source
-            next_parsed = parsed_index + skip_parsed
-            if next_source > len(source) or next_parsed > len(parsed):
-                continue
-            if next_parsed == len(parsed) and next_source == len(source):
-                return (skip_source, skip_parsed)
-            run = _equal_run(source, parsed, next_source, next_parsed)
-            key = (run, -total)
-            if run >= 2 and (best_key is None or key > best_key):
-                best_key = key
-                best_skip = (skip_source, skip_parsed)
-    if best_skip is not None:
-        return best_skip
-    for total in range(1, 2 * _ALIGNMENT_WALK_WINDOW + 1):
-        for skip_source in range(min(total, _ALIGNMENT_WALK_WINDOW) + 1):
-            skip_parsed = total - skip_source
-            if skip_parsed > _ALIGNMENT_WALK_WINDOW:
-                continue
-            next_source = source_index + skip_source
-            next_parsed = parsed_index + skip_parsed
-            if next_source > len(source) or next_parsed > len(parsed):
-                continue
-            if next_parsed == len(parsed) and next_source == len(source):
-                return (skip_source, skip_parsed)
-            if next_parsed == len(parsed) or next_source == len(source):
-                continue
-            if (
-                _equal_run(source, parsed, next_source, next_parsed)
-                >= _ALIGNMENT_WALK_ANCHOR
-            ):
-                return (skip_source, skip_parsed)
-    source_window = source[source_index : source_index + _ALIGNMENT_LOCAL_MATCH_SPAN]
-    parsed_window = parsed[parsed_index : parsed_index + _ALIGNMENT_LOCAL_MATCH_SPAN]
-    matcher = SequenceMatcher(a=source_window, b=parsed_window, autojunk=False)
-    for block in matcher.get_matching_blocks():
-        if block.size >= _ALIGNMENT_WALK_ANCHOR and (block.a > 0 or block.b > 0):
-            return (block.a, block.b)
-    return None
-
-
-def _walk_aligned_offsets(source: str, parsed: str) -> list[int | None] | None:
-    """Map each parsed character to its source offset across local edits.
-
-    Equal characters map one to one. At a mismatch the walk asks
-    :func:`_resync_after_edit` how far to skip on each side; a gap of the same
-    width on both sides is an in-place replacement and keeps its offsets, any
-    other gap is an insertion or a deletion. None when an edit cannot be
-    passed, which is the caller's cue to fall back to whole-text sequence
-    matching.
-    """
-    offsets: list[int | None] = [None] * len(parsed)
-    source_index = 0
-    parsed_index = 0
-    while parsed_index < len(parsed):
-        if source_index < len(source) and source[source_index] == parsed[parsed_index]:
-            offsets[parsed_index] = source_index
-            source_index += 1
-            parsed_index += 1
-            continue
-        resync = _resync_after_edit(source, parsed, source_index, parsed_index)
-        if resync is None:
-            return None
-        skip_source, skip_parsed = resync
-        if skip_source == skip_parsed:
-            for offset in range(skip_parsed):
-                offsets[parsed_index + offset] = source_index + offset
-        source_index += skip_source
-        parsed_index += skip_parsed
-    return offsets
-
-
 @dataclass(frozen=True)
 class _NumericTextView:
     """A parsed text buffer with character provenance in the source item."""
@@ -7254,16 +7309,14 @@ class _NumericTextView:
     def aligned(cls, source: str, parsed: str) -> "_NumericTextView":
         if parsed == source:
             return cls.identity(source)
-        # The cleaning pass makes local edits -- a space after a maqaf or a
-        # currency mark, a stripped "=" -- so a walk that resynchronises on
-        # the next few matching characters maps every survivor to its own
-        # source offset in one pass, on repetitive text included. Only an
-        # edit wider than the walk's window (a replaced URL) falls through to
-        # sequence matching, whose autojunk heuristic is left on because it
-        # is what keeps that matcher's cost bounded on long buffers.
-        walked = _walk_aligned_offsets(source, parsed)
-        if walked is not None:
-            return cls(source, parsed, tuple(walked))
+        if len(parsed) == len(source):
+            # The cleaning pass keeps its edits in place -- a dropped line, a
+            # stripped prefix, a detached maqaf, a blanked citation all become
+            # spaces of the same width -- so a character that survives sits at
+            # its own source offset and provenance is the identity, on text of
+            # any length or repetitiveness. Only a pass that inserts (a space
+            # after a currency glyph) changes the length and needs matching.
+            return cls(source, parsed, tuple(range(len(source))))
         offsets: list[int | None] = [None] * len(parsed)
         matcher = SequenceMatcher(a=source, b=parsed)
         for (
@@ -9285,6 +9338,33 @@ def _tokenize_numeric_occurrences_from_text(
     # as it does for grounding.
     hebrew_word_matches = _iter_hebrew_number_word_matches(cleaned)
     for span, value in hebrew_word_matches:
+        # "twenty-three percent" is the rate 0.23, grounded and recalled the
+        # way "23%" is: the percent word joins the span and the number word's
+        # own value is not a second obligation.
+        percent = _HEBREW_PERCENT_WORD_PATTERN.match(cleaned, span[1])
+        if percent is not None:
+            span = (span[0], percent.end())
+            if not _span_overlaps(span, grounding_spans):
+                collector.add_grounding(
+                    cleaned_view,
+                    span,
+                    value / 100,
+                    source_value=value,
+                    force_rate_context=True,
+                    requires_rate_context=True,
+                )
+                grounding_spans.append(span)
+            if not _span_overlaps(span, inventory_spans):
+                collector.add_inventory(
+                    cleaned_view,
+                    span,
+                    value / 100,
+                    source_value=value,
+                    force_rate_context=True,
+                    requires_rate_context=True,
+                )
+                inventory_spans.append(span)
+            continue
         if not _span_overlaps(span, grounding_spans):
             collector.add_grounding(cleaned_view, span, value)
             grounding_spans.append(span)

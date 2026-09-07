@@ -14988,6 +14988,145 @@ def test_alignment_survives_an_edit_wider_than_the_walk_window():
         assert text[occurrence.start : occurrence.end] == occurrence.raw
 
 
+def _hebrew_recall(text: str) -> set[float]:
+    from axiom_encode.harness.validator_pipeline import _scalar_recall_numeric_inventory
+
+    return {
+        occurrence.value
+        for occurrence in _scalar_recall_numeric_inventory(
+            extract_typed_numeric_inventory_occurrences_from_text(text)
+        )
+    }
+
+
+def test_a_hebrew_compound_number_is_one_number():
+    # "After twenty-three days": the compound is 23, and neither the twenty
+    # nor the three is a value of its own to ground or to recall.
+    text = "בתום עשרים ושלושה ימים"
+    grounded = extract_numbers_from_text(text)
+    assert 23.0 in grounded
+    assert not ({3.0, 20.0} & grounded)
+    assert _hebrew_recall(text) == {23.0}
+    assert 120.0 in extract_numbers_from_text("מאה ועשרים ימים")
+    assert 300.0 in extract_numbers_from_text("שלוש מאות שקלים")
+    assert 2000.0 in extract_numbers_from_text("אלפיים שקלים")
+    assert 1250.0 in extract_numbers_from_text("אלף מאתיים וחמישים שקלים")
+    assert 20.0 in extract_numbers_from_text("עשרים ימים")
+
+
+def test_a_hebrew_fraction_word_is_a_fraction_where_the_grammar_says_so():
+    # "The amount shall be a fifth of the income": 0.2, not the ordinal 5.
+    fifth = "הסכום יהיה חמישית מההכנסה"
+    grounded = extract_numbers_from_text(fifth)
+    assert 0.2 in grounded
+    assert 5.0 not in grounded
+    assert _hebrew_recall(fifth) == {0.2}
+    assert 0.4 in extract_numbers_from_text("שתי חמישיות מהשכר")
+    assert 0.5 in extract_numbers_from_text("מחצית השכר הממוצע")
+    assert 0.25 in extract_numbers_from_text("רבע נקודת זיכוי")
+    # "The fourth schedule" keeps its ordinal reading, and as a structural
+    # reference it is no recall obligation either.
+    schedule = "בתוספת הרביעית נקבע סכום של 100 שקלים"
+    assert 4.0 in extract_numbers_from_text(schedule)
+    assert 0.25 not in extract_numbers_from_text(schedule)
+    assert _hebrew_recall(schedule) == {100.0}
+    # A bare feminine ordinal with no partitive after it stays an ordinal.
+    third_time = "בפעם השלישית ישולם סכום של 100 שקלים"
+    assert 3.0 in extract_numbers_from_text(third_time)
+    assert 1.0 / 3.0 not in extract_numbers_from_text(third_time)
+
+
+def test_a_hebrew_weekday_is_a_date_not_a_count():
+    # "Starting Monday, 100 shekels will be paid": the 2 inside Monday is no
+    # value to recall; "on the second day" carries the article and still is.
+    assert _hebrew_recall("החל ביום שני ישולם סכום של 100 שקלים") == {100.0}
+    assert 2.0 in _hebrew_recall("ביום השני להיעדרות ישולם סכום של 100 שקלים")
+    assert 5.0 in _hebrew_recall("בעד חמישה ימים ישולם סכום של 100 שקלים")
+
+
+def test_a_hebrew_structural_reference_above_ten_is_no_recall_obligation():
+    assert _hebrew_recall("בהתאם לפרק האחד עשר ישולם סכום של 100 שקלים") == {100.0}
+    assert _hebrew_recall("בתוספת השתים עשרה נקבע סכום של 100 שקלים") == {100.0}
+    assert _hebrew_recall("לפי סעיף העשרים ואחד ישולם סכום של 100 שקלים") == {100.0}
+    # The teen itself still grounds, for an encoding that cites the chapter.
+    assert 11.0 in extract_numbers_from_text(
+        "בהתאם לפרק האחד עשר ישולם סכום של 100 שקלים"
+    )
+
+
+def test_a_hebrew_number_of_several_words_is_parsed_whole():
+    # Hundreds and thousands with a following unit, a count before a scale
+    # word, and a mixed number: each is one value, with no constituent of its
+    # own to ground or to recall.
+    cases = {
+        "בתום מאה ושלושה ימים": 103.0,
+        "ישולם סכום של עשרים אלף שקלים": 20000.0,
+        "נקודת זיכוי אחת וחצי": 1.5,
+        "עשרת אלפים שקלים": 10000.0,
+        "שלושה עשר ימים": 13.0,
+        "מאתיים ושלושים ושניים ימים": 232.0,
+    }
+    for text, expected in cases.items():
+        grounded = extract_numbers_from_text(text)
+        assert expected in grounded, (text, grounded)
+        assert _hebrew_recall(text) == {expected}, (text, _hebrew_recall(text))
+    assert not ({100.0, 3.0} & extract_numbers_from_text("בתום מאה ושלושה ימים"))
+    assert not (
+        {20.0, 1000.0} & extract_numbers_from_text("ישולם סכום של עשרים אלף שקלים")
+    )
+    assert not ({1.0, 0.5} & extract_numbers_from_text("נקודת זיכוי אחת וחצי"))
+
+
+def test_a_hebrew_percentage_word_is_a_rate():
+    text = "בשיעור של עשרים ושלושה אחוזים"
+    assert 0.23 in extract_numbers_from_text(text)
+    assert _hebrew_recall(text) == {0.23}
+    assert 0.05 in extract_numbers_from_text("חמישה אחוזים מהשכר")
+    assert 0.05 in extract_numeric_occurrences_from_text("חמישה אחוזים מהשכר")
+    assert 5.0 not in extract_numeric_occurrences_from_text("חמישה אחוזים מהשכר")
+
+
+def test_a_feminine_ordinal_before_a_verb_stays_an_ordinal():
+    # "A third birth qualifies for a grant": מזכה is a verb, not a partitive,
+    # so שלישית is the ordinal 3 and no third is grounded or owed.
+    text = "לידה שלישית מזכה במענק של 100 שקלים"
+    grounded = extract_numbers_from_text(text)
+    assert 3.0 in grounded
+    assert 1.0 / 3.0 not in grounded
+    assert _hebrew_recall(text) == {3.0, 100.0}
+
+
+def test_a_hebrew_structural_reference_accepts_every_teen_spelling():
+    for text in (
+        "בתוספת השתיים עשרה ישולם סכום של 100 שקלים",
+        "בתוספת השתים עשרה ישולם סכום של 100 שקלים",
+        "בפרק השניים עשר ישולם סכום של 100 שקלים",
+    ):
+        assert _hebrew_recall(text) == {100.0}, text
+
+
+def test_cleaning_keeps_every_survivor_at_its_own_offset():
+    # A dropped structural line, a stripped prefix, a detached maqaf and a
+    # blanked citation all become spaces of their own width, so provenance is
+    # the identity and no occurrence borrows another's span.
+    for text in (
+        "Section 42\nRate 42 Prozent",
+        "מ־2; " * 60,
+        "ראו https://example.gov/"
+        + "very-long-path-segment/" * 12
+        + " ; "
+        + "מ־2.24; " * 240,
+        "מ־2.24; " * 240 + "ראו https://example.gov/" + "very-long-path-segment/" * 12,
+    ):
+        occurrences = extract_typed_numeric_inventory_occurrences_from_text(text)
+        assert occurrences, text[:40]
+        assert len({occurrence.span for occurrence in occurrences}) == len(
+            occurrences
+        ), text[:40]
+        for occurrence in occurrences:
+            assert text[occurrence.start : occurrence.end] == occurrence.raw
+
+
 def test_hebrew_number_words_join_the_recall_inventory():
     # A value the statute writes as a word is one an encoding has to recall:
     # National Insurance Law section 68(c) supplements a parent entitled for
