@@ -1998,10 +1998,12 @@ _HEBREW_PERCENT_WORD_PATTERN = re.compile("\\s+אחוז(?:ים|י)?(?![\u0590-\u
 # "23%" is. The lookbehind keeps a fraction's denominator ("16 1⁄2 אחוזים")
 # for the fraction pass, which reads the percent word itself.
 _HEBREW_DIGIT_PERCENT_PATTERN = re.compile(
-    "(?<![\\d.,\u2044])(?P<sign>[-\u2212])?"
+    "(?<![\\d.,\u2044/])(?P<sign>[-\u2212])?"
     "(?P<number>(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?)"
+    "(?:\\s*/\\s*(?P<denominator>\\d+))?"
     "\\s+אחוז(?:ים|י)?(?![\u0590-\u05ff])"
 )
+_ASCII_SLASH_BEFORE_NUMBER_PATTERN = re.compile("/\\s*$")
 
 
 def _strip_hebrew_number_prefix(word: str, vocabulary: "Iterable[str]") -> str | None:
@@ -2029,6 +2031,9 @@ _HEBREW_NUMBER_VOCABULARY = (
     | set(_HEBREW_TEEN_TENS)
     | set(_HEBREW_MIXED_FRACTION_VALUES)
 )
+_HEBREW_RUN_START_VOCABULARY = frozenset(
+    _HEBREW_NUMBER_VOCABULARY | set(_HEBREW_TEEN_UNIT_VALUES) | {"שני", "שתי"}
+)
 
 
 def _parse_hebrew_number_run(
@@ -2044,6 +2049,10 @@ def _parse_hebrew_number_run(
     the first; the first may carry the ordinary one-letter prefixes.
     """
     units = {**_HEBREW_UNIT_VALUES, **_HEBREW_TEEN_UNIT_VALUES}
+    # The construct forms that count a following noun -- "שני אלפים", "שתי
+    # מאות" -- are written like the ordinal "second"; they are units only in
+    # front of a scale word.
+    scale_counts = {**units, "שני": 2.0, "שתי": 2.0}
     # "שנים" and "שתים" count only inside a teen ("שנים עשר"); on their own
     # they are the plural of "year" and the like, not a two.
     teen_only = set(_HEBREW_TEEN_UNIT_VALUES) - set(_HEBREW_UNIT_VALUES)
@@ -2051,6 +2060,7 @@ def _parse_hebrew_number_run(
         _HEBREW_NUMBER_VOCABULARY
         | set(_HEBREW_TEEN_UNIT_VALUES)
         | set(_HEBREW_TEEN_TENS)
+        | {"שני", "שתי"}
     )
 
     def word_at(position: int) -> str | None:
@@ -2097,8 +2107,8 @@ def _parse_hebrew_number_run(
         word = word_at(position)
         if word in _HEBREW_HUNDRED_WORDS:
             return position + 1, _HEBREW_HUNDRED_WORDS[word]
-        if word in units and word_at(position + 1) == "מאות":
-            return position + 2, units[word] * 100.0
+        if word in scale_counts and word_at(position + 1) == "מאות":
+            return position + 2, scale_counts[word] * 100.0
         return None
 
     def parse_below_thousand(position: int) -> tuple[int, float, set[str]] | None:
@@ -2129,6 +2139,8 @@ def _parse_hebrew_number_run(
         cursor = 1
     else:
         count = parse_below_thousand(0)
+        if count is None and first in scale_counts and word_at(1) in ("אלף", "אלפים"):
+            count = (1, scale_counts[first], {"unit"})
         if count is not None and word_at(count[0]) in ("אלף", "אלפים"):
             value += count[1] * 1000.0
             kinds.add("thousand")
@@ -2158,34 +2170,48 @@ def _iter_hebrew_compound_number_matches(
         (m.start(), m.end(), m.group(0))
         for m in _HEBREW_WORD_TOKEN_PATTERN.finditer(text)
     ]
-    index = 0
-    while index < len(tokens):
-        # Only adjacent words (whitespace between them) form one number.
-        run_end = index
-        while run_end + 1 < len(tokens):
-            gap = text[tokens[run_end][1] : tokens[run_end + 1][0]]
-            if gap.strip() == "":
-                run_end += 1
-                continue
-            # A hyphen or maqaf joins a unit to its ten ("שנים-עשר", "שנים־עשר").
-            if (
+    # Runs of adjacent words are cut once, in one pass; a hyphen or maqaf
+    # joins a unit to its ten ("שנים-עשר", "שנים־עשר") and whitespace joins
+    # anything. Each run is then parsed from every start index without
+    # copying, and a start that is not a number word is skipped at once.
+    runs: list[tuple[int, int]] = []
+    run_start = 0
+    for index in range(1, len(tokens) + 1):
+        if index < len(tokens):
+            gap = text[tokens[index - 1][1] : tokens[index][0]]
+            if gap.strip() == "" or (
                 _HEBREW_TEEN_JOIN_PATTERN.match(gap)
-                and tokens[run_end + 1][2] in _HEBREW_TEEN_TENS
+                and tokens[index][2] in _HEBREW_TEEN_TENS
             ):
-                run_end += 1
                 continue
-            break
-        words = [token[2] for token in tokens[index : run_end + 1]]
-        parsed = _parse_hebrew_number_run(words)
-        if parsed is not None:
-            consumed, value, kinds = parsed
-            if consumed >= 2 or kinds & {"tens", "hundred", "thousand", "compound"}:
-                matches.append(
-                    ((tokens[index][0], tokens[index + consumed - 1][1]), value)
-                )
-                index += consumed
+        runs.append((run_start, index))
+        run_start = index
+    for start, end in runs:
+        words = [token[2] for token in tokens[start:end]]
+        index = 0
+        while index < len(words):
+            if (
+                _strip_hebrew_number_prefix(words[index], _HEBREW_RUN_START_VOCABULARY)
+                is None
+            ):
+                index += 1
                 continue
-        index += 1
+            parsed = _parse_hebrew_number_run(words[index:])
+            if parsed is not None:
+                consumed, value, kinds = parsed
+                if consumed >= 2 or kinds & {"tens", "hundred", "thousand", "compound"}:
+                    matches.append(
+                        (
+                            (
+                                tokens[start + index][0],
+                                tokens[start + index + consumed - 1][1],
+                            ),
+                            value,
+                        )
+                    )
+                    index += consumed
+                    continue
+            index += 1
     return matches
 
 
@@ -2227,25 +2253,48 @@ _HEBREW_FRACTION_COUNT_VALUES = {
     "שני": 2.0,
     "שתי": 2.0,
     "שלושה": 3.0,
+    "שלשה": 3.0,
     "שלוש": 3.0,
+    "שלושת": 3.0,
     "ארבעה": 4.0,
     "ארבע": 4.0,
+    "ארבעת": 4.0,
     "חמישה": 5.0,
     "חמש": 5.0,
+    "חמשת": 5.0,
     "שישה": 6.0,
+    "ששה": 6.0,
     "שש": 6.0,
+    "ששת": 6.0,
     "שבעה": 7.0,
     "שבע": 7.0,
+    "שבעת": 7.0,
     "שמונה": 8.0,
+    "שמונת": 8.0,
     "תשעה": 9.0,
     "תשע": 9.0,
+    "תשעת": 9.0,
+}
+# Construct plurals ("רבעי השכר", "שלישי ההכנסה") are fractions only after a
+# count, because "שלישי" alone is the ordinal "third".
+_HEBREW_FRACTION_CONSTRUCT_VALUES = {
+    "רבעי": 0.25,
+    "שלישי": 1.0 / 3.0,
+    "חמישיות": 0.2,
+    "שישיות": 1.0 / 6.0,
+    "שמיניות": 0.125,
+    "עשיריות": 0.1,
 }
 _HEBREW_FRACTION_WORD_PATTERN = re.compile(
     "(?<![\u0590-\u05ff])"
     "(?P<prefix>(?:[\u05d5\u05d1\u05db\u05dc\u05de\u05e9]\u05be?){0,2})"
     "(?:(?P<count>" + _hebrew_alternation(_HEBREW_FRACTION_COUNT_VALUES) + ")\\s+)?"
     "(?P<article>\u05d4?)"
-    "(?P<fraction>" + _hebrew_alternation(_HEBREW_FRACTION_VALUES) + ")"
+    "(?P<fraction>"
+    + _hebrew_alternation(
+        set(_HEBREW_FRACTION_VALUES) | set(_HEBREW_FRACTION_CONSTRUCT_VALUES)
+    )
+    + ")"
     "(?![\u0590-\u05ff])"
     "(?P<partitive>\\s+(?:\u05de\u05d4[\u0590-\u05ff]|\u05de\u05df(?![\u0590-\u05ff])|של(?![\u0590-\u05ff])))?"
 )
@@ -2258,12 +2307,20 @@ def _iter_hebrew_fraction_word_matches(
     for match in _HEBREW_FRACTION_WORD_PATTERN.finditer(text):
         word = match.group("fraction")
         count = match.group("count")
-        if word not in _HEBREW_UNAMBIGUOUS_FRACTION_WORDS:
-            if match.group("article"):
+        if (
+            word in _HEBREW_FRACTION_CONSTRUCT_VALUES
+            and word not in _HEBREW_FRACTION_VALUES
+        ):
+            if not count:
                 continue
-            if not count and not match.group("partitive"):
-                continue
-        value = _HEBREW_FRACTION_VALUES[word]
+            value = _HEBREW_FRACTION_CONSTRUCT_VALUES[word]
+        else:
+            if word not in _HEBREW_UNAMBIGUOUS_FRACTION_WORDS:
+                if match.group("article"):
+                    continue
+                if not count and not match.group("partitive"):
+                    continue
+            value = _HEBREW_FRACTION_VALUES[word]
         if count:
             value *= _HEBREW_FRACTION_COUNT_VALUES[count]
         matches.append(((match.start(), match.end("fraction")), value))
@@ -2450,10 +2507,11 @@ _HEBREW_STRUCTURAL_REFERENCE_PATTERN = re.compile(
     "|\u05d4?(?:" + _hebrew_alternation(_HEBREW_TEEN_UNIT_VALUES) + ")"
     "[\\s\u05be-]+(?:עשר|עשרה)"
     "|\u05d4?(?:עשרים|שלושים|ארבעים|חמישים|שישים|שבעים|שמונים|תשעים)"
-    "(?:\\s+\u05d5\u05d4?(?:אחד|אחת|שניים|שתיים|שלושה|שלוש|ארבעה|ארבע|"
-    "חמישה|חמש|שישה|שש|שבעה|שבע|שמונה|תשעה|תשע|ראשון|ראשונה|שני|שנייה|שניה|"
-    "שלישי|שלישית|רביעי|רביעית|חמישי|חמישית|שישי|שישית|שביעי|שביעית|"
-    "שמיני|שמינית|תשיעי|תשיעית))?"
+    "(?:\\s+\u05d5\u05d4?(?:"
+    + _hebrew_alternation(
+        set(_HEBREW_NUMBER_WORD_VALUES) | set(_HEBREW_TEEN_UNIT_VALUES)
+    )
+    + "))?"
     "|\u05d4?(?:ראשונה|ראשון|שנייה|שניה|שני|שלישית|שלישי|רביעית|רביעי|"
     "חמישית|חמישי|שישית|שישי|שביעית|שביעי|שמינית|שמיני|תשיעית|תשיעי|"
     "עשירית|עשירי))"
@@ -9252,8 +9310,14 @@ def _tokenize_numeric_occurrences_from_text(
     for match in _HEBREW_DIGIT_PERCENT_PATTERN.finditer(cleaned):
         if _span_overlaps(match.span("number"), fraction_cleaned_spans):
             continue
-        with contextlib.suppress(ValueError):
+        # A number that is the denominator of an ASCII fraction ("1/ 4 אחוזים")
+        # is read with its numerator by the branch below, never on its own.
+        if _ASCII_SLASH_BEFORE_NUMBER_PATTERN.search(cleaned[: match.start("number")]):
+            continue
+        with contextlib.suppress(ValueError, ZeroDivisionError):
             value = float(match.group("number").replace(",", ""))
+            if match.group("denominator"):
+                value = value / float(match.group("denominator"))
             if match.group("sign"):
                 value = -value
             add_both(

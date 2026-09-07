@@ -15231,6 +15231,49 @@ def test_traditional_spellings_of_three_and_six_are_numbers():
     assert 10.0 not in extract_numbers_from_text("ששה עשר חודשים")
 
 
+def test_construct_counts_before_a_scale_word_and_in_fractions():
+    assert 2000.0 in extract_numbers_from_text("שני אלפים שקלים")
+    assert 2.0 not in extract_numbers_from_text("שני אלפים שקלים")
+    assert _hebrew_recall("שני אלפים שקלים") == {2000.0}
+    assert 200.0 in extract_numbers_from_text("שתי מאות שקלים")
+    for text in ("שלשה רבעים מהשכר", "שלושת רבעי השכר", "שלושה רבעים מהשכר"):
+        grounded = extract_numbers_from_text(text)
+        assert 0.75 in grounded, (text, grounded)
+        assert not ({3.0, 0.25} & grounded), (text, grounded)
+        assert _hebrew_recall(text) == {0.75}, (text, _hebrew_recall(text))
+    # The construct plural alone stays the ordinal it also spells.
+    assert 3.0 in extract_numbers_from_text("ביום השלישי")
+    assert 1.0 / 3.0 not in extract_numbers_from_text("ביום השלישי")
+
+
+def test_a_structural_reference_accepts_every_spelling_the_parser_does():
+    for text in (
+        "סעיף העשרים וששה קובע סכום של 100 שקלים",
+        "סעיף העשרים ושישה קובע סכום של 100 שקלים",
+        "בפרק השלשה עשר ישולם סכום של 100 שקלים",
+    ):
+        assert _hebrew_recall(text) == {100.0}, (text, _hebrew_recall(text))
+
+
+def test_an_ascii_fraction_before_a_percent_word_is_one_rate():
+    for text in ("בשיעור של 1/4 אחוזים", "בשיעור של 1 / 4 אחוזים"):
+        grounded = extract_numbers_from_text(text)
+        assert 0.0025 in grounded, (text, grounded)
+        assert 0.04 not in grounded, (text, grounded)
+        assert _hebrew_recall(text) == {0.0025}, (text, _hebrew_recall(text))
+
+
+def test_hebrew_compound_scanning_is_linear_on_long_prose():
+    import time
+
+    for repeats in (1000, 2000):
+        text = "הוראות חוק זה יחולו על העובד " * repeats
+        started = time.perf_counter()
+        extract_numbers_from_text(text)
+        elapsed = time.perf_counter() - started
+        assert elapsed < 1.0, (repeats, elapsed)
+
+
 def test_hebrew_number_words_join_the_recall_inventory():
     # A value the statute writes as a word is one an encoding has to recall:
     # National Insurance Law section 68(c) supplements a parent entitled for
