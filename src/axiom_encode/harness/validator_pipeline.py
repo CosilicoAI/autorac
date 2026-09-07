@@ -1919,6 +1919,193 @@ _HEBREW_TEEN_PATTERN = re.compile(
     + ")"
     "(?![\\u0590-\\u05ff])"
 )
+# Hebrew builds twenty-three as "twenty and three" -- the ten, the
+# conjunction vav bound to the unit -- and a hundred or a thousand as a word
+# of its own or as a unit before the plural ("three hundreds"). The compound is
+# one number the statute states: reading the unit alone grounded 3 for
+# "twenty-three days" and demanded it back as a value of its own.
+_HEBREW_TENS_VALUES = {
+    "עשרים": 20.0,
+    "שלושים": 30.0,
+    "ארבעים": 40.0,
+    "חמישים": 50.0,
+    "שישים": 60.0,
+    "שבעים": 70.0,
+    "שמונים": 80.0,
+    "תשעים": 90.0,
+}
+_HEBREW_ORDINAL_WORDS = frozenset(
+    {
+        "ראשון",
+        "ראשונה",
+        "שני",
+        "שנייה",
+        "שניה",
+        "שלישי",
+        "שלישית",
+        "רביעי",
+        "רביעית",
+        "חמישי",
+        "חמישית",
+        "שישי",
+        "שישית",
+        "שביעי",
+        "שביעית",
+        "שמיני",
+        "שמינית",
+        "תשיעי",
+        "תשיעית",
+        "עשירי",
+        "עשירית",
+    }
+)
+_HEBREW_UNIT_VALUES = {
+    word: value
+    for word, value in _HEBREW_NUMBER_WORD_VALUES.items()
+    if value <= 10.0 and word not in _HEBREW_ORDINAL_WORDS
+}
+_HEBREW_HUNDRED_WORDS = {"מאה": 100.0, "מאתיים": 200.0}
+_HEBREW_THOUSAND_WORDS = {"אלף": 1000.0, "אלפיים": 2000.0}
+
+
+def _hebrew_alternation(words: Iterable[str]) -> str:
+    return "|".join(re.escape(word) for word in sorted(words, key=len, reverse=True))
+
+
+_HEBREW_COMPOUND_NUMBER_PATTERN = re.compile(
+    "(?<![\u0590-\u05ff])"
+    + _HEBREW_WORD_PREFIX_PATTERN
+    + "(?:(?:(?P<thousand_count>"
+    + _hebrew_alternation(_HEBREW_UNIT_VALUES)
+    + ")\\s+אלפים|(?P<thousand>"
+    + _hebrew_alternation(_HEBREW_THOUSAND_WORDS)
+    + "))(?:\\s+\u05d5?)?)?"
+    "(?:(?:(?P<hundred_count>"
+    + _hebrew_alternation(_HEBREW_UNIT_VALUES)
+    + ")\\s+מאות|(?P<hundred>"
+    + _hebrew_alternation(_HEBREW_HUNDRED_WORDS)
+    + "))(?:\\s+\u05d5?)?)?"
+    "(?:(?P<tens>"
+    + _hebrew_alternation(_HEBREW_TENS_VALUES)
+    + ")(?:\\s+\u05d5(?P<unit>"
+    + _hebrew_alternation(_HEBREW_UNIT_VALUES)
+    + "))?)?"
+    "(?![\u0590-\u05ff])"
+)
+# A fraction the statute names with a word: a half of the average wage, a fifth
+# of the income, two thirds. The feminine ordinal doubles as the fraction noun
+# ("חמישית" is both "fifth" and "a fifth"), so that reading is claimed only where
+# the grammar says fraction -- a count before it ("שתי חמישיות"), or no article
+# and a partitive after it ("חמישית מההכנסה") -- and "the fourth schedule" keeps
+# its ordinal. Half, third and quarter have nouns of their own and are always
+# fractions.
+_HEBREW_FRACTION_VALUES = {
+    "מחצית": 0.5,
+    "חצי": 0.5,
+    "שליש": 1.0 / 3.0,
+    "שלישים": 1.0 / 3.0,
+    "שלישית": 1.0 / 3.0,
+    "שלישיות": 1.0 / 3.0,
+    "רבע": 0.25,
+    "רבעים": 0.25,
+    "רביעית": 0.25,
+    "רביעיות": 0.25,
+    "חמישית": 0.2,
+    "חמישיות": 0.2,
+    "שישית": 1.0 / 6.0,
+    "שישיות": 1.0 / 6.0,
+    "שביעית": 1.0 / 7.0,
+    "שביעיות": 1.0 / 7.0,
+    "שמינית": 0.125,
+    "שמיניות": 0.125,
+    "תשיעית": 1.0 / 9.0,
+    "תשיעיות": 1.0 / 9.0,
+    "עשירית": 0.1,
+    "עשיריות": 0.1,
+}
+_HEBREW_UNAMBIGUOUS_FRACTION_WORDS = frozenset(
+    {"מחצית", "חצי", "שליש", "רבע"}
+) | frozenset(word for word in _HEBREW_FRACTION_VALUES if word.endswith(("ים", "יות")))
+_HEBREW_FRACTION_COUNT_VALUES = {
+    "שני": 2.0,
+    "שתי": 2.0,
+    "שלושה": 3.0,
+    "שלוש": 3.0,
+    "ארבעה": 4.0,
+    "ארבע": 4.0,
+    "חמישה": 5.0,
+    "חמש": 5.0,
+    "שישה": 6.0,
+    "שש": 6.0,
+    "שבעה": 7.0,
+    "שבע": 7.0,
+    "שמונה": 8.0,
+    "תשעה": 9.0,
+    "תשע": 9.0,
+}
+_HEBREW_FRACTION_WORD_PATTERN = re.compile(
+    "(?<![\u0590-\u05ff])"
+    "(?P<prefix>(?:[\u05d5\u05d1\u05db\u05dc\u05de\u05e9]\u05be?){0,2})"
+    "(?:(?P<count>" + _hebrew_alternation(_HEBREW_FRACTION_COUNT_VALUES) + ")\\s+)?"
+    "(?P<article>\u05d4?)"
+    "(?P<fraction>" + _hebrew_alternation(_HEBREW_FRACTION_VALUES) + ")"
+    "(?![\u0590-\u05ff])"
+    "(?P<partitive>\\s+(?:\u05de[\u0590-\u05ff]|\u05de\u05df(?![\u0590-\u05ff])|של(?![\u0590-\u05ff])))?"
+)
+
+
+def _iter_hebrew_compound_number_matches(
+    text: str,
+) -> list[tuple[tuple[int, int], float]]:
+    matches: list[tuple[tuple[int, int], float]] = []
+    for match in _HEBREW_COMPOUND_NUMBER_PATTERN.finditer(text):
+        if not any(
+            match.group(name)
+            for name in (
+                "thousand_count",
+                "thousand",
+                "hundred_count",
+                "hundred",
+                "tens",
+            )
+        ):
+            continue
+        value = 0.0
+        if match.group("thousand_count"):
+            value += _HEBREW_UNIT_VALUES[match.group("thousand_count")] * 1000.0
+        elif match.group("thousand"):
+            value += _HEBREW_THOUSAND_WORDS[match.group("thousand")]
+        if match.group("hundred_count"):
+            value += _HEBREW_UNIT_VALUES[match.group("hundred_count")] * 100.0
+        elif match.group("hundred"):
+            value += _HEBREW_HUNDRED_WORDS[match.group("hundred")]
+        if match.group("tens"):
+            value += _HEBREW_TENS_VALUES[match.group("tens")]
+        if match.group("unit"):
+            value += _HEBREW_UNIT_VALUES[match.group("unit")]
+        matches.append((match.span(), value))
+    return matches
+
+
+def _iter_hebrew_fraction_word_matches(
+    text: str,
+) -> list[tuple[tuple[int, int], float]]:
+    matches: list[tuple[tuple[int, int], float]] = []
+    for match in _HEBREW_FRACTION_WORD_PATTERN.finditer(text):
+        word = match.group("fraction")
+        count = match.group("count")
+        if word not in _HEBREW_UNAMBIGUOUS_FRACTION_WORDS:
+            if match.group("article"):
+                continue
+            if not count and not match.group("partitive"):
+                continue
+        value = _HEBREW_FRACTION_VALUES[word]
+        if count:
+            value *= _HEBREW_FRACTION_COUNT_VALUES[count]
+        matches.append(((match.start(), match.end("fraction")), value))
+    return matches
+
+
 _EUROPEAN_RAW_NUMBER = r"-?(?:\d{1,3}(?:[.\u00a0\u202f ]\d{3})+|\d+)(?:\s*[,.]\d{1,4})?"
 _RANGE_ENDPOINT_RAW_NUMBER = (
     r"-?(?:\d{1,3}(?:[.\u00a0\u202f]\d{3})+|\d+)(?:[,.]\d{1,4})?"
@@ -2096,10 +2283,24 @@ _HEBREW_STRUCTURAL_REFERENCE_PATTERN = re.compile(
     "תקנות|תקנה)"
     r"\s+"
     "(?:\\d+[\u05d0-\u05ea]?(?:\\(\\d+\\))?"
+    "|\u05d4?(?:אחד|אחת|שנים|שתים|שלושה|שלוש|ארבעה|ארבע|חמישה|חמש|שישה|שש|"
+    "שבעה|שבע|שמונה|תשעה|תשע)[\\s\u05be-]+(?:עשר|עשרה)"
+    "|\u05d4?(?:עשרים|שלושים|ארבעים|חמישים|שישים|שבעים|שמונים|תשעים)"
+    "(?:\\s+\u05d5\u05d4?(?:אחד|אחת|שניים|שתיים|שלושה|שלוש|ארבעה|ארבע|"
+    "חמישה|חמש|שישה|שש|שבעה|שבע|שמונה|תשעה|תשע|ראשון|ראשונה|שני|שנייה|שניה|"
+    "שלישי|שלישית|רביעי|רביעית|חמישי|חמישית|שישי|שישית|שביעי|שביעית|"
+    "שמיני|שמינית|תשיעי|תשיעית))?"
     "|\u05d4?(?:ראשונה|ראשון|שנייה|שניה|שני|שלישית|שלישי|רביעית|רביעי|"
     "חמישית|חמישי|שישית|שישי|שביעית|שביעי|שמינית|שמיני|תשיעית|תשיעי|"
     "עשירית|עשירי))"
     "(?![\u0590-\u05ff\\d])"
+)
+# A weekday is the word "day" and a bare ordinal -- "יום שני" is Monday --
+# and names a date, not a count; "ביום השני" (on the second day) carries the
+# article and stays an ordinal the statute may be counting with.
+_HEBREW_WEEKDAY_PATTERN = re.compile(
+    "(?<![\u0590-\u05ff])[\u05d1\u05dc\u05de]?יום\\s+"
+    "(?:ראשון|שני|שלישי|רביעי|חמישי|שישי)(?![\u0590-\u05ff])"
 )
 _STRUCTURAL_LINE_MARKER_PATTERN = re.compile(
     r"(?m)^[ \t]*(?:"
@@ -4806,9 +5007,12 @@ def _iter_hebrew_number_word_matches(
 ) -> list[tuple[tuple[int, int], float]]:
     """Return Hebrew ordinal and cardinal number words with their values."""
     matches: list[tuple[tuple[int, int], float]] = []
-    # Teens first: the caller drops a match whose span overlaps one already
-    # taken, and the ten half of a teen is a standalone number word, so a
-    # single-word pass run first would claim it and hide the pair.
+    # Longest spans first: the caller drops a match whose span overlaps one
+    # already taken, so a compound ("twenty and three"), a counted fraction
+    # ("two fifths") and a teen (unit then ten) each claim their words before
+    # the single-word pass would read a constituent on its own.
+    matches.extend(_iter_hebrew_compound_number_matches(text))
+    matches.extend(_iter_hebrew_fraction_word_matches(text))
     for match in _HEBREW_TEEN_PATTERN.finditer(text):
         unit = _HEBREW_TEEN_UNIT_VALUES.get(match.group("unit"))
         if unit is None:
@@ -6912,54 +7116,103 @@ def _legacy_surface_numeric_occurrences(text: str) -> list[NumericOccurrence]:
     return occurrences
 
 
+_ALIGNMENT_WALK_NEAR = 8
 _ALIGNMENT_WALK_WINDOW = 96
 _ALIGNMENT_WALK_ANCHOR = 6
+_ALIGNMENT_LOCAL_MATCH_SPAN = 2048
+
+
+def _equal_run(source: str, parsed: str, source_index: int, parsed_index: int) -> int:
+    run = 0
+    while (
+        source_index + run < len(source)
+        and parsed_index + run < len(parsed)
+        and source[source_index + run] == parsed[parsed_index + run]
+    ):
+        run += 1
+    return run
+
+
+def _resync_after_edit(
+    source: str, parsed: str, source_index: int, parsed_index: int
+) -> tuple[int, int] | None:
+    """How far to skip on each side to pass one edit, or None if it is too wide.
+
+    Nearby first: among the ways of skipping up to a few characters on either
+    side, take the one after which the two texts agree for longest -- so a
+    space inserted every few characters is read as that, not as the start of
+    something wider. Then a bounded window that must be followed by a run of
+    a few equal characters. Then, for one wide edit such as a stripped URL,
+    sequence matching over a bounded stretch of both texts, junk heuristic
+    off, which is affordable once per such edit.
+    """
+    best_key: tuple[int, int] | None = None
+    best_skip: tuple[int, int] | None = None
+    for total in range(1, 2 * _ALIGNMENT_WALK_NEAR + 1):
+        for skip_source in range(min(total, _ALIGNMENT_WALK_NEAR) + 1):
+            skip_parsed = total - skip_source
+            if skip_parsed > _ALIGNMENT_WALK_NEAR:
+                continue
+            next_source = source_index + skip_source
+            next_parsed = parsed_index + skip_parsed
+            if next_source > len(source) or next_parsed > len(parsed):
+                continue
+            if next_parsed == len(parsed) and next_source == len(source):
+                return (skip_source, skip_parsed)
+            run = _equal_run(source, parsed, next_source, next_parsed)
+            key = (run, -total)
+            if run >= 2 and (best_key is None or key > best_key):
+                best_key = key
+                best_skip = (skip_source, skip_parsed)
+    if best_skip is not None:
+        return best_skip
+    for total in range(1, 2 * _ALIGNMENT_WALK_WINDOW + 1):
+        for skip_source in range(min(total, _ALIGNMENT_WALK_WINDOW) + 1):
+            skip_parsed = total - skip_source
+            if skip_parsed > _ALIGNMENT_WALK_WINDOW:
+                continue
+            next_source = source_index + skip_source
+            next_parsed = parsed_index + skip_parsed
+            if next_source > len(source) or next_parsed > len(parsed):
+                continue
+            if next_parsed == len(parsed) and next_source == len(source):
+                return (skip_source, skip_parsed)
+            if next_parsed == len(parsed) or next_source == len(source):
+                continue
+            if (
+                _equal_run(source, parsed, next_source, next_parsed)
+                >= _ALIGNMENT_WALK_ANCHOR
+            ):
+                return (skip_source, skip_parsed)
+    source_window = source[source_index : source_index + _ALIGNMENT_LOCAL_MATCH_SPAN]
+    parsed_window = parsed[parsed_index : parsed_index + _ALIGNMENT_LOCAL_MATCH_SPAN]
+    matcher = SequenceMatcher(a=source_window, b=parsed_window, autojunk=False)
+    for block in matcher.get_matching_blocks():
+        if block.size >= _ALIGNMENT_WALK_ANCHOR and (block.a > 0 or block.b > 0):
+            return (block.a, block.b)
+    return None
 
 
 def _walk_aligned_offsets(source: str, parsed: str) -> list[int | None] | None:
     """Map each parsed character to its source offset across local edits.
 
-    Equal characters map one to one. At a mismatch the walk looks for the
-    nearest point, within a bounded window on both sides, where the two texts
-    agree again for a few characters (or both end), and treats the gap as an
-    insertion, a deletion, or -- when the gap is the same width on both
-    sides -- an in-place replacement. None when an edit is wider than the
-    window, which is the caller's cue to fall back to sequence matching.
+    Equal characters map one to one. At a mismatch the walk asks
+    :func:`_resync_after_edit` how far to skip on each side; a gap of the same
+    width on both sides is an in-place replacement and keeps its offsets, any
+    other gap is an insertion or a deletion. None when an edit cannot be
+    passed, which is the caller's cue to fall back to whole-text sequence
+    matching.
     """
     offsets: list[int | None] = [None] * len(parsed)
     source_index = 0
     parsed_index = 0
-    window = _ALIGNMENT_WALK_WINDOW
-    anchor = _ALIGNMENT_WALK_ANCHOR
     while parsed_index < len(parsed):
         if source_index < len(source) and source[source_index] == parsed[parsed_index]:
             offsets[parsed_index] = source_index
             source_index += 1
             parsed_index += 1
             continue
-        resync: tuple[int, int] | None = None
-        for total in range(1, 2 * window + 1):
-            for skip_source in range(min(total, window) + 1):
-                skip_parsed = total - skip_source
-                if skip_parsed > window:
-                    continue
-                next_source = source_index + skip_source
-                next_parsed = parsed_index + skip_parsed
-                if next_source > len(source) or next_parsed > len(parsed):
-                    continue
-                if next_parsed == len(parsed) or next_source == len(source):
-                    if next_parsed == len(parsed) and next_source == len(source):
-                        resync = (skip_source, skip_parsed)
-                        break
-                    continue
-                if (
-                    source[next_source : next_source + anchor]
-                    == parsed[next_parsed : next_parsed + anchor]
-                ):
-                    resync = (skip_source, skip_parsed)
-                    break
-            if resync is not None:
-                break
+        resync = _resync_after_edit(source, parsed, source_index, parsed_index)
         if resync is None:
             return None
         skip_source, skip_parsed = resync
@@ -8167,6 +8420,7 @@ def _structural_numeric_component_spans(
         _ENGLISH_STRUCTURAL_REFERENCE_PATTERN,
         _ENGLISH_STRUCTURAL_DIGIT_LABEL_PATTERN,
         _HEBREW_STRUCTURAL_REFERENCE_PATTERN,
+        _HEBREW_WEEKDAY_PATTERN,
         _STRUCTURAL_SOURCE_STATE_CODE_CITATION_PATTERN,
         _STRUCTURAL_SOURCE_NJ_TITLE_54A_HEADING_PATTERN,
         _STRUCTURAL_LINE_MARKER_PATTERN,
