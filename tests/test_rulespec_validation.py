@@ -15274,6 +15274,57 @@ def test_hebrew_compound_scanning_is_linear_on_long_prose():
         assert elapsed < 1.0, (repeats, elapsed)
 
 
+def test_an_ascii_mixed_percentage_is_one_rate():
+    for text in ("בשיעור של 16 1/2 אחוזים", "בשיעור של 16 1 / 2 אחוזים"):
+        grounded = extract_numbers_from_text(text)
+        assert 0.165 in grounded, (text, grounded)
+        assert not ({0.005, 16.0} & grounded), (text, grounded)
+        assert _hebrew_recall(text) == {0.165}, (text, _hebrew_recall(text))
+    assert -0.165 in extract_numbers_from_text("בשיעור של -16 1/2 אחוזים")
+
+
+def test_a_fraction_noun_before_the_percent_word_is_a_fraction_of_a_percent():
+    for text, expected in (
+        ("בשיעור של חמישית אחוז", 0.002),
+        ("בשיעור של עשירית אחוז", 0.001),
+    ):
+        grounded = extract_numbers_from_text(text)
+        assert expected in grounded, (text, grounded)
+        assert not ({0.05, 0.1, 5.0, 10.0} & grounded), (text, grounded)
+        assert _hebrew_recall(text) == {expected}, (text, _hebrew_recall(text))
+
+
+def test_a_mixed_number_takes_a_counted_fractional_tail():
+    text = "מקדם של אחד ושני שלישים"
+    grounded = extract_numbers_from_text(text)
+    assert any(abs(value - 5.0 / 3.0) < 1e-9 for value in grounded), grounded
+    assert not ({1.0, 2.0 / 3.0} & grounded), grounded
+    assert {round(v, 9) for v in _hebrew_recall(text)} == {round(5.0 / 3.0, 9)}
+    rate = "בשיעור של אחד ושלושה רבעים אחוזים"
+    assert 0.0175 in extract_numbers_from_text(rate)
+    assert not ({1.0, 0.0075} & extract_numbers_from_text(rate))
+    assert _hebrew_recall(rate) == {0.0175}
+
+
+def test_a_structural_reference_takes_the_whole_number_grammar():
+    text = "לפי סעיף מאה ועשרים, ישולם סכום של 100 שקלים"
+    assert _hebrew_recall(text) == {100.0}
+    assert 120.0 in extract_numbers_from_text(text)
+    assert _hebrew_recall("לפי סעיף אלף ומאתיים, ישולם סכום של 100 שקלים") == {100.0}
+
+
+def test_hebrew_compound_scanning_is_linear_on_teen_only_words():
+    import time
+
+    for repeats in (10000, 20000):
+        text = "שנים רבות " * repeats
+        started = time.perf_counter()
+        grounded = extract_numbers_from_text(text)
+        elapsed = time.perf_counter() - started
+        assert 2.0 not in grounded
+        assert elapsed < 1.5, (repeats, elapsed)
+
+
 def test_hebrew_number_words_join_the_recall_inventory():
     # A value the statute writes as a word is one an encoding has to recall:
     # National Insurance Law section 68(c) supplements a parent entitled for

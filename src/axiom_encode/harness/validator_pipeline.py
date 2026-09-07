@@ -1988,6 +1988,20 @@ _HEBREW_MIXED_FRACTION_VALUES = {
     "שמינית": 0.125,
     "עשירית": 0.1,
 }
+# The plural and construct fraction nouns a count precedes inside a mixed
+# number: "אחד ושני שלישים" is one and two thirds.
+_HEBREW_COUNTED_FRACTION_VALUES = {
+    "שלישים": 1.0 / 3.0,
+    "שלישי": 1.0 / 3.0,
+    "רבעים": 0.25,
+    "רבעי": 0.25,
+    "חמישיות": 0.2,
+    "שישיות": 1.0 / 6.0,
+    "שביעיות": 1.0 / 7.0,
+    "שמיניות": 0.125,
+    "תשיעיות": 1.0 / 9.0,
+    "עשיריות": 0.1,
+}
 _HEBREW_NUMBER_PREFIX_LETTERS = "\u05d5\u05d4\u05d1\u05db\u05dc\u05de\u05e9"
 # A maqaf (U+05BE) joins words the way a hyphen does, so it is not a word
 # character here: "שנים־עשר" is two tokens, joined the way "שנים-עשר" is.
@@ -1999,6 +2013,7 @@ _HEBREW_PERCENT_WORD_PATTERN = re.compile("\\s+אחוז(?:ים|י)?(?![\u0590-\u
 # for the fraction pass, which reads the percent word itself.
 _HEBREW_DIGIT_PERCENT_PATTERN = re.compile(
     "(?<![\\d.,\u2044/])(?P<sign>[-\u2212])?"
+    "(?:(?P<whole>\\d+)\\s+(?=\\d+\\s*/))?"
     "(?P<number>(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?)"
     "(?:\\s*/\\s*(?P<denominator>\\d+))?"
     "\\s+אחוז(?:ים|י)?(?![\u0590-\u05ff])"
@@ -2034,10 +2049,14 @@ _HEBREW_NUMBER_VOCABULARY = (
 _HEBREW_RUN_START_VOCABULARY = frozenset(
     _HEBREW_NUMBER_VOCABULARY | set(_HEBREW_TEEN_UNIT_VALUES) | {"שני", "שתי"}
 )
+_HEBREW_TEEN_ONLY_WORDS = frozenset(
+    set(_HEBREW_TEEN_UNIT_VALUES) - set(_HEBREW_UNIT_VALUES)
+)
 
 
 def _parse_hebrew_number_run(
     words: "Sequence[str]",
+    start: int = 0,
 ) -> tuple[int, float, set[str]] | None:
     """Parse the longest number a run of Hebrew words spells from its start.
 
@@ -2055,7 +2074,7 @@ def _parse_hebrew_number_run(
     scale_counts = {**units, "שני": 2.0, "שתי": 2.0}
     # "שנים" and "שתים" count only inside a teen ("שנים עשר"); on their own
     # they are the plural of "year" and the like, not a two.
-    teen_only = set(_HEBREW_TEEN_UNIT_VALUES) - set(_HEBREW_UNIT_VALUES)
+    teen_only = _HEBREW_TEEN_ONLY_WORDS
     vocabulary = (
         _HEBREW_NUMBER_VOCABULARY
         | set(_HEBREW_TEEN_UNIT_VALUES)
@@ -2067,7 +2086,7 @@ def _parse_hebrew_number_run(
         if position >= len(words):
             return None
         raw = words[position]
-        if position == 0:
+        if position == start:
             return _strip_hebrew_number_prefix(raw, vocabulary)
         if raw in vocabulary:
             return raw
@@ -2131,16 +2150,20 @@ def _parse_hebrew_number_run(
 
     value = 0.0
     kinds: set[str] = set()
-    cursor = 0
-    first = word_at(0)
+    cursor = start
+    first = word_at(start)
     if first in _HEBREW_THOUSAND_WORDS:
         value += _HEBREW_THOUSAND_WORDS[first]
         kinds.add("thousand")
-        cursor = 1
+        cursor = start + 1
     else:
-        count = parse_below_thousand(0)
-        if count is None and first in scale_counts and word_at(1) in ("אלף", "אלפים"):
-            count = (1, scale_counts[first], {"unit"})
+        count = parse_below_thousand(start)
+        if (
+            count is None
+            and first in scale_counts
+            and word_at(start + 1) in ("אלף", "אלפים")
+        ):
+            count = (start + 1, scale_counts[first], {"unit"})
         if count is not None and word_at(count[0]) in ("אלף", "אלפים"):
             value += count[1] * 1000.0
             kinds.add("thousand")
@@ -2150,15 +2173,28 @@ def _parse_hebrew_number_run(
         cursor, amount, rest_kinds = rest
         value += amount
         kinds |= rest_kinds
-    if 0 < cursor < len(words) and has_vav(cursor):
-        fraction = words[cursor][1:]
-        if fraction in _HEBREW_MIXED_FRACTION_VALUES:
-            value += _HEBREW_MIXED_FRACTION_VALUES[fraction]
+    # A vav-bound fractional tail: "וחצי", or a counted fraction "ושני
+    # שלישים", "ושלושה רבעים".
+    if start < cursor < len(words) and has_vav(cursor):
+        tail = words[cursor][1:]
+        if tail in _HEBREW_MIXED_FRACTION_VALUES:
+            value += _HEBREW_MIXED_FRACTION_VALUES[tail]
             kinds.add("fraction")
             cursor += 1
-    if cursor == 0:
+        elif (
+            tail in _HEBREW_FRACTION_COUNT_VALUES
+            and cursor + 1 < len(words)
+            and words[cursor + 1] in _HEBREW_COUNTED_FRACTION_VALUES
+        ):
+            value += (
+                _HEBREW_FRACTION_COUNT_VALUES[tail]
+                * _HEBREW_COUNTED_FRACTION_VALUES[words[cursor + 1]]
+            )
+            kinds.add("fraction")
+            cursor += 2
+    if cursor == start:
         return None
-    return cursor, value, kinds
+    return cursor - start, value, kinds
 
 
 def _iter_hebrew_compound_number_matches(
@@ -2190,13 +2226,18 @@ def _iter_hebrew_compound_number_matches(
         words = [token[2] for token in tokens[start:end]]
         index = 0
         while index < len(words):
-            if (
-                _strip_hebrew_number_prefix(words[index], _HEBREW_RUN_START_VOCABULARY)
-                is None
+            head = _strip_hebrew_number_prefix(
+                words[index], _HEBREW_RUN_START_VOCABULARY
+            )
+            if head is None or (
+                head in _HEBREW_TEEN_ONLY_WORDS
+                and (
+                    index + 1 >= len(words) or words[index + 1] not in _HEBREW_TEEN_TENS
+                )
             ):
                 index += 1
                 continue
-            parsed = _parse_hebrew_number_run(words[index:])
+            parsed = _parse_hebrew_number_run(words, index)
             if parsed is not None:
                 consumed, value, kinds = parsed
                 if consumed >= 2 or kinds & {"tens", "hundred", "thousand", "compound"}:
@@ -2296,7 +2337,8 @@ _HEBREW_FRACTION_WORD_PATTERN = re.compile(
     )
     + ")"
     "(?![\u0590-\u05ff])"
-    "(?P<partitive>\\s+(?:\u05de\u05d4[\u0590-\u05ff]|\u05de\u05df(?![\u0590-\u05ff])|של(?![\u0590-\u05ff])))?"
+    "(?P<partitive>\\s+(?:\u05de\u05d4[\u0590-\u05ff]|\u05de\u05df(?![\u0590-\u05ff])|של(?![\u0590-\u05ff])"
+    "|אחוז(?:ים|י)?(?![\u0590-\u05ff])))?"
 )
 
 
@@ -2496,6 +2538,15 @@ _ENGLISH_STRUCTURAL_DIGIT_LABEL_PATTERN = re.compile(
 # 121ב". The ordinal or number identifies a place in the instrument, not a
 # quantity the instrument sets, so it is no recall obligation; "the fourth
 # child" carries no such noun and stays substantive.
+# Every word the numeral grammar accepts, so a section named "מאה ועשרים" or
+# "השתיים עשרה" is a reference the way "120" is.
+_HEBREW_STRUCTURAL_NUMBER_WORDS = (
+    set(_HEBREW_NUMBER_WORD_VALUES)
+    | set(_HEBREW_TEEN_UNIT_VALUES)
+    | set(_HEBREW_TEEN_TENS_WORDS)
+    | {"עשרים", "שלושים", "ארבעים", "חמישים", "שישים", "שבעים", "שמונים", "תשעים"}
+    | {"מאה", "מאתיים", "מאות", "אלף", "אלפיים", "אלפים"}
+)
 _HEBREW_STRUCTURAL_REFERENCE_PATTERN = re.compile(
     "(?<![\u0590-\u05ff])"
     "(?:[\u05d1\u05db\u05dc\u05de\u05d5\u05e9]{0,2}\u05d4?)"
@@ -2504,14 +2555,11 @@ _HEBREW_STRUCTURAL_REFERENCE_PATTERN = re.compile(
     "תקנות|תקנה)"
     r"\s+"
     "(?:\\d+[\u05d0-\u05ea]?(?:\\(\\d+\\))?"
-    "|\u05d4?(?:" + _hebrew_alternation(_HEBREW_TEEN_UNIT_VALUES) + ")"
-    "[\\s\u05be-]+(?:עשר|עשרה)"
-    "|\u05d4?(?:עשרים|שלושים|ארבעים|חמישים|שישים|שבעים|שמונים|תשעים)"
-    "(?:\\s+\u05d5\u05d4?(?:"
-    + _hebrew_alternation(
-        set(_HEBREW_NUMBER_WORD_VALUES) | set(_HEBREW_TEEN_UNIT_VALUES)
-    )
-    + "))?"
+    "|\u05d4?(?:"
+    + _hebrew_alternation(_HEBREW_STRUCTURAL_NUMBER_WORDS)
+    + ")(?:[\\s\u05be-]+\u05d5?\u05d4?(?:"
+    + _hebrew_alternation(_HEBREW_STRUCTURAL_NUMBER_WORDS)
+    + "))*"
     "|\u05d4?(?:ראשונה|ראשון|שנייה|שניה|שני|שלישית|שלישי|רביעית|רביעי|"
     "חמישית|חמישי|שישית|שישי|שביעית|שביעי|שמינית|שמיני|תשיעית|תשיעי|"
     "עשירית|עשירי))"
@@ -9318,6 +9366,8 @@ def _tokenize_numeric_occurrences_from_text(
             value = float(match.group("number").replace(",", ""))
             if match.group("denominator"):
                 value = value / float(match.group("denominator"))
+                if match.group("whole"):
+                    value += float(match.group("whole"))
             if match.group("sign"):
                 value = -value
             add_both(
